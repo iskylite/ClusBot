@@ -15,7 +15,7 @@ make build
 
 `--demo` 使用明确标记的本地演示回复，可用于走通事项受理、成果、写入确认和验收。使用真实模型时，按下文配置后去掉 `--demo`。
 
-当前开发版本从一份完整 schema 创建新库。已有不匹配的数据目录会被拒绝，换一个空目录即可重新开始。日常开发可重复使用本版本已经初始化的目录。
+当前开发版本从一份完整 schema 创建新库。版本 43 和 44 的数据库会自动升级，其他不受支持的版本会被拒绝。日常开发可重复使用本版本已经初始化的目录。
 
 修改前端时可用 Vite 热更新。先在一个终端构建初始静态资源并启动 Go 后端：
 
@@ -52,16 +52,26 @@ cd /tmp/clusbot-release
 
 运行压缩包里的二进制无需安装 Go 或 Node.js。按启动日志给出的地址和口令文件登录。MCP stdio 服务的额外运行依赖由连接提供方说明。
 
+### macOS 桌面版
+
+在装有 Xcode 命令行工具的 Mac 上运行 `make dmg`，产物为 `dist/ClusBot-arm64.dmg`，适用于 macOS 14 或更新版本的 Apple Silicon Mac。
+
+挂载镜像，将 `ClusBot.app` 拖到「应用程序」，然后双击启动。应用会启动本机服务并自动建立会话，在自己的窗口中显示界面。退出应用会停止随它启动的服务。数据保存在 `~/Library/Application Support/ClusBot`。
+
+桌面界面默认随窗口缩放，长内容在各栏内滚动。「显示」菜单可放大、缩小或恢复适应窗口。未发送的对话和事项草稿、未保存的记忆编辑可在退出应用后继续。下载成果或工具回执时，系统会询问保存位置。
+
+本机构建使用临时签名，供本机使用。
+
 ## 模型与运行配置
 
-复制 [configs/example.yaml](configs/example.yaml) 为本地配置，填写实际支持 Responses 文本流与函数调用的模型端点：
+复制 [configs/example.yaml](configs/example.yaml) 为本地配置，填写实际支持文本流与函数调用的模型端点：
 
 ```yaml
 server:
   listen: 127.0.0.1:8080
 data_dir: ../data/local
 model:
-  provider: responses
+  provider: chat_completions
   base_url: https://api.example.com/v1
   model_id: your-model-id
   api_key_ref: env:CLUSBOT_MODEL_API_KEY
@@ -77,7 +87,11 @@ runtime:
 ./bin/clusbot serve --config ./configs/local.yaml
 ```
 
-相对路径以配置文件所在目录解析。密钥从 `CLUSBOT_MODEL_API_KEY` 环境变量读取。也可以在「设置」填写 API 根地址、模型 ID 和密钥环境变量名；测试连接会在 30 秒内检查流式文本、一次应用内测试函数调用及工具结果回传。测试仅使用临时测试码。清空模型 ID 并保存可停用外部模型。
+相对路径以配置文件所在目录解析。在「设置」选择 Chat Completions 或 Responses，填写 API 根地址、模型 ID 和 API Key。应用将密钥明文保存在本地 SQLite，数据库备份也会包含密钥。保存后的密钥优先使用，未保存或移除后读取配置的环境变量（默认 `CLUSBOT_MODEL_API_KEY`）。测试连接会使用当前输入，在 30 秒内检查流式文本、一次应用内测试函数调用及工具结果回传。测试仅使用临时测试码。清空模型 ID 并保存可停用外部模型。
+
+新配置默认使用 Chat Completions，已有配置升级后保留 Responses。服务地址填写 API 根地址（如 `https://api.openai.com/v1`），应用会按协议追加 `/chat/completions` 或 `/responses`。
+
+设置页的「获取模型」使用当前服务地址和密钥请求 API 根地址下的 `/models`。模型 ID 始终可手填。服务返回上下文长度、图片输入类型或推理参数时，页面会填入已知属性。缺失项保留为未知，也可手动补齐或覆盖并保存。模型属性用于记录规格，当前任务仍按原有的输入格式和请求预算执行。
 
 模型设置首次从 YAML 导入 SQLite，之后页面保存的值会保留。设置 `CLUSBOT_MODEL_BASE_URL` 或 `CLUSBOT_MODEL_ID` 时，对应字段在页面只读。`--demo` 模式下日常工作仍使用演示回复，设置页可单独测试外部端点。
 
@@ -109,7 +123,7 @@ runtime:
 
 父子任务计划通过 `POST /api/v1/workflows` 提交。请求包含父任务的 `client_request_id`、`goal`、`acceptance_criteria`、`scope_label` 和 `steps`。每个子任务填写 `key`、`goal` 和 `acceptance_criteria`，可用 `depends_on` 引用同组子任务的编号。`optional: true` 表示显式停止该子任务后，父任务可汇总其余验收结果。若其他子任务声明依赖它，仍需验收成果。计划最多八个子任务，依赖必须无环。`GET /api/v1/tasks/{id}/workflow` 可按父任务查看子任务和依赖。计划中的任务不自动选择 MCP 工具，依赖正文超出请求预算时保留中断状态。
 
-普通事项首次执行时，Responses 模型可为确实需要独立验收的工作提出 2 至 4 个子任务。运行时复核任务修订、负责人、控制状态和依赖关系，将本轮剩余的输出和执行时间均分给子任务的首轮及父任务的汇总轮。子任务沿用父任务已选的材料，沿用正常的成果验收流程。周期事项、已有计划的事项、子任务和明确指定读取工具的事项沿用各自的执行流程。计划回执可跨重启恢复。
+普通事项首次执行时，支持工具调用的模型可为确实需要独立验收的工作提出 2 至 4 个子任务。运行时复核任务修订、负责人、控制状态和依赖关系，将本轮剩余的输出和执行时间均分给子任务的首轮及父任务的汇总轮。子任务沿用父任务已选的材料，沿用正常的成果验收流程。周期事项、已有计划的事项、子任务和明确指定读取工具的事项沿用各自的执行流程。计划回执可跨重启恢复。
 
 ## 材料与个人记忆
 

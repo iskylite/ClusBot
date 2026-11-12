@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { FileText, LoaderCircle, Paperclip, Search, Upload, X } from 'lucide-react'
 import { api, type Material, type MaterialFile } from './api'
 
-export function MaterialPicker({selected,disabled,choose,upload,choosePart,remove,replacement}:{
-  selected:Material[]; disabled:boolean; choose:(path:string)=>Promise<void>; upload:(file:File)=>Promise<void>;
+export function MaterialPicker({selected,disabled,choose,upload,choosePart,remove,replacement,allowImages}:{
+  allowImages:boolean; selected:Material[]; disabled:boolean; choose:(path:string)=>Promise<void>; upload:(file:File)=>Promise<void>;
   choosePart:(id:string,part:number)=>Promise<void>; remove:(id:string)=>void
   replacement?:{enabled:boolean;change:(enabled:boolean)=>void}
 }) {
@@ -31,7 +31,7 @@ export function MaterialPicker({selected,disabled,choose,upload,choosePart,remov
   return <div className="material-picker">
     {selected.length>0 && <div className="material-chips" aria-label="已选材料">{selected.map(item=>
       <span className="material-chip" key={item.upload?.id??item.id} title={(item.upload?.name??item.path)+' · '+item.sha256}>
-        <FileText size={14}/><span>{item.upload?.name??item.path.slice('materials/'.length)}</span>
+        <FileText size={14}/><span>{item.upload?.name??item.path.slice(item.path.indexOf('/')+1)}</span>
         {item.upload && item.upload.parts>1 && <select aria-label={'选择 '+item.upload.name+' 的片段'} disabled={disabled} value={item.upload.part}
           onChange={event=>{if(item.upload)void choosePart(item.upload.id,Number(event.target.value))}}>
           {Array.from({length:item.upload.parts},(_,index)=><option key={index} value={index+1}>第 {index+1} / {item.upload?.parts} 段</option>)}
@@ -42,7 +42,7 @@ export function MaterialPicker({selected,disabled,choose,upload,choosePart,remov
       disabled={disabled||(limitReached&&!replacement)} onClick={()=>{setOpen(!open);setQuery('')}}>
       <Paperclip size={16}/>{replacement?.enabled?'仅用本轮材料':'选取材料'}</button>
     {open && <div className="material-menu">
-      <input type="file" ref={input} hidden aria-label="上传文件" accept=".md,.txt" onChange={async event=>{
+      <input type="file" ref={input} hidden aria-label="上传文件" accept={allowImages ? ".md,.txt,image/png,image/jpeg" : ".md,.txt"} onChange={async event=>{
         const file=event.target.files?.[0]
         event.target.value=''
         if(file){await upload(file);setOpen(false)}

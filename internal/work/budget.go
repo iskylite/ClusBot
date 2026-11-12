@@ -27,11 +27,15 @@ type TokenUsage struct {
 
 type ExecutionUsage struct {
 	TokenUsage
-	ModelRequests      int   `json:"model_requests"`
-	UnreportedRequests int   `json:"unreported_requests"`
-	ActiveMS           int64 `json:"active_ms"`
-	TimePartial        bool  `json:"time_partial"`
-	UntrackedRuns      int   `json:"untracked_runs"`
+	// LastInputTokens is the input size of the most recent model request in a
+	// single run, used to show context usage against the window. It is omitted
+	// from task-level aggregation, where a single "last request" has no meaning.
+	LastInputTokens    *int64 `json:"last_input_tokens,omitempty"`
+	ModelRequests      int    `json:"model_requests"`
+	UnreportedRequests int    `json:"unreported_requests"`
+	ActiveMS           int64  `json:"active_ms"`
+	TimePartial        bool   `json:"time_partial"`
+	UntrackedRuns      int    `json:"untracked_runs"`
 }
 
 type runAccounting struct {
@@ -63,8 +67,9 @@ func recordModelUsage(tx *sql.Tx, runID string, tokens *TokenUsage) error {
 		reported = 1
 	}
 	_, err := tx.Exec(`UPDATE runs SET input_tokens=coalesce(input_tokens+?,input_tokens,?),
-output_tokens=coalesce(output_tokens+?,output_tokens,?),reported_requests=reported_requests+? WHERE id=?`,
-		tokens.InputTokens, tokens.InputTokens, tokens.OutputTokens, tokens.OutputTokens, reported, runID)
+output_tokens=coalesce(output_tokens+?,output_tokens,?),reported_requests=reported_requests+?,
+last_input_tokens=coalesce(?,last_input_tokens) WHERE id=?`,
+		tokens.InputTokens, tokens.InputTokens, tokens.OutputTokens, tokens.OutputTokens, reported, tokens.InputTokens, runID)
 	return err
 }
 

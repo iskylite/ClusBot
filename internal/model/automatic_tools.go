@@ -8,7 +8,7 @@ import (
 	"clusbot/internal/work"
 )
 
-func (p *Responses) TaskToolTurn(ctx context.Context, input []work.Message, tools []work.TaskToolDefinition,
+func (p *Provider) TaskToolTurn(ctx context.Context, input []work.Message, tools []work.TaskToolDefinition,
 	history []work.TaskReadRound, limit int, emit func(string) error) (work.TaskToolTurn, error) {
 	request, err := conversationRequest(input, true, limit)
 	if err != nil {

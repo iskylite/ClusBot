@@ -11,7 +11,7 @@ export type DeliveryUpdate = {acceptance_criteria?:string;required_filename?:str
 export type Acceptance = {artifact_id:string;sha256:string;criteria:string;accepted_at:number;publication_id?:string;filename?:string}
 export type ExecutionUsage = {
   model_requests:number; unreported_requests:number; active_ms:number; time_partial:boolean; untracked_runs:number
-  input_tokens:number|null; output_tokens:number|null
+  input_tokens:number|null; output_tokens:number|null; last_input_tokens?:number|null
 }
 export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number }
 export type RunListItem = {id:string; status:string; created_at:number; input_excerpt?:string}
@@ -93,12 +93,17 @@ export type Overview = {
   scopes:string[]; groups:Record<OverviewGroup,Task[]>; snapshot_at:number
   counts:Record<OverviewGroup,number>; next_cursors:Partial<Record<OverviewGroup,string>>
 }
-export type ModelSettings = { base_url: string; model_id: string; api_key_ref: string; revision: number }
+export type ModelProtocol = 'chat_completions' | 'responses'
+export type ModelAttributes = { context_tokens?: number; max_output_tokens?: number; vision?: boolean; reasoning?: boolean; reasoning_levels?: string[]; reasoning_effort?: string }
+export type DiscoveredModel = { id: string; attributes: ModelAttributes }
+export type ModelSettings = { attributes?: ModelAttributes; protocol: ModelProtocol; base_url: string; model_id: string; api_key_ref: string; revision: number }
 export type Settings = ModelSettings & {
-  mode: 'demo' | 'responses' | 'unconfigured'
+  mode: 'demo' | ModelProtocol | 'unconfigured'
   base_url_source?: string
   model_id_source?: string
   key_configured: boolean
+  local_key_saved: boolean
+  effective_context_tokens?: number
   workspace_path: string
 }
 export type Receipt = { task_id: string; conversation_id: string; run_id: string }

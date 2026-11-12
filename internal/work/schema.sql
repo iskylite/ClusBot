@@ -30,6 +30,7 @@ CREATE TABLE runs (
   time_partial INTEGER NOT NULL DEFAULT 0,
   input_tokens INTEGER,
   output_tokens INTEGER,
+  last_input_tokens INTEGER,
   error_code TEXT NOT NULL DEFAULT '',
   reported_requests INTEGER NOT NULL DEFAULT 0,
   execution_generation INTEGER NOT NULL DEFAULT 0,
@@ -174,6 +175,8 @@ CREATE TABLE model_settings (
     base_url TEXT NOT NULL,
     model_id TEXT NOT NULL,
     api_key_ref TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    protocol TEXT NOT NULL DEFAULT 'responses' CHECK (protocol IN ('responses', 'chat_completions')),
     revision INTEGER NOT NULL
 );
 

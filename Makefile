@@ -14,3 +14,9 @@ test:
 release: build
 	mkdir -p dist
 	COPYFILE_DISABLE=1 tar -czf "$(RELEASE_ARCHIVE)" bin/clusbot configs/example.yaml README.md
+
+.PHONY: dmg
+dmg:
+	npm --prefix web ci
+	npm --prefix web run build
+	sh macos/package.sh

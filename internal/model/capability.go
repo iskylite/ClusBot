@@ -16,7 +16,7 @@ var (
 	ErrTestTimeout = errors.New("模型连接测试超时")
 )
 
-func (p *Responses) testCapabilities(ctx context.Context) error {
+func (p *Provider) testCapabilities(ctx context.Context) error {
 	text, err := p.readText(ctx, responseRequest{
 		Input:           []any{responseMessage{Type: "message", Role: "user", Content: "ClusBot 连接测试，请只回复 OK。"}},
 		MaxOutputTokens: 128,
@@ -69,7 +69,7 @@ func (p *Responses) testCapabilities(ctx context.Context) error {
 	return nil
 }
 
-func (p *Responses) readText(ctx context.Context, request responseRequest) (string, error) {
+func (p *Provider) readText(ctx context.Context, request responseRequest) (string, error) {
 	var text strings.Builder
 	_, err := p.requestStream(ctx, request, func(delta string) error {
 		if text.Len()+len(delta) > 4096 {

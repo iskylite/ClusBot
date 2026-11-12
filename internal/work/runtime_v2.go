@@ -58,9 +58,10 @@ WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHE
 }
 
 // ManifestRequest records references and digests without duplicating material
-// or memory contents. The Responses adapter supplies these after input fitting.
+// or memory contents. The model adapter supplies these after input fitting.
 type ManifestRequest struct {
 	Messages   []int64           `json:"messages"`
+	Excerpted  []int64           `json:"excerpted_messages,omitempty"`
 	Omitted    []int64           `json:"omitted_messages,omitempty"`
 	Materials  map[string]string `json:"materials,omitempty"`
 	Memories   map[string]int    `json:"memories,omitempty"`

@@ -2,7 +2,7 @@ server:
   listen: 127.0.0.1:8080
 data_dir: ../data/local
 model:
-  provider: responses
+  provider: chat_completions
   base_url: https://api.openai.com/v1
   model_id: ""
   api_key_ref: env:CLUSBOT_MODEL_API_KEY

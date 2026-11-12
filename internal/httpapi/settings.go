@@ -18,7 +18,7 @@ func (s Server) modelSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) saveModelSettings(w http.ResponseWriter, r *http.Request) {
-	var input work.ModelSettings
+	var input model.SettingsInput
 	if !decode(w, r, &input) {
 		return
 	}
@@ -31,7 +31,7 @@ func (s Server) saveModelSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) testModelSettings(w http.ResponseWriter, r *http.Request) {
-	var input work.ModelSettings
+	var input model.SettingsInput
 	if !decode(w, r, &input) {
 		return
 	}
@@ -41,6 +41,19 @@ func (s Server) testModelSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]int64{"duration_ms": duration.Milliseconds()})
+}
+
+func (s Server) discoverModels(w http.ResponseWriter, r *http.Request) {
+	var input model.SettingsInput
+	if !decode(w, r, &input) {
+		return
+	}
+	models, err := s.Settings.Discover(r.Context(), input)
+	if err != nil {
+		writeModelSettingsError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, models)
 }
 
 func (s Server) writeModelSettings(w http.ResponseWriter, value model.SettingsView) {
@@ -72,6 +85,8 @@ func writeModelSettingsError(w http.ResponseWriter, err error) {
 		fail(w, 409, "model_settings_revision", err.Error())
 	case errors.Is(err, model.ErrTestTimeout):
 		fail(w, 504, "model_test_timeout", err.Error())
+	case errors.Is(err, model.ErrModelDiscovery):
+		fail(w, 502, "model_discovery_failed", err.Error())
 	case errors.Is(err, model.ErrTestFailed):
 		fail(w, 502, "model_test_failed", err.Error())
 	default:

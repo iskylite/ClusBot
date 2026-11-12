@@ -118,11 +118,14 @@ func scanPublication(row scanner) (Publication, error) {
 }
 
 func validFilename(name string) bool {
-	if !utf8.ValidString(name) || len(name) > 180 || strings.TrimSpace(name) != name || strings.HasPrefix(name, ".") || strings.ContainsAny(name, "/\\:") || strings.IndexFunc(name, unicode.IsControl) >= 0 {
-		return false
-	}
 	extension := strings.ToLower(filepath.Ext(name))
-	return extension == ".md" || extension == ".txt"
+	return safeFilename(name) && (extension == ".md" || extension == ".txt")
+}
+
+func safeFilename(name string) bool {
+	return name != "" && utf8.ValidString(name) && len(name) <= 180 && strings.TrimSpace(name) == name &&
+		!strings.HasPrefix(name, ".") && !strings.ContainsAny(name, "/\\:") &&
+		strings.IndexFunc(name, unicode.IsControl) < 0
 }
 
 func ensureNoPublication(tx *sql.Tx, taskID string) error {

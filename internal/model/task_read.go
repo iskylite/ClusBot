@@ -9,10 +9,9 @@ import (
 
 const (
 	taskReadFunction = "read_selected_source"
-	taskReadProtocol = "responses/v1"
 )
 
-func (p *Responses) PlanTaskRead(ctx context.Context, messages []work.Message, limit int) (work.TaskReadCall, *work.TokenUsage, error) {
+func (p *Provider) PlanTaskRead(ctx context.Context, messages []work.Message, limit int) (work.TaskReadCall, *work.TokenUsage, error) {
 	request, err := conversationRequest(messages, true, limit)
 	if err != nil {
 		return work.TaskReadCall{}, nil, err
@@ -34,12 +33,12 @@ func (p *Responses) PlanTaskRead(ctx context.Context, messages []work.Message, l
 	if err != nil {
 		return work.TaskReadCall{}, usage, err
 	}
-	return work.TaskReadCall{Protocol: taskReadProtocol, CallID: callID, Output: output}, usage, nil
+	return work.TaskReadCall{Protocol: p.readProtocol(), CallID: callID, Output: output}, usage, nil
 }
 
-func (p *Responses) CompleteTaskRead(ctx context.Context, messages []work.Message, call work.TaskReadCall, read *work.TaskRead, limit int, emit func(string) error) (work.TaskAnswer, error) {
+func (p *Provider) CompleteTaskRead(ctx context.Context, messages []work.Message, call work.TaskReadCall, read *work.TaskRead, limit int, emit func(string) error) (work.TaskAnswer, error) {
 	var output []json.RawMessage
-	if call.Protocol != taskReadProtocol || json.Unmarshal(call.Output, &output) != nil || read == nil || read.Result == nil {
+	if call.Protocol != p.readProtocol() || json.Unmarshal(call.Output, &output) != nil || read == nil || read.Result == nil {
 		return work.TaskAnswer{}, work.ErrReadModelCall
 	}
 	id, ok := singleFunctionCall(output, taskReadFunction)

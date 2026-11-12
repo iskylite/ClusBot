@@ -58,6 +58,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/settings", s.modelSettings)
 	api.HandleFunc("PATCH /api/v1/settings", s.saveModelSettings)
 	api.HandleFunc("POST /api/v1/settings/model/test", s.testModelSettings)
+	api.HandleFunc("POST /api/v1/settings/model/discover", s.discoverModels)
 	api.HandleFunc("GET /api/v1/overview", s.overview)
 	api.HandleFunc("GET /api/v1/workspace/files", s.materialFiles)
 	api.HandleFunc("POST /api/v1/attachments/workspace", s.captureMaterial)
@@ -600,6 +601,10 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 400, "invalid_task_edit", invalidEdit.Error())
 	case errors.Is(err, work.ErrTaskRevision):
 		fail(w, 409, "task_revision", err.Error())
+	case errors.Is(err, work.ErrImageSize):
+		fail(w, 413, "image_too_large", err.Error())
+	case errors.Is(err, work.ErrImageFormat), errors.Is(err, work.ErrImageUnsupported):
+		fail(w, 400, "invalid_image", err.Error())
 	case errors.Is(err, work.ErrUploadSize):
 		fail(w, 413, "upload_too_large", err.Error())
 	case errors.Is(err, work.ErrUpload), errors.Is(err, work.ErrUploadPart):

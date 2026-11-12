@@ -23,6 +23,7 @@ func runExperienceEvaluation(args []string) error {
 	db := flags.String("database", "", "只读 SQLite 数据库路径，建议使用备份")
 	suitePath := flags.String("suite", "", "评测用例 JSON 路径")
 	endpoint := flags.String("base-url", "", "模型 API 根地址")
+	protocol := flags.String("protocol", model.ProtocolResponses, "模型协议（responses 或 chat_completions）")
 	modelID := flags.String("model", "", "固定模型 ID")
 	keyEnv := flags.String("key-env", "CLUSBOT_MODEL_API_KEY", "模型密钥的环境变量名")
 	output := flags.Int("max-output-tokens", 1024, "每个用例每组的输出 Token 上限")
@@ -37,7 +38,7 @@ func runExperienceEvaluation(args []string) error {
 	if err != nil {
 		return err
 	}
-	provider, err := model.NewResponses(*endpoint, *modelID, os.Getenv(*keyEnv))
+	provider, err := model.NewProvider(*endpoint, *modelID, os.Getenv(*keyEnv), *protocol)
 	if err != nil {
 		return err
 	}
@@ -46,6 +47,9 @@ func runExperienceEvaluation(args []string) error {
 	cfg := work.ExperienceEvaluationConfig{
 		Model: *modelID, ModelBinding: fmt.Sprintf("%x", sha256.Sum256([]byte(*endpoint+"\n"+*modelID))),
 		MaxOutput: *output, RequestTimeout: *timeout,
+	}
+	if *protocol != model.ProtocolResponses {
+		cfg.ModelBinding = fmt.Sprintf("%x", sha256.Sum256([]byte(*protocol+"\n"+*endpoint+"\n"+*modelID)))
 	}
 	report, err := work.EvaluateExperience(ctx, *db, suite, cfg, provider)
 	if err != nil {

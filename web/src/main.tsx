@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { createContext, useContext, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   ArrowDownToLine, ArrowLeft, ArrowUp, Check, ChevronLeft, ChevronRight, CircleAlert, CirclePause, Clock3, FileOutput, FileText,
   FolderOpen, Inbox, Layers3, LayoutList, LoaderCircle, LogOut, Menu, MessageCircle, Plus,
-  Search, Settings2, X, Pause, Play, Square, ListChecks, Bookmark, Plug, History,
+  Search, Settings2, X, Pause, Play, Square, ListChecks, Bookmark, Plug, History, PanelRight,
   Archive, ArchiveRestore, Ellipsis, MessageCircleQuestionMark, Pencil, RotateCcw, ShieldCheck, Trash2, type LucideIcon,
 } from 'lucide-react'
 import { activeRun, api, APIError, awaitingPublication, type Artifact, type Conversation, type ConversationPage, type DeliveryUpdate, type Detail, type Overview, type OverviewGroup, type Receipt, type Material, type Settings, type Task } from './api'
@@ -22,6 +22,10 @@ import { SettingsPage } from './SettingsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
 import { beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft } from './composerDrafts'
 import './styles.css'
+
+if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
+
+const VisionContext = createContext(false)
 
 const time = (value: number) => new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(value)
 const versionTime=new Intl.DateTimeFormat('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'})
@@ -123,6 +127,7 @@ function Workspace({logout}: {logout: () => void}) {
   const appliedSeq=useRef(0)
   const [settings, setSettings] = useState<Settings>()
   const [selected, setSelected] = useState('')
+  const [detailOpen, setDetailOpen] = useState(false)
   const [menu, setMenu] = useState(false)
   const [error, setError] = useState('')
   const [newWork, setNewWork] = useState(false)
@@ -216,11 +221,15 @@ function Workspace({logout}: {logout: () => void}) {
   }
   const tasks = groups ? [...groups.waiting,...groups.active,...groups.completed] : []
   const visibleTasks = isHistory ? historyPage?.items??[] : section === 'tasks' ? tasks.filter(task => task.status !== 'completed') : tasks
-  const focused = visibleTasks.find(task => task.id === selected) || visibleTasks[0]
+  const previewTask = visibleTasks.find(task => task.id === selected) || visibleTasks[0]
+  const focused = detailOpen ? previewTask : undefined
   const isOverview = section === 'home' || (section === 'tasks' && !id)
   function openTask(task: Task) {
     if (matchMedia('(max-width: 1050px)').matches) navigateFromOverview('/tasks/'+task.id)
-    else setSelected(task.id)
+    else {
+      setSelected(task.id)
+      setDetailOpen(true)
+    }
   }
   function onTask(receipt: Receipt) {
     justCreatedTask.current=receipt.task_id
@@ -255,7 +264,7 @@ function Workspace({logout}: {logout: () => void}) {
     { label:'成果', path:'/artifacts', icon:FileText, on:section==='artifacts' },
     { label:'对话', path:'/chat', icon:MessageCircle, on:section==='chat' },
   ]
-  return <div className="workspace">
+  return <VisionContext.Provider value={Boolean(settings?.attributes?.vision && settings.mode !== 'demo' && settings.mode !== 'unconfigured')}><div className={'workspace' + (isOverview && !focused ? ' overview-without-detail' : '')}>
     {menu && <button className="scrim" onClick={() => setMenu(false)} aria-label="关闭导航"/>}
     <aside className={'sidebar ' + (menu ? 'open' : '')}>
       <Brand/>
@@ -277,10 +286,12 @@ function Workspace({logout}: {logout: () => void}) {
     <div className="mobile-header"><button className="icon-button" aria-label="打开导航" onClick={() => setMenu(true)}><Menu size={21}/></button><Brand/><button ref={mobileNewWork} className="icon-button" aria-label="交代一件事" aria-haspopup="dialog" onClick={event=>openNewWork(event.currentTarget)}><Plus size={22}/></button></div>
     {isOverview && <>
       <main className="main overview">
-        <header className="page-heading"><div><h1>{isHistory?'事项历史':section==='tasks' ? '进行中' : scope || '工作总览'}</h1>{!isHistory&&<p>{new Intl.DateTimeFormat('zh-CN',{month:'long',day:'numeric',weekday:'long'}).format(new Date())}</p>}</div>
+        <header className="page-heading"><div className="overview-heading-title"><h1>{isHistory?'事项历史':section==='tasks' ? '进行中' : scope || '工作总览'}</h1>{!isHistory&&<p>{new Intl.DateTimeFormat('zh-CN',{month:'long',day:'numeric',weekday:'long'}).format(new Date())}</p>}</div>
           <div className="overview-actions">
             <label className="search"><Search size={17}/><input aria-label="查找工作" placeholder="查找工作" value={search} onChange={e => setSearch(e.target.value)}/>{search && <button className="icon-button" aria-label="清除搜索" onClick={() => setSearch('')}><X size={14}/></button>}</label>
             <button type="button" className="outline" onClick={()=>openRoute(isHistory?workRoute('/tasks',scope,search):taskHistoryRoute('/tasks',scope,search,''))}>{isHistory?<LayoutList size={16}/>:<History size={16}/>} {isHistory?'进行中':'事项历史'}</button>
+            {previewTask && <button type="button" className="outline overview-detail-toggle" aria-label={focused?'关闭工作详情':'打开工作详情'}
+              title={focused?'关闭工作详情':'打开工作详情'} aria-expanded={Boolean(focused)} onClick={()=>setDetailOpen(!focused)}><PanelRight size={17}/></button>}
           </div>
         </header>
         {isHistory&&<select className="task-status-filter" aria-label="事项状态" value={historyStatus} onChange={event=>openRoute(taskHistoryRoute('/tasks',scope,search,event.target.value))}>
@@ -308,11 +319,11 @@ function Workspace({logout}: {logout: () => void}) {
         </div>}
         {!isHistory&&<Composer draftKey="new:overview" inputRef={compose} placeholder="接下来，需要我帮你做什么？" label="交给助手" initialScope={scope} assign onSend={submitTask}/>}
       </main>
-      <aside className="detail-pane overview-detail">
-        {focused ? <TaskDetail key={focused.id} taskID={focused.id} compact onChange={()=>{void refresh();if(isHistory)void loadHistory()}} navigate={navigateFromOverview}/> : <div className="pane-empty"><FolderOpen size={27}/><p>工作详情</p></div>}
-      </aside>
+      {focused && <aside className="detail-pane overview-detail" aria-label="工作详情">
+        <TaskDetail key={focused.id} taskID={focused.id} compact onChange={()=>{void refresh();if(isHistory)void loadHistory()}} navigate={navigateFromOverview} contextWindow={settings?.effective_context_tokens}/>
+      </aside>}
     </>}
-    {section==='tasks' && id && <TaskDetail key={id} taskID={id} onChange={refresh} navigate={navigate} headingRef={focusNewTaskHeading}
+    {section==='tasks' && id && <TaskDetail key={id} taskID={id} onChange={refresh} navigate={navigate} headingRef={focusNewTaskHeading} contextWindow={settings?.effective_context_tokens}
       historyBack={historyView?taskHistoryRoute('/tasks',scope,search,historyStatus):undefined}
       selectedRun={selectedRun} selectRun={runID=>{
         const next=new URLSearchParams(query)
@@ -326,7 +337,7 @@ function Workspace({logout}: {logout: () => void}) {
     {section==='connections' && <ConnectionsPage selected={id} navigate={navigate}/>}
     {section==='settings' && <SettingsPage onSaved={setSettings}/>}
     {newWork&&<NewWorkDialog scope={scope} send={submitTask} onDismiss={dismissNewWork}/>}
-  </div>
+  </div></VisionContext.Provider>
 }
 
 function NewWorkDialog({scope,send,onDismiss}:{scope:string;send:Parameters<typeof Composer>[0]['onSend'];onDismiss:()=>void}) {
@@ -406,6 +417,7 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<void>
   disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>
 }) {
+  const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
   const readDrafts=draft.reads??(draft.read?[draft.read]:[])
@@ -476,7 +488,7 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
       onChange={e=>edit({text:e.target.value})} readOnly={pending}
       onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>
     <div className="composer-tools">
-      <MaterialPicker selected={materials} disabled={pending||capturing||disabled}
+      <MaterialPicker allowImages={allowImages} selected={materials} disabled={pending||capturing||disabled}
         replacement={task?{enabled:Boolean(draft.replaceMaterials),change:enabled=>edit({replaceMaterials:enabled})}:undefined}
         choose={path=>capture(()=>api<Material>('/attachments/workspace',{path}))}
         upload={file=>capture(()=>{
@@ -570,7 +582,7 @@ function useDetail(path: string | undefined, onChange?: () => void) {
   return {data,live,error,reload,reconnecting:active&&reconnecting}
 }
 
-function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,selectRun,headingRef}:{taskID:string;compact?:boolean;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>}) {
+function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
   const {data,live,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
   const sourceMessage=useMessageAnchor()
   const [actionError,setActionError]=useState('')
@@ -704,7 +716,7 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
       <section className="work-goal"><h2>进展</h2>{inputRequest||<p className="progress-line">{busy?<LoaderCircle size={17} className="spin" aria-hidden="true"/>:<ProgressIcon size={17} aria-hidden="true"/>} {task.reason}</p>}
         {readEvidence}
         {readConfirmation}
-        <UsageDetails current={data.run?.usage} cumulative={data.task_usage} running={busy}/>
+        <UsageDetails current={data.run?.usage} cumulative={data.task_usage} running={busy} contextWindow={contextWindow}/>
         {selectRun && <RunHistory taskID={taskID} latest={data.run} selected={selectedRun??''} select={selectRun}
           revision={task.revision} archived={archived} openArtifact={artifactID=>navigate(artifactRoute(artifactID,task.scope_label,task.id))}/>}
       </section>

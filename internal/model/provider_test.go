@@ -155,3 +155,134 @@ func TestResponsesAdapter(t *testing.T) {
 		})
 	}
 }
+
+func TestModelContextFitsBothProtocols(t *testing.T) {
+	for _, protocol := range []string{ProtocolChat, ProtocolResponses} {
+		t.Run(protocol, func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				text := string(body)
+				for _, required := range []string{"CURRENT_REQUEST", "MATERIAL_CONTENT", "call_budget", "TOOL_RECEIPT", "较早对话节选"} {
+					if !strings.Contains(text, required) {
+						t.Errorf("missing %s", required)
+					}
+				}
+				if strings.Contains(text, strings.Repeat("STALE ", 25)) {
+					t.Error("long historical reply was not compacted")
+				}
+				if protocol == ProtocolChat {
+					io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+				} else {
+					io.WriteString(w, "data: {\"type\":\"response.completed\"}\n\n")
+				}
+			}))
+			defer server.Close()
+			p, err := NewProvider(server.URL+"/v1", "fixture", "", protocol)
+			if err != nil {
+				t.Fatal(err)
+			}
+			window := 2400
+			p.attributes.ContextTokens = &window
+			request, err := conversationRequest([]work.Message{
+				{ID: 1, Role: "user", Text: "earlier question"},
+				{ID: 2, Role: "assistant", Text: strings.Repeat("STALE ", 1000)},
+				{ID: 3, Role: "user", Text: "CURRENT_REQUEST", RequiredInput: true,
+					Materials: []work.Material{{Path: "materials/source.md", Content: "MATERIAL_CONTENT"}}},
+			}, true, 300)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Input = append(request.Input,
+				json.RawMessage(`{"type":"function_call","call_id":"call_budget","name":"read","arguments":"{}"}`),
+				json.RawMessage(`{"type":"function_call_output","call_id":"call_budget","output":"TOOL_RECEIPT"}`))
+			if _, err := p.requestStream(t.Context(), request, nil); err != nil {
+				t.Fatal(err)
+			}
+			required := request.Input[2].(responseMessage)
+			required.Content += strings.Repeat("REQUIRED ", 1000)
+			request.Input[2] = required
+			if _, err := p.requestStream(t.Context(), request, nil); !errors.Is(err, work.ErrModelRequestBudget) {
+				t.Fatalf("expected required input to be rejected, got %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("expected exactly one upstream request, got %d", calls)
+			}
+		})
+	}
+}
+
+func TestDefaultContextCompactsWhenWindowUnknown(t *testing.T) {
+	// Without a configured context window, compaction must still apply the
+	// default 90% threshold rather than only the serialized byte limit.
+	var called atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called.Store(true)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if strings.Contains(string(body), strings.Repeat("ANCIENT ", 60)) {
+			t.Errorf("early history survived without a configured window")
+		}
+		io.WriteString(w, "data: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer server.Close()
+	p, err := NewResponses(server.URL+"/v1", "fixture", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No p.attributes.ContextTokens: rely on the default window.
+	if p.attributes.ContextTokens != nil {
+		t.Fatal("precondition: window should be unknown")
+	}
+	huge := strings.Repeat("ANCIENT ", 40000) // ~280KB, far above DefaultContextTokens
+	request, err := conversationRequest([]work.Message{
+		{ID: 1, Role: "user", Text: "earlier"},
+		{ID: 2, Role: "assistant", Text: huge},
+		{ID: 3, Role: "user", Text: "CURRENT", RequiredInput: true},
+	}, true, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.requestStream(t.Context(), request, nil); err != nil {
+		t.Fatalf("default-window compaction should have delivered the request: %v", err)
+	}
+	if !called.Load() {
+		t.Fatal("request never reached the provider")
+	}
+}
+
+func TestMaxOutputCapAppliesToRequest(t *testing.T) {
+	var sent int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			MaxOutputTokens int `json:"max_output_tokens"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+		}
+		sent = payload.MaxOutputTokens
+		io.WriteString(w, "data: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer server.Close()
+	p, err := NewResponses(server.URL+"/v1", "fixture", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cap := 500
+	p.attributes.MaxOutputTokens = &cap
+	// Ask for more than the model's declared max output; it must be clamped.
+	if _, err := p.Stream(t.Context(), []work.Message{{Role: "user", Text: "hi"}}, false, 4000, nil); err != nil {
+		t.Fatal(err)
+	}
+	if sent != 500 {
+		t.Fatalf("max_output_tokens sent = %d, want clamped to 500", sent)
+	}
+}

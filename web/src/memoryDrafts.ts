@@ -1,3 +1,4 @@
+import {clearDrafts,readDraft,writeDraft} from './draftStorage'
 import type {Memory,MemorySource} from './api'
 
 export type MemoryFields=Pick<Memory,'kind'|'title'|'content'|'pinned'>
@@ -9,7 +10,7 @@ export function readMemoryDraft(key:string):MemoryDraft|undefined {
   const cached=drafts.get(key)
   if(cached)return cached
   try {
-    const raw=sessionStorage.getItem(prefix+key)
+    const raw=readDraft(prefix+key)
     if(!raw)return
     const value=JSON.parse(raw) as MemoryDraft
     const fields=value.fields
@@ -22,20 +23,17 @@ export function readMemoryDraft(key:string):MemoryDraft|undefined {
 
 export function writeMemoryDraft(key:string,value:MemoryDraft) {
   drafts.set(key,value)
-  try {sessionStorage.setItem(prefix+key,JSON.stringify(value))}catch { /* Navigation still retains the in-memory draft. */ }
+  try {writeDraft(prefix+key,JSON.stringify(value))}catch { /* Navigation still retains the in-memory draft. */ }
 }
 
 export function discardMemoryDraft(key:string) {
   drafts.delete(key)
-  try {sessionStorage.removeItem(prefix+key)}catch { /* The in-memory copy is already removed. */ }
+  try {writeDraft(prefix+key,null)}catch { /* The in-memory copy is already removed. */ }
 }
 
 export function clearMemoryDrafts() {
   drafts.clear()
   try {
-    for(let index=sessionStorage.length-1;index>=0;index--) {
-      const key=sessionStorage.key(index)
-      if(key?.startsWith(prefix))sessionStorage.removeItem(key)
-    }
+    clearDrafts(prefix)
   }catch { /* Nothing remains in memory. */ }
 }

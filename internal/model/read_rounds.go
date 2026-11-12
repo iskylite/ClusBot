@@ -9,15 +9,17 @@ import (
 	"clusbot/internal/work"
 )
 
-func (p *Responses) ReadCheckpointIdentity() (string, string) {
-	identity := fmt.Sprintf("%s\n%s\n%d\n%s\n%s", p.endpoint, p.model, p.configRevision, p.credentialBinding, taskReadProtocol)
+func (p *Provider) readProtocol() string { return p.protocol + "/v1" }
+
+func (p *Provider) ReadCheckpointIdentity() (string, string) {
+	identity := fmt.Sprintf("%s\n%s\n%d\n%s\n%s", p.endpoint, p.model, p.configRevision, p.credentialBinding, p.readProtocol())
 	if limit := p.requestByteLimit(); limit != DefaultMaxRequestBytes {
 		identity += fmt.Sprintf("\nmax_request_bytes=%d", limit)
 	}
-	return identity, taskReadProtocol
+	return identity, p.readProtocol()
 }
 
-func (p *Responses) TaskReadTurn(ctx context.Context, input []work.Message, available []work.TaskRead,
+func (p *Provider) TaskReadTurn(ctx context.Context, input []work.Message, available []work.TaskRead,
 	history []work.TaskReadRound, limit int, emit func(string) error) (work.TaskReadTurn, *work.TokenUsage, error) {
 	if len(history) == 0 && len(available) == 1 {
 		call, usage, err := p.PlanTaskRead(ctx, input, limit)
@@ -45,7 +47,7 @@ func (p *Responses) TaskReadTurn(ctx context.Context, input []work.Message, avai
 	usedIDs := make(map[string]bool)
 	for _, round := range history {
 		var output []json.RawMessage
-		if round.Protocol != taskReadProtocol || json.Unmarshal(round.Output, &output) != nil || len(round.Calls) != len(round.Results) {
+		if round.Protocol != p.readProtocol() || json.Unmarshal(round.Output, &output) != nil || len(round.Calls) != len(round.Results) {
 			return work.TaskReadTurn{}, nil, work.ErrReadModelCall
 		}
 		for _, item := range output {
@@ -88,7 +90,7 @@ func (p *Responses) TaskReadTurn(ctx context.Context, input []work.Message, avai
 	if err != nil {
 		return work.TaskReadTurn{}, usage, err
 	}
-	return work.TaskReadTurn{Protocol: taskReadProtocol, Output: output, Calls: calls}, usage, nil
+	return work.TaskReadTurn{Protocol: p.readProtocol(), Output: output, Calls: calls}, usage, nil
 }
 
 func selectedReadDefinition(read work.TaskRead) responseFunction {

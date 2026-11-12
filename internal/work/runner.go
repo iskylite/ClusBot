@@ -537,6 +537,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			reason, accounting.errorCode = "模型请求超时，请继续工作或补充要求后重试", "model_timeout"
 		case errors.Is(err, ErrOutputBudget):
 			reason, accounting.errorCode = "已达到输出上限，请缩小本轮交付范围后重试", "output_budget"
+		case errors.Is(err, ErrImageUnsupported):
+			reason, accounting.errorCode = ErrImageUnsupported.Error(), "model_image_unsupported"
 		case errors.Is(err, ErrModelRequestBudget):
 			reason, accounting.errorCode = "本轮模型请求超过输入上限，请缩小委托范围或调整输入上限", "model_input_budget"
 		case errors.Is(err, errReadOutputBudget):

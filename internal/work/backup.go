@@ -380,8 +380,10 @@ func loadBackupManifest(source *os.Root) (backupManifest, error) {
 	if manifest.Version != 1 || len(manifest.Files) > 10000 || len(manifest.WorkspaceID) != 64 {
 		return manifest, errors.New("不支持的备份清单")
 	}
-	if err = requireDatabaseVersion(manifest.Schema); err != nil {
-		return manifest, err
+	if manifest.Schema != modelProtocolMigrationFrom && manifest.Schema != modelKeyMigrationFrom {
+		if err = requireDatabaseVersion(manifest.Schema); err != nil {
+			return manifest, err
+		}
 	}
 	seen := map[string]bool{}
 	for _, file := range manifest.Files {

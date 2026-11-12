@@ -62,6 +62,26 @@ func (s Server) uploadMaterial(w http.ResponseWriter, r *http.Request) {
 		uploadReadError(w, err)
 		return
 	}
+	contentType := http.DetectContentType(body)
+	if contentType == "image/png" || contentType == "image/jpeg" {
+		settings, err := s.Settings.View(r.Context())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if settings.Mode == "demo" || settings.Mode == "unconfigured" ||
+			settings.Attributes == nil || settings.Attributes.Vision == nil || !*settings.Attributes.Vision {
+			writeError(w, work.ErrImageUnsupported)
+			return
+		}
+		material, err := s.Store.UploadImage(r.Context(), disposition["filename"], body)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		jsonResponse(w, 201, material)
+		return
+	}
 	material, err := s.Store.UploadMaterial(r.Context(), disposition["filename"], body)
 	if err != nil {
 		writeError(w, err)

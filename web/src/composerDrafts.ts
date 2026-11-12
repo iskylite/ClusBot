@@ -1,3 +1,4 @@
+import {clearDrafts,readDraft,writeDraft} from './draftStorage'
 import {useCallback,useSyncExternalStore} from 'react'
 import type {DeliveryUpdate,Material} from './api'
 import type {ReadDraft} from './TaskRead'
@@ -25,7 +26,7 @@ function read(key:string):Draft {
   if(cached)return cached
   let draft=empty
   try {
-    const raw=sessionStorage.getItem(prefix+key)
+    const raw=readDraft(prefix+key)
     if(raw) {
       const parsed=JSON.parse(raw) as Draft
       if(typeof parsed.text==='string' && Array.isArray(parsed.materials))draft=parsed
@@ -38,8 +39,8 @@ function read(key:string):Draft {
 function write(key:string,draft:Draft) {
   drafts.set(key,draft)
   try {
-    if(draft===empty)sessionStorage.removeItem(prefix+key)
-    else sessionStorage.setItem(prefix+key,JSON.stringify(draft))
+    if(draft===empty)writeDraft(prefix+key,null)
+    else writeDraft(prefix+key,JSON.stringify(draft))
   } catch { /* Keep the in-memory copy when storage is unavailable. */ }
   listeners.get(key)?.forEach(listener=>listener())
 }
@@ -88,10 +89,7 @@ export function clearComposerDrafts() {
   generation++
   drafts.clear()
   try {
-    for(let i=sessionStorage.length-1;i>=0;i--) {
-      const key=sessionStorage.key(i)
-      if(key?.startsWith(prefix))sessionStorage.removeItem(key)
-    }
+    clearDrafts(prefix)
   } catch { /* In-memory drafts are already cleared. */ }
   listeners.forEach(subscribers=>subscribers.forEach(listener=>listener()))
 }

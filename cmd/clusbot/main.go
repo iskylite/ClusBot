@@ -72,6 +72,7 @@ func run() error {
 	listen := flags.String("listen", "", "覆盖监听地址")
 	dataDir := flags.String("data-dir", "", "覆盖数据目录")
 	workspaceRoot := flags.String("workspace-root", "", "工作区目录")
+	printURL := flags.Bool("print-url", false, "服务就绪后向标准输出写入本机 URL")
 	demo := flags.Bool("demo", false, "启用本地演示回复")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -82,6 +83,7 @@ func run() error {
 	var cfg config
 	cfg.Server.Listen = "127.0.0.1:8080"
 	cfg.DataDir = "./data"
+	cfg.Model.Provider = model.ProtocolChat
 	cfg.Model.BaseURL = "https://api.openai.com/v1"
 	cfg.Model.KeyRef = "env:CLUSBOT_MODEL_API_KEY"
 	cfg.Runtime.MaxActiveRuns = 2
@@ -143,8 +145,8 @@ func run() error {
 		return errors.New("需要数据目录")
 	}
 
-	if cfg.Model.Provider != "" && cfg.Model.Provider != "responses" {
-		return errors.New("支持 responses 模型协议")
+	if cfg.Model.Provider != "" && cfg.Model.Provider != model.ProtocolResponses && cfg.Model.Provider != model.ProtocolChat {
+		return errors.New("模型协议必须为 responses 或 chat_completions")
 	}
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err
@@ -172,7 +174,7 @@ func run() error {
 		MaxRequestBytes: cfg.Runtime.MaxModelRequestBytes,
 	}
 	initial, err := settings.Initialize(context.Background(), work.ModelSettings{
-		BaseURL: cfg.Model.BaseURL, ModelID: cfg.Model.ID, KeyRef: cfg.Model.KeyRef,
+		Protocol: cfg.Model.Provider, BaseURL: cfg.Model.BaseURL, ModelID: cfg.Model.ID, KeyRef: cfg.Model.KeyRef,
 	})
 	if err != nil {
 		return err
@@ -227,6 +229,9 @@ func run() error {
 	approvalWorker := db.StartApprovalWorker(ctx)
 	tokenPath, _ = filepath.Abs(tokenPath)
 	slog.Info("ClusBot 已启动", "url", "http://"+address, "token_file", tokenPath, "model_mode", initial.Mode)
+	if *printURL {
+		fmt.Println("http://" + address)
+	}
 	select {
 	case <-ctx.Done():
 	case serveErr = <-done:

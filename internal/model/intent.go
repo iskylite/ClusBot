@@ -57,7 +57,7 @@ func (s *Settings) ClassifyDelegation(ctx context.Context, text string, history 
 }
 
 func (s *Settings) classify(ctx context.Context, text string, history []work.Message, candidates []work.RouteCandidate, limit int, routing bool) (work.DelegationResult, error) {
-	provider, err := s.responses(ctx)
+	provider, err := s.provider(ctx)
 	if err != nil {
 		return work.DelegationResult{}, errors.New("无法读取分类模型设置，请检查模型连接后重新发送")
 	}

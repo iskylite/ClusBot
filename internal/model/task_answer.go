@@ -12,7 +12,7 @@ import (
 const inputRequestFunction = "ask_user_for_input"
 const taskInputInstructions = " 先用当前要求、对话和材料完成工作。不要请求用户确认是否开始或复述已经给出的要求。仅当缺少无法从现有信息取得的必要事实或决定时，调用 ask_user_for_input 提出一个具体问题并结束本轮。不要用普通回复代替必要追问，也不要同时生成成果和发起追问。"
 
-func (p *Responses) StreamTaskAnswer(ctx context.Context, messages []work.Message, limit int, emit func(string) error) (work.TaskAnswer, error) {
+func (p *Provider) StreamTaskAnswer(ctx context.Context, messages []work.Message, limit int, emit func(string) error) (work.TaskAnswer, error) {
 	request, err := conversationRequest(messages, true, limit)
 	if err != nil {
 		return work.TaskAnswer{}, err
@@ -20,7 +20,7 @@ func (p *Responses) StreamTaskAnswer(ctx context.Context, messages []work.Messag
 	return p.requestTaskAnswer(ctx, request, emit)
 }
 
-func (p *Responses) requestTaskAnswer(ctx context.Context, request responseRequest, emit func(string) error) (work.TaskAnswer, error) {
+func (p *Provider) requestTaskAnswer(ctx context.Context, request responseRequest, emit func(string) error) (work.TaskAnswer, error) {
 	request.Instructions += taskInputInstructions
 	request.Tools = []responseFunction{inputRequestDefinition()}
 	allowPlan := work.WorkerCanPlan(ctx)

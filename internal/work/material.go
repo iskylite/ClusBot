@@ -1,10 +1,15 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -131,6 +136,39 @@ type materialWriter interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// Image snapshots share material identity and retention with text snapshots.
+func (m Material) ImageURL() string {
+	if strings.HasPrefix(m.Path, "images/") {
+		return m.Content
+	}
+	return ""
+}
+
+func (s *Store) UploadImage(ctx context.Context, name string, data []byte) (Material, error) {
+	if !safeFilename(name) {
+		return Material{}, ErrImageFormat
+	}
+	if len(data) > 256*1024 {
+		return Material{}, ErrImageSize
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil || (format != "png" && format != "jpeg") ||
+		config.Width <= 0 || config.Height <= 0 || config.Width > 4096 || config.Height > 4096 {
+		return Material{}, ErrImageFormat
+	}
+	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+		return Material{}, ErrImageFormat
+	}
+	content := "data:image/" + format + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return saveMaterial(ctx, s.db, "images/"+name, []byte(content), nil)
+}
+
+var (
+	ErrImageSize        = errors.New("图片不能超过 256 KiB")
+	ErrImageFormat      = errors.New("请选择有效的 PNG 或 JPEG 图片，宽高各不超过 4096 像素")
+	ErrImageUnsupported = errors.New("当前模型未启用图片输入")
+)
+
 func saveMaterial(ctx context.Context, q materialWriter, path string, data []byte, upload *UploadPart) (Material, error) {
 	m := Material{ID: id(), Path: path, Digest: digest(string(data)), Size: len(data), CapturedAt: now(), Upload: upload}
 	var uploadID, part any
@@ -225,7 +263,9 @@ WHERE conversation_id=? AND (
 	const maxContextBytes = 256 * 1024
 	used := 0
 	for _, material := range materials {
-		used += len(material.Content)
+		if material.ImageURL() == "" {
+			used += len(material.Content)
+		}
 	}
 	for _, item := range items[firstRequired:] {
 		used += len(item.Text)

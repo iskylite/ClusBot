@@ -5,7 +5,7 @@ import type {ExecutionUsage,MemoryRef,Message} from './api'
 
 const usageNumber = new Intl.NumberFormat('zh-CN', {maximumFractionDigits:1})
 
-export function UsageDetails({current,cumulative,running,title='执行用量'}:{current?:ExecutionUsage;cumulative?:ExecutionUsage;running:boolean;title?:string}) {
+export function UsageDetails({current,cumulative,running,contextWindow,title='执行用量'}:{current?:ExecutionUsage;cumulative?:ExecutionUsage;running:boolean;contextWindow?:number;title?:string}) {
   if(!current?.model_requests && !current?.active_ms && !cumulative?.model_requests && !cumulative?.untracked_runs) return null
   function usageRow(label:string, usage:ExecutionUsage) {
     const duration=usage.active_ms<1000 ? `${usage.active_ms} 毫秒` : `${usageNumber.format(usage.active_ms/1000)} 秒`
@@ -23,7 +23,31 @@ export function UsageDetails({current,cumulative,running,title='执行用量'}:{
     <summary><Gauge size={16}/>{title}</summary>
     {current && usageRow('本轮',current)}
     {cumulative && usageRow('事项累计',cumulative)}
+    {contextWindow && contextWindow>0 && current?.last_input_tokens!=null && <ContextUsageBar used={current.last_input_tokens} window={contextWindow}/>}
   </details>
+}
+
+// ContextUsageBar shows how close the last request's input is to the context
+// window, with a marker at the 90% threshold where the backend auto-compacts
+// older history. The window shown is the one compaction actually enforces
+// (configured value, or the default when unknown).
+const COMPACTION_THRESHOLD=0.9
+function ContextUsageBar({used,window}:{used:number;window:number}) {
+  const ratio=used/window
+  const percent=ratio<0.01 ? '<1%' : `${usageNumber.format(Math.min(ratio,9.99)*100)}%`
+  const atLimit=ratio>=COMPACTION_THRESHOLD
+  return <div className={'context-usage'+(atLimit?' at-limit':'')}>
+    <div className="context-usage-head">
+      <span>上下文占用</span>
+      <span>{percent} · {usageNumber.format(used)} / {usageNumber.format(window)} Token</span>
+    </div>
+    <div className="context-usage-track" role="progressbar" aria-valuenow={Math.round(Math.min(ratio,1)*100)} aria-valuemin={0} aria-valuemax={100}
+      aria-label={`上下文占用 ${percent}，${atLimit?'已达压缩阈值':'压缩阈值 90%'}`}>
+      <div className="context-usage-fill" style={{width:`${Math.min(ratio,1)*100}%`}}/>
+      <div className="context-usage-mark" style={{left:`${COMPACTION_THRESHOLD*100}%`}}/>
+    </div>
+    <small>{atLimit?'已达 90%，较早对话将在下次请求时自动压缩':'到 90% 自动压缩较早对话'}</small>
+  </div>
 }
 
 export function FormattedText({text, framed=false}:{text:string;framed?:boolean}) {

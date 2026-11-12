@@ -26,6 +26,7 @@
 
 # Local design artifacts and macOS metadata
 /.oil-ui/
+/.claude/
 .DS_Store
 
 # Local research archives, review evidence, and Python caches

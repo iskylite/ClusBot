@@ -23,7 +23,10 @@ import (
 //go:embed schema.sql
 var schema string
 
-const databaseSchemaVersion = 43
+const databaseSchemaVersion = 46
+const modelProtocolMigrationFrom = 43
+const modelKeyMigrationFrom = 44
+const lastInputTokensMigrationFrom = 45
 
 var (
 	ErrConflict        = errors.New("请求标识已用于其他内容")
@@ -188,17 +191,44 @@ func initializeDatabase(db *sql.DB) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version != 0 {
-		return requireDatabaseVersion(version)
+	if version == modelProtocolMigrationFrom {
+		if _, err = tx.Exec(`ALTER TABLE model_settings ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses' CHECK (protocol IN ('responses', 'chat_completions'))`); err != nil {
+			return err
+		}
+		version = modelKeyMigrationFrom
 	}
-	var empty bool
-	if err := tx.QueryRow("SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&empty); err != nil {
-		return err
+	if version == modelKeyMigrationFrom {
+		if _, err = tx.Exec(`ALTER TABLE model_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		version = lastInputTokensMigrationFrom
 	}
-	if !empty {
-		return requireDatabaseVersion(version)
+	if version == lastInputTokensMigrationFrom {
+		if _, err = tx.Exec(`ALTER TABLE runs ADD COLUMN last_input_tokens INTEGER`); err != nil {
+			return err
+		}
+	} else {
+		if version == databaseSchemaVersion {
+			if _, err := tx.Exec(modelAttributesSchema); err != nil {
+				return err
+			}
+			return tx.Commit()
+		}
+		if version != 0 {
+			return requireDatabaseVersion(version)
+		}
+		var empty bool
+		if err := tx.QueryRow("SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&empty); err != nil {
+			return err
+		}
+		if !empty {
+			return requireDatabaseVersion(version)
+		}
+		if _, err := tx.Exec(schema); err != nil {
+			return err
+		}
 	}
-	if _, err := tx.Exec(schema); err != nil {
+	if _, err := tx.Exec(modelAttributesSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
@@ -277,7 +307,7 @@ func addEvent(tx *sql.Tx, runID, kind string, data any) error {
 	return err
 }
 
-const runColumns = "id,conversation_id,coalesce(task_id,''),status,response,error,error_code,usage_tracked,model_requests,reported_requests,active_ms,time_partial,input_tokens,output_tokens,execution_generation,admission_output_used"
+const runColumns = "id,conversation_id,coalesce(task_id,''),status,response,error,error_code,usage_tracked,model_requests,reported_requests,active_ms,time_partial,input_tokens,output_tokens,last_input_tokens,execution_generation,admission_output_used"
 const taskColumns = "id,conversation_id,title,goal,scope_label,acceptance_criteria,required_filename,status,status_reason,reason,state_changed_at,revision,updated_at,completed_at,requirements_changed,priority"
 
 type scanner interface{ Scan(...any) error }
@@ -288,7 +318,7 @@ func scanRun(row scanner) (Run, error) {
 	var usage ExecutionUsage
 	var reported int
 	err := row.Scan(&r.ID, &r.ConversationID, &r.TaskID, &r.Status, &r.Response, &r.Error, &r.ErrorCode,
-		&tracked, &usage.ModelRequests, &reported, &usage.ActiveMS, &usage.TimePartial, &usage.InputTokens, &usage.OutputTokens, &r.Generation, &r.admissionOutput)
+		&tracked, &usage.ModelRequests, &reported, &usage.ActiveMS, &usage.TimePartial, &usage.InputTokens, &usage.OutputTokens, &usage.LastInputTokens, &r.Generation, &r.admissionOutput)
 	if tracked {
 		usage.UnreportedRequests = usage.ModelRequests - reported
 		r.Usage = &usage
