@@ -1,0 +1,306 @@
+package work
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+	"unicode/utf8"
+)
+
+const (
+	MaxMaterials     = 4
+	maxMaterialBytes = 32 * 1024
+)
+
+var (
+	ErrMaterial          = errors.New("请选择 materials 内不超过 32 KiB 的 UTF-8 文本或 Markdown 文件")
+	ErrMaterialsChanged  = errors.New("材料目录或文件已变更，请重新选择")
+	ErrMaterialSelection = errors.New("每次最多选择四份有效且不重复的材料")
+)
+
+type Material struct {
+	ID         string      `json:"id"`
+	Path       string      `json:"path"`
+	Digest     string      `json:"sha256"`
+	Size       int         `json:"size"`
+	CapturedAt int64       `json:"captured_at"`
+	Content    string      `json:"-"`
+	Upload     *UploadPart `json:"upload,omitempty"`
+}
+
+type MaterialFile struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+func (s *Store) MaterialFiles(query string) ([]MaterialFile, error) {
+	if !s.materials.valid() {
+		return nil, ErrMaterialsChanged
+	}
+	dir, err := s.materials.root.Open(".")
+	if err != nil {
+		return nil, ErrMaterialsChanged
+	}
+	defer dir.Close()
+
+	result := []MaterialFile{}
+	query = strings.ToLower(strings.TrimSpace(query))
+	// Limit directory scanning as well as the response size.
+	for scanned := 0; scanned < 4096 && len(result) < 100; {
+		entries, readErr := dir.ReadDir(128)
+		for _, entry := range entries {
+			scanned++
+			if !validFilename(entry.Name()) || !entry.Type().IsRegular() || !strings.Contains(strings.ToLower(entry.Name()), query) {
+				continue
+			}
+			info, err := entry.Info()
+			if err == nil && materialInfo(info) {
+				result = append(result, MaterialFile{Path: "materials/" + entry.Name(), Size: info.Size()})
+				if len(result) == 100 {
+					break
+				}
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+		if readErr != nil {
+			return nil, ErrMaterialsChanged
+		}
+	}
+	slices.SortFunc(result, func(a, b MaterialFile) int { return strings.Compare(a.Path, b.Path) })
+	return result, nil
+}
+
+func materialInfo(info os.FileInfo) bool {
+	return info.Mode().IsRegular() && info.Size() > 0 && info.Size() <= maxMaterialBytes && info.Sys().(*syscall.Stat_t).Nlink == 1
+}
+
+func (s *Store) CaptureMaterial(ctx context.Context, path string) (Material, error) {
+	data, err := s.readMaterial(path)
+	if err != nil {
+		return Material{}, err
+	}
+	return saveMaterial(ctx, s.db, path, data, nil)
+}
+
+func (s *Store) readMaterial(path string) ([]byte, error) {
+	name, ok := strings.CutPrefix(path, "materials/")
+	if !ok || !validFilename(name) || filepath.Base(name) != name {
+		return nil, ErrMaterial
+	}
+	root := s.materials
+	if !root.valid() {
+		return nil, ErrMaterialsChanged
+	}
+	before, err := root.root.Lstat(name)
+	if err != nil || !materialInfo(before) {
+		return nil, ErrMaterial
+	}
+	f, err := root.root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, ErrMaterialsChanged
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !materialInfo(opened) || !os.SameFile(before, opened) {
+		return nil, ErrMaterialsChanged
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxMaterialBytes+1))
+	if err != nil || len(data) == 0 || len(data) > maxMaterialBytes || !utf8.Valid(data) || slices.Contains(data, 0) {
+		return nil, ErrMaterial
+	}
+	after, err := f.Stat()
+	current, pathErr := root.root.Lstat(name)
+	if err != nil || pathErr != nil || !root.valid() || !materialInfo(current) || !os.SameFile(current, opened) ||
+		after.Size() != int64(len(data)) || !after.ModTime().Equal(opened.ModTime()) {
+		return nil, ErrMaterialsChanged
+	}
+	return data, nil
+}
+
+type materialWriter interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func saveMaterial(ctx context.Context, q materialWriter, path string, data []byte, upload *UploadPart) (Material, error) {
+	m := Material{ID: id(), Path: path, Digest: digest(string(data)), Size: len(data), CapturedAt: now(), Upload: upload}
+	var uploadID, part any
+	if upload != nil {
+		uploadID, part = upload.ID, upload.Part
+	}
+	_, err := q.ExecContext(ctx, `INSERT INTO materials(id,path,sha256,content,captured_at,upload_id,upload_part) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(path,sha256) DO NOTHING`, m.ID, path, m.Digest, string(data), m.CapturedAt, uploadID, part)
+	if err != nil {
+		return Material{}, err
+	}
+	err = q.QueryRowContext(ctx, "SELECT id,captured_at FROM materials WHERE path=? AND sha256=?", path, m.Digest).Scan(&m.ID, &m.CapturedAt)
+	return m, err
+}
+
+func attachMaterials(tx *sql.Tx, seq int64, ids []string) error {
+	if len(ids) > MaxMaterials {
+		return ErrMaterialSelection
+	}
+	seen := map[string]bool{}
+	for ordinal, key := range ids {
+		if seen[key] {
+			return ErrMaterialSelection
+		}
+		seen[key] = true
+		res, err := tx.Exec(`INSERT INTO message_materials(message_seq,material_id,ordinal)
+SELECT ?,id,? FROM materials WHERE id=?`, seq, ordinal, key)
+		if err != nil {
+			return err
+		}
+		count, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return ErrMaterialSelection
+		}
+	}
+	return nil
+}
+
+func (s *Store) modelMessages(ctx context.Context, conversationID string) ([]Message, error) {
+	return s.modelMessagesForRun(ctx, conversationID, "")
+}
+
+func (s *Store) modelMessagesForRun(ctx context.Context, conversationID, runID string) ([]Message, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	items, err := queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages
+WHERE conversation_id=? AND (
+  seq IN (SELECT seq FROM messages WHERE conversation_id=? AND run_id NOT IN
+    (SELECT id FROM runs WHERE memory_command=1) ORDER BY seq DESC LIMIT 50)
+  OR seq IN (SELECT message_seq FROM input_deliveries WHERE run_id=? AND generation=?
+    EXCEPT SELECT message_seq FROM input_dispositions)
+)`, conversationID, conversationID, runID, executionGeneration(ctx))
+	if err != nil {
+		return nil, err
+	}
+	// Material selection is persisted in message_materials. Resolve it from the
+	// entire conversation before applying either of the history display limits.
+	materials, err := activeMaterials(ctx, tx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	lastUser := -1
+	for i := range items {
+		if items[i].Incomplete {
+			items[i].Text = "[上一条回复已被用户停止，以下只是未完成的片段]\n" + items[i].Text
+		}
+		if items[i].Role == "user" {
+			lastUser = i
+		}
+	}
+	if lastUser < 0 {
+		return nil, errors.New("run has no user message")
+	}
+	pending, err := pendingInputs(tx, runID, executionGeneration(ctx))
+	if err != nil {
+		return nil, err
+	}
+	firstRequired := lastUser
+	for i := range items {
+		if pending[items[i].ID] {
+			items[i].RequiredInput = true
+			firstRequired = min(firstRequired, i)
+		}
+	}
+	// Reserve the required active set before deciding how much history fits.
+	const maxContextBytes = 256 * 1024
+	used := 0
+	for _, material := range materials {
+		used += len(material.Content)
+	}
+	for _, item := range items[firstRequired:] {
+		used += len(item.Text)
+	}
+	if used > maxContextBytes {
+		return nil, ErrModelRequestBudget
+	}
+	first := firstRequired
+	for i := firstRequired - 1; i >= 0; i-- {
+		if len(items[i].Text) > maxContextBytes-used {
+			break
+		}
+		first, used = i, used+len(items[i].Text)
+	}
+	if first < lastUser && items[first].Role == "assistant" {
+		first++
+	}
+	// Preserve existing material positions/metadata when their source message
+	// survives, keeping existing checkpoint context identities stable. Missing
+	// sources are carried on the required input instead of silently discarded.
+	active := make(map[string]Material, len(materials))
+	for _, material := range materials {
+		active[material.ID] = material
+	}
+	loaded := make(map[string]bool, len(materials))
+	for i := len(items) - 1; i >= first; i-- {
+		for j := range items[i].Materials {
+			material := &items[i].Materials[j]
+			if snapshot, ok := active[material.ID]; ok && !loaded[material.ID] {
+				material.Content = snapshot.Content
+				loaded[material.ID] = true
+			}
+		}
+	}
+	for _, material := range materials {
+		if !loaded[material.ID] {
+			items[lastUser].Materials = append(items[lastUser].Materials, material)
+		}
+	}
+	return items[first:], tx.Commit()
+}
+
+func activeMaterials(ctx context.Context, tx *sql.Tx, conversationID string) ([]Material, error) {
+	rows, err := tx.QueryContext(ctx, `WITH active AS (
+SELECT refs.material_id,max(msg.seq) AS latest_seq
+FROM message_materials refs JOIN messages msg ON msg.seq=refs.message_seq
+WHERE msg.conversation_id=? AND msg.seq >= coalesce((
+ SELECT max(seq) FROM messages WHERE conversation_id=? AND replace_materials=1),0)
+GROUP BY refs.material_id)
+SELECT m.id,m.path,m.sha256,m.content,m.captured_at,
+CASE WHEN u.id IS NULL THEN 'null' ELSE json_object('id',u.id,'name',u.name,'sha256',u.sha256,
+ 'bytes',u.size,'part',m.upload_part,'parts',u.parts) END
+FROM active JOIN materials m ON m.id=active.material_id
+JOIN message_materials refs ON refs.message_seq=active.latest_seq AND refs.material_id=m.id
+LEFT JOIN uploads u ON u.id=m.upload_id
+ORDER BY active.latest_seq DESC,refs.ordinal LIMIT ?`, conversationID, conversationID, MaxMaterials)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var materials []Material
+	for rows.Next() {
+		var material Material
+		var upload string
+		if err = rows.Scan(&material.ID, &material.Path, &material.Digest, &material.Content, &material.CapturedAt, &upload); err != nil {
+			return nil, err
+		}
+		if digest(material.Content) != material.Digest {
+			return nil, errors.New("material snapshot checksum mismatch")
+		}
+		if err = json.Unmarshal([]byte(upload), &material.Upload); err != nil {
+			return nil, err
+		}
+		material.Size = len(material.Content)
+		materials = append(materials, material)
+	}
+	return materials, rows.Err()
+}

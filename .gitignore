@@ -1,0 +1,33 @@
+# Go binaries, test executables, and coverage
+/bin/
+/clusbot
+/clusbot.exe
+*.test
+/coverage.out
+/coverage.html
+
+# npm, Vite, and TypeScript
+/web/node_modules/
+/web/dist/
+/web/npm-debug.log*
+/web/.env.local
+/web/.env.*.local
+/web/**/*.tsbuildinfo
+
+# Local configuration, runtime data, and backups
+/configs/local.yaml
+/data/
+/data-restored/
+/clusbot-backup/
+/.archive/
+
+# Release archives
+/dist/
+
+# Local design artifacts and macOS metadata
+/.oil-ui/
+.DS_Store
+
+# Local browser review logs and Python caches in research tooling
+/docs/Research/**/review*-browser.log
+/docs/Research/**/__pycache__/

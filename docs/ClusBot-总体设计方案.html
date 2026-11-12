@@ -1,0 +1,2253 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ClusBot 总体设计方案</title><style>*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:#233b45;background:#f7f9f8;font:16px/1.85 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif}a{color:#246b67;text-underline-offset:3px}header{border-bottom:1px solid #dce5e2;background:#fff;padding:22px max(24px,calc((100vw - 1240px)/2))}header a{margin-right:20px}main{max-width:1240px;margin:0 auto;padding:36px 28px 80px}h1{font-size:38px;line-height:1.35;margin:12px 0 26px}h2{font-size:27px;margin:58px 0 18px;padding-top:14px;border-top:1px solid #d4e0dc}h3{font-size:21px;margin:32px 0 12px}p{margin:14px 0}table{border-collapse:collapse;width:100%;margin:22px 0;font-size:15px;background:white}th,td{padding:13px 16px;border:1px solid #d9e3df;text-align:left;vertical-align:top}th{background:#eaf1ee;font-weight:650}img{max-width:100%;height:auto;display:block;background:white}figure{margin:22px 0}figcaption{margin:10px 0;color:#48646d}pre{background:#edf1ef;padding:18px;overflow:auto}code{font:14px/1.6 ui-monospace,monospace}details{background:#eef3f1;padding:14px 20px;border-radius:8px;margin:20px 0}summary{cursor:pointer;font-weight:600}.toc{columns:2;list-style:none;padding-left:0}.toc li{margin:5px 0;break-inside:avoid}.table-scroll{overflow:auto}.caption{color:#536b72;font-size:14px}.gallery{display:grid;grid-template-columns:1fr 1fr;gap:28px}.gallery article{background:white;border:1px solid #dbe5e1;padding:18px;border-radius:10px}.gallery h2{font-size:22px;margin:0 0 12px;border:0;padding:0}.gallery img{width:100%;height:330px;object-fit:contain;object-position:top}.gallery a{margin-right:14px}.paper{padding:8px 0 26px}.paper img{border:1px solid #e2e8e5}@media(max-width:700px){main{padding:24px 18px 60px}h1{font-size:30px}h2{font-size:23px}.toc{columns:1}header{padding:16px 18px}.gallery{grid-template-columns:1fr}table{min-width:680px}.gallery img{height:280px}}@media print{header,details{display:none}body{background:white}main{max-width:none;padding:0}h2{break-after:avoid}table,figure{break-inside:avoid}}
+main{max-width:1360px}h2,h3,h4{scroll-margin-top:24px}h4{font-size:18px;margin:28px 0 10px}.toc{columns:2}figure{margin:28px 0}figcaption{font-size:20px;font-weight:650;margin:12px 0}.table-scroll td{min-width:110px}.toc li{line-height:1.65;padding:4px 0}#architecture-v2,#runtime-detail{background:#fff;padding:18px;border:1px solid #dce5e2;border-radius:8px}</style></head><body><header><a href="Research/Personal-Agent-设计方案与取舍.md">Markdown 正文</a><a href="#architecture-v2">总体架构 V2</a><a href="#runtime-detail">工作运行时 V2</a></header><main><h1>ClusBot 总体设计方案</h1><details open><summary>目录</summary><ul class="toc"><li><a href="#1-设计目标与系统边界">1 设计目标与系统边界</a></li><li><a href="#2-总体结构与组件职责">2 总体结构与组件职责</a></li><li><a href="#3-统一工作模型">3 统一工作模型</a></li><li><a href="#4-统一资源与证据模型">4 统一资源与证据模型</a></li><li><a href="#5-任务执行与持续运行">5 任务执行与持续运行</a></li><li><a href="#6-持久上下文与长期知识">6 持久上下文与长期知识</a></li><li><a href="#7-能力执行-skills-与授权">7 能力执行 Skills 与授权</a></li><li><a href="#8-集群交付与运维设计">8 集群交付与运维设计</a></li><li><a href="#9-设计验证与后续细化">9 设计验证与后续细化</a></li><li><a href="#附录-研究依据与设计决策">附录 研究依据与设计决策</a></li></ul></details>
+<p>更新：2026-11-12。本文是 ClusBot 唯一的总体设计正文，<a href="ClusBot-总体设计方案.html">HTML 阅读页</a>由同一正文生成。Personal Agent 内部、集群运维流、资源与证据、持久上下文与记忆、外部感知、工具治理及模块协作统一在本文说明。</p>
+<p>架构以指定会话最终更新的<a href="Research/ClusBot-分区协作架构图-V2.svg">总体架构 V2</a>和<a href="Research/ClusBot-工作运行时内部设计图-V2.svg">工作运行时 V2</a>为基准。论文机制细化已有模块内部职责，不另起一套分层，也不重画架构图。本文描述目标架构与设计约束；当前交付范围以工程说明和首期验收为准。</p>
+<p>ClusBot 是面向用户持续承担工作的 Personal Agent。它以用户目标为起点，通过 Router 与 Worker 两层 Agent 组织工作，由持久运行时、统一资源模型、上下文与知识机制、受控执行能力共同完成任务。集群交付与运维是其首个完整领域：用户可以委托节点交付、集群健康维护和故障处置，也可以随时交流、调整要求、查询进展与查看成果。</p>
+<p>本设计确定 ClusBot 的系统边界、逻辑组成、核心数据、运行机制和运维领域规则之间的关系，作为后续架构图、技术方案图与时序图的共同依据。Go、React、SQLite 和本机工作区已在 Personal Agent 落地；具体集群适配器、生产参数和部署扩展仍须结合实际环境确定。</p>
+<h2 id="1-设计目标与系统边界">1 设计目标与系统边界</h2>
+<h3 id="产品目标">产品目标</h3>
+<p>用户向 ClusBot 交代的是希望达成或持续维持的结果。系统需要将要求转化为有责任归属、执行依据和完成标准的工作，并在用户离开对话后继续推进。遇到等待时保存状态，遇到变化时重新判断，遇到需要用户决定的问题时给出具体选项，完成后提供可追溯的结果。</p>
+<p>集群场景覆盖资产发现、OS 部署、带内带外配置、单节点基准测试、联机测试、验收和交付；交付后继续承担监控、故障处理、自愈、工单协作、资源分派与业务调度状态维护。报告、外部应用连接、经验整理和工作主页服务于同一组目标与工作记录。</p>
+<p>由此形成五项核心要求：</p>
+<ul>
+<li>多项工作能够独立推进，用户仍可与同一个 Personal Agent 持续交流。</li>
+<li>长流程能够跨等待、重启和执行者更换继续，已发生的外部动作可核对。</li>
+<li>当前资源事实、任务状态和历史经验各有权威来源，重要结论能够追溯到证据。</li>
+<li>对话、监控事件、周期触发和页面操作遵守相同的工作归属与执行规则。</li>
+<li>反馈可以改变在途工作；经验可以改善后续判断；可复用方法的变更经过用户确认。</li>
+</ul>
+<h3 id="系统内外的责任">系统内外的责任</h3>
+<p>ClusBot 内部负责用户关系、目标与任务、Agent 协作、执行计划、操作记录、上下文装配、知识维护、能力治理，以及运维领域的状态解释与控制规则。Personal Agent 包括这些组成部分；Router 和 Worker 是其中承担认知判断的两层 Agent。</p>
+<p>设备、BMC、OS 部署系统、监控系统、测试工具、业务调度器、外部工单和消息渠道是外部执行或事实来源。ClusBot 通过适配能力查询和操作它们，保存意图、引用与确认结果。外部系统已经发生的事实不能由模型叙述替代，跨系统操作也不能假定原子完成。</p>
+<p>通用核心统一工作与信息语义。运维领域定义资源类型、配置与健康规则、流程模板、测试和验收要求、资源占用规则及具体执行能力。领域定义参与通用核心的运行，不另行建立运维专属的目标、任务或记忆体系。</p>
+<h2 id="2-总体结构与组件职责">2 总体结构与组件职责</h2>
+<h3 id="v2-图与正文的对应">V2 图与正文的对应</h3>
+<figure id="architecture-v2"><figcaption>ClusBot 架构设计 V2 · 同色追踪完整链路</figcaption><style>
+#architecture-v2 .chain-controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+#architecture-v2 .chain-controls button{font:inherit;font-size:14px;padding:7px 12px;border:1px solid var(--chain,#657777);color:var(--chain,#334848);border-radius:6px;background:white;cursor:pointer}
+#architecture-v2 .chain-controls button[aria-pressed=true]{background:var(--chain,#334848);color:white}
+#architecture-v2 .chain-description{font-size:15px;line-height:1.7;min-height:2em}
+#architecture-v2 svg{display:block;width:100%;height:auto}
+#architecture-v2 [data-route]{transition:opacity .12s}
+</style><div class="chain-controls" role="group" aria-label="突出显示完整业务链路"><button type="button" data-chain="all" aria-pressed="true">全部链路</button><button type="button" data-chain="work" aria-pressed="false" style="--chain:#276B50">委托与协作</button><button type="button" data-chain="read" aria-pressed="false" style="--chain:#2D5DB2">数据查询</button><button type="button" data-chain="sense" aria-pressed="false" style="--chain:#137C80">采集与检查</button><button type="button" data-chain="action" aria-pressed="false" style="--chain:#B45D20">动作执行</button><button type="button" data-chain="approval" aria-pressed="false" style="--chain:#9C426C">审批闭环</button><button type="button" data-chain="context" aria-pressed="false" style="--chain:#7852A0">上下文</button></div><p class="chain-description" aria-live="polite">同一颜色贯穿一条业务链路，共用接口按链路分别画线。</p><svg xmlns="http://www.w3.org/2000/svg" width="2540" height="2010" viewBox="0 0 2540 2010" role="img" aria-labelledby="title desc">
+<title id="title">ClusBot 架构设计 V2</title><desc id="desc">按调用来源和流向组织感知、查询、任务协作、上下文和操作执行。实线为请求或触发，虚线为结果或回执。持久计划与工作事件订阅属于运行时，外部订阅连接归适配服务。NHC 由计划主动轮询检查。准入待审批由运行时送工作台并接收决定。运维事件与状态规则由运行时加载，事件到达或定时到期时按当前状态评估，工单工具由网关受控调用。</desc><defs>
+<marker id="sense-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#137C80"/></marker>
+<marker id="read-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#2D5DB2"/></marker>
+<marker id="action-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#B45D20"/></marker>
+<marker id="context-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#7852A0"/></marker>
+<marker id="work-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#276B50"/></marker>
+<marker id="approval-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#9C426C"/></marker>
+</defs><g font-family="PingFang SC, Microsoft YaHei, sans-serif" stroke-linecap="round" stroke-linejoin="round">
+<rect x="0" y="0" width="2540" height="2010" rx="0" fill="#F8F7F2" stroke="none" stroke-width="1.5"/>
+<text x="55" y="65" font-size="46" fill="#203641" font-weight="650" text-anchor="start">ClusBot 架构设计 V2</text>
+<text x="57" y="104" font-size="25" fill="#536976" font-weight="400" text-anchor="start">一条业务链路保持同色，共用接口分色绘制</text>
+<g id="sources">
+<rect x="80" y="1770" width="530" height="115" rx="14" fill="#ECF6F5" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="100" y="1804" font-size="26" fill="#203641" font-weight="650" text-anchor="start">外部感知来源</text>
+<text x="100" y="1836" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">设备 SNMP Trap / Inform · Webhook</text>
+<text x="100" y="1864" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">监控指标 · 资产数据</text>
+</g>
+<g id="ui">
+<rect x="1770" y="190" width="490" height="115" rx="14" fill="#EFF5F0" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1790" y="224" font-size="26" fill="#203641" font-weight="650" text-anchor="start">用户与工作台</text>
+<text x="1790" y="256" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">对话入口 → Router</text>
+<text x="1790" y="284" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">操作与审批 → 工作运行时</text>
+</g>
+<rect x="45" y="330" width="2270" height="1360" rx="26" fill="#FCFBF7" stroke="#B7C9C3" stroke-width="1.5"/>
+<text x="650" y="363" font-size="24" fill="#276B50" font-weight="650" text-anchor="start">ClusBot · Personal Agent</text>
+<text x="112" y="443" font-size="25" fill="#435B67" font-weight="650" text-anchor="start">同色追踪完整链路</text>
+<path d="M112 487 h38" stroke="#137C80" stroke-width="3" marker-end="url(#sense-arrow)"/>
+<text x="169" y="494" font-size="23" fill="#137C80" font-weight="650" text-anchor="start">采集与健康检查闭环</text>
+<path d="M112 533 h38" stroke="#2D5DB2" stroke-width="3" marker-end="url(#read-arrow)"/>
+<text x="169" y="540" font-size="23" fill="#2D5DB2" font-weight="650" text-anchor="start">数据查询往返</text>
+<path d="M112 579 h38" stroke="#276B50" stroke-width="3" marker-end="url(#work-arrow)"/>
+<text x="169" y="586" font-size="23" fill="#276B50" font-weight="650" text-anchor="start">委托与任务协作</text>
+<path d="M112 625 h38" stroke="#7852A0" stroke-width="3" marker-end="url(#context-arrow)"/>
+<text x="169" y="632" font-size="23" fill="#7852A0" font-weight="650" text-anchor="start">上下文装配与保存</text>
+<path d="M112 671 h38" stroke="#B45D20" stroke-width="3" marker-end="url(#action-arrow)"/>
+<text x="169" y="678" font-size="23" fill="#B45D20" font-weight="650" text-anchor="start">动作执行与回执</text>
+<path d="M112 717 h38" stroke="#9C426C" stroke-width="3" marker-end="url(#approval-arrow)"/>
+<text x="169" y="724" font-size="23" fill="#9C426C" font-weight="650" text-anchor="start">审批请求与决定闭环</text>
+<text x="112" y="770" font-size="20" fill="#435B67" font-weight="400" text-anchor="start">实线 → 请求 / 触发</text>
+<text x="365" y="770" font-size="20" fill="#435B67" font-weight="400" text-anchor="start">虚线 ⇢ 结果 / 回执</text>
+<g id="resource-area">
+<rect x="720" y="400" width="600" height="300" rx="22" fill="#F0EDF7" stroke="#C2CCCC" stroke-width="1.5"/>
+<text x="744" y="439" font-size="27" fill="#203641" font-weight="650" text-anchor="start">统一资源模型与持久上下文</text>
+</g>
+<g id="resource">
+<rect x="750" y="470" width="540" height="108" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="770" y="504" font-size="26" fill="#203641" font-weight="650" text-anchor="start">资源接入与查询服务</text>
+<text x="770" y="536" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">去重 · 身份解析 · 质量校验 · 观测入库</text>
+<text x="770" y="564" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">对象 / 关系 / 判定 / 证据 · 查询与来源</text>
+</g>
+<g id="context">
+<rect x="750" y="601" width="540" height="76" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="770" y="635" font-size="26" fill="#203641" font-weight="650" text-anchor="start">上下文装配与检查点</text>
+<text x="770" y="667" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">ContextManifest · 当前工作 / 事实 / 知识</text>
+</g>
+<g id="agent-area">
+<rect x="1450" y="360" width="840" height="340" rx="22" fill="#EDF3F8" stroke="#C2CCCC" stroke-width="1.5"/>
+<text x="1474" y="399" font-size="27" fill="#203641" font-weight="650" text-anchor="start">执行宿主 · 记录送达与本轮取入</text>
+</g>
+<g id="worker">
+<rect x="1490" y="422" width="335" height="155" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1510" y="456" font-size="26" fill="#203641" font-weight="650" text-anchor="start">Worker Agents</text>
+<text x="1510" y="488" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">规划 · 诊断 · 任务内取舍</text>
+<text x="1510" y="516" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">通过查询工具读取事实</text>
+<text x="1510" y="544" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">提出动作、进展和待决</text>
+</g>
+<g id="router">
+<rect x="1920" y="422" width="335" height="155" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1940" y="456" font-size="26" fill="#203641" font-weight="650" text-anchor="start">Router</text>
+<text x="1940" y="488" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">理解主会话与任务归属</text>
+<text x="1940" y="516" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">目标 / 修订 / 跨任务协调</text>
+<text x="1940" y="544" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">提交决定，反馈用户</text>
+</g>
+<g id="runtime-area">
+<rect x="1450" y="855" width="840" height="510" rx="22" fill="#EAF4EC" stroke="#C2CCCC" stroke-width="1.5"/>
+<text x="1474" y="894" font-size="27" fill="#203641" font-weight="650" text-anchor="start">工作运行时</text>
+</g>
+<g id="runtime">
+<rect x="1480" y="927" width="780" height="190" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1500" y="961" font-size="26" fill="#203641" font-weight="650" text-anchor="start">事件受理、状态推进与任务调度</text>
+<text x="1500" y="993" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">持久接收事件与定时到期，匹配 Goal / Task / Wait</text>
+<text x="1500" y="1021" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">依据当前状态、规则与授权，确定执行、等待或委派</text>
+<text x="1500" y="1049" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">保存 Task / Assignment / Run · Operation / 验收</text>
+<text x="1500" y="1077" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">提交变更与后续投递，暂停 / 重启 / 改派沿原任务恢复</text>
+</g>
+<g id="collection">
+<rect x="1480" y="1180" width="780" height="150" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1500" y="1214" font-size="26" fill="#203641" font-weight="650" text-anchor="start">运行时内部 · 持久计划与触发调度</text>
+<text x="1500" y="1246" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">保存计划、工作事件订阅及所属 Goal / Task</text>
+<text x="1500" y="1274" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">后台调度器扫描到期项，发布触发事件并关联工作</text>
+<text x="1500" y="1302" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">保存触发位置与等待状态，控制暂停、取消和恢复</text>
+</g>
+<g id="execution-area">
+<rect x="80" y="815" width="1300" height="680" rx="22" fill="#FAF0E5" stroke="#C2CCCC" stroke-width="1.5"/>
+<text x="104" y="854" font-size="27" fill="#203641" font-weight="650" text-anchor="start">能力执行与治理</text>
+</g>
+<g id="governance">
+<rect x="110" y="1100" width="470" height="162" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="130" y="1134" font-size="26" fill="#203641" font-weight="650" text-anchor="start">准入与资源协调</text>
+<text x="130" y="1166" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">授权 · 参数 / 影响范围 · Claim</text>
+<text x="130" y="1194" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">暂停状态与分配资格 · 规范版本</text>
+<text x="130" y="1222" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">按策略请求审批 · Skill 变更须确认</text>
+</g>
+<g id="gateway">
+<rect x="750" y="927" width="540" height="190" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="770" y="961" font-size="26" fill="#203641" font-weight="650" text-anchor="start">执行与接入网关</text>
+<text x="770" y="993" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">受理采集 / 订阅、QueryPlan 和 Operation</text>
+<text x="770" y="1021" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">按调用用途核验身份、范围与执行资格</text>
+<text x="770" y="1049" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">复用工具和连接，路由结果与主动上报</text>
+<text x="770" y="1077" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">观测交资源接入，操作回执交原任务</text>
+</g>
+<g id="ops-tool">
+<rect x="680" y="1285" width="315" height="122" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="700" y="1319" font-size="26" fill="#203641" font-weight="650" text-anchor="start">共享工具与连接服务</text>
+<text x="700" y="1351" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">工具调用 · NHC / MCP / API</text>
+<text x="700" y="1379" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">常驻服务 · SNMP / Webhook</text>
+</g>
+<g id="ticket-tool">
+<rect x="1060" y="1285" width="230" height="122" rx="14" fill="#FFFFFF" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1080" y="1319" font-size="26" fill="#203641" font-weight="650" text-anchor="start">工单工具</text>
+<text x="1080" y="1351" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">开单 · 更新 · 查询</text>
+<text x="1080" y="1379" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">回调关联原工单</text>
+</g>
+<g id="workflow-area">
+<rect x="1450" y="1430" width="840" height="225" rx="22" fill="#EDF3F8" stroke="#C2CCCC" stroke-width="1.5"/>
+<text x="1474" y="1469" font-size="27" fill="#203641" font-weight="650" text-anchor="start">运维事件与状态规则</text>
+</g>
+<text x="1478" y="1513" font-size="25" fill="#203641" font-weight="650" text-anchor="start">事件 + 当前状态 + 前置条件 → 动作 / 等待 / 委派</text>
+<text x="1478" y="1560" font-size="23" fill="#203641" font-weight="400" text-anchor="start">覆盖发现、部署、配置、测试、交付、维护与自愈</text>
+<text x="1478" y="1605" font-size="21" fill="#536976" font-weight="400" text-anchor="start">定义触发、依赖、验收与升级条件，运行时按事件推进工作</text>
+<g id="cluster">
+<rect x="720" y="1770" width="300" height="110" rx="14" fill="#EDF2F4" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="740" y="1804" font-size="26" fill="#203641" font-weight="650" text-anchor="start">集群与数据后端</text>
+<text x="740" y="1836" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">节点 / NHC / BMC / 测试</text>
+<text x="740" y="1864" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">监控 / 日志 / 调度器</text>
+</g>
+<g id="ticket-system">
+<rect x="1060" y="1770" width="300" height="110" rx="14" fill="#F9EFE5" stroke="#BCCBD0" stroke-width="1.5"/>
+<text x="1080" y="1804" font-size="26" fill="#203641" font-weight="650" text-anchor="start">外部工单系统</text>
+<text x="1080" y="1836" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">受理 · 分派 · 人工处理</text>
+<text x="1080" y="1864" font-size="21" fill="#435B67" font-weight="400" text-anchor="start">状态、反馈与附件</text>
+</g>
+<text x="1490" y="1820" font-size="25" fill="#203641" font-weight="650" text-anchor="start">工单关闭触发原任务复验</text>
+<text x="1490" y="1860" font-size="23" fill="#536976" font-weight="400" text-anchor="start">Task 验收、资源恢复与工单状态分别核对</text>
+<path id="schedule-plan" data-route="sense" d="M1570 1117 V1180" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="schedule-due" data-route="sense" d="M2090 1180 V1117" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="push" data-route="sense" d="M220 1770 C220 1460 590 1400 680 1320" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="poll" data-route="sense" d="M680 1350 C570 1430 380 1470 380 1770" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="poll-result" data-route="sense" d="M540 1770 C540 1510 620 1450 680 1380" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)" stroke-dasharray="9 7"/>
+<path id="collect-dispatch" data-route="sense" d="M945 1117 V1285" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="collect-result" data-route="sense" d="M975 1285 V1117" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)" stroke-dasharray="9 7"/>
+<path id="ingest" data-route="sense" d="M1200 927 V700" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="input-ack" data-route="sense" d="M1260 700 V927" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)" stroke-dasharray="9 7"/>
+<path id="worker-query" data-route="read" d="M1490 480 H1290" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)"/>
+<path id="query-worker" data-route="read" d="M1290 540 H1490" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)" stroke-dasharray="9 7"/>
+<path id="user-message" data-route="work" d="M2020 305 V422" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="structured-control" data-route="approval" d="M2260 290 H2360 V1010 H2260" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)"/>
+<path id="approval-presentation" data-route="approval" d="M2260 1035 H2495 V250 H2260" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)" stroke-dasharray="9 7"/>
+<path id="router-reply" data-route="work" d="M2200 422 V305" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)" stroke-dasharray="9 7"/>
+<path id="worker-input" data-route="work" d="M1570 927 V577" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="worker-decision" data-route="action" d="M1765 577 V927" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="router-input" data-route="work" d="M1990 927 V577" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="router-decision" data-route="work" d="M2200 577 V927" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="context-request" data-route="context" d="M1480 1005 C1405 1005 1395 710 1290 640" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#context-arrow)"/>
+<path id="context-return" data-route="context" d="M1290 665 C1370 750 1350 1045 1480 1050" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#context-arrow)" stroke-dasharray="9 7"/>
+<path id="fact-change" data-route="sense" d="M1290 565 C1440 565 1420 950 1480 950" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="checkpoint" data-route="context" d="M1860 700 V927" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#context-arrow)"/>
+<path id="query-external" data-route="read" d="M820 700 V927" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)"/>
+<path id="query-back" data-route="read" d="M940 927 V700" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)" stroke-dasharray="9 7"/>
+<path id="evidence" data-route="action" d="M1100 927 V700" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="operation" data-route="action" d="M1480 1080 H1290" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="operation-result" data-route="action" d="M1290 1098 C1360 1165 1410 1156 1480 1100" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="admission" data-route="action" d="M750 1070 C650 1070 650 1140 580 1140" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="admission-result" data-route="action" d="M580 1220 C700 1220 700 1100 750 1100" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="readonly-tool-call" data-route="read" d="M765 1117 V1285" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)"/>
+<path id="readonly-tool-result" data-route="read" d="M795 1285 V1117" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)" stroke-dasharray="9 7"/>
+<path id="load-workflow" data-route="work" d="M1690 1365 V1430" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="workflow-return" data-route="work" d="M2070 1430 V1365" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)" stroke-dasharray="9 7"/>
+<path id="tool-call" data-route="action" d="M845 1117 V1285" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="tool-result" data-route="action" d="M875 1285 V1117" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="ticket-call" data-route="action" d="M1105 1117 V1285" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="ticket-result" data-route="action" d="M1250 1285 V1117" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="cluster-call" data-route="action" d="M810 1407 V1770" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="cluster-return" data-route="action" d="M955 1770 V1407" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="backend-read" data-route="read" d="M765 1407 V1770" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)"/>
+<path id="backend-return" data-route="read" d="M990 1770 V1407" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)" stroke-dasharray="9 7"/>
+<path id="ticket-create" data-route="action" d="M1105 1407 V1770" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)"/>
+<path id="ticket-callback" data-route="action" d="M1250 1770 V1407" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="approval-needed" data-route="approval" d="M580 1227 C700 1227 700 1107 750 1107" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)" stroke-dasharray="9 7"/>
+<path id="approval-admission" data-route="approval" d="M750 1063 C650 1063 650 1133 580 1133" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)"/>
+<path id="approval-to-runtime" data-route="approval" d="M1290 1105 C1360 1172 1410 1163 1480 1107" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)" stroke-dasharray="9 7"/>
+<path id="approved-to-gateway" data-route="approval" d="M1480 1087 H1290" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#approval-arrow)"/>
+<path id="scheduled-collection" data-route="sense" d="M1480 1074 H1290" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="collection-status" data-route="sense" d="M1290 1101 C1360 1168 1410 1159 1480 1103" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)" stroke-dasharray="9 7"/>
+<path id="read-admission" data-route="read" d="M750 1056 C650 1056 650 1126 580 1126" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)"/>
+<path id="read-admission-result" data-route="read" d="M580 1234 C700 1234 700 1114 750 1114" fill="none" stroke="#2D5DB2" stroke-width="2.6" marker-end="url(#read-arrow)" stroke-dasharray="9 7"/>
+<path id="nhc-call" data-route="sense" d="M830 1407 V1770" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)"/>
+<path id="nhc-result" data-route="sense" d="M930 1770 V1407" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#sense-arrow)" stroke-dasharray="9 7"/>
+<path id="worker-progress" data-route="work" d="M1695 577 V927" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="worker-action-receipt" data-route="action" d="M1805 927 V577" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#action-arrow)" stroke-dasharray="9 7"/>
+<path id="ui-command" data-route="work" d="M2260 282 H2348 V996 H2260" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)"/>
+<path id="ui-command-result" data-route="work" d="M2260 1045 H2507 V242 H2260" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#work-arrow)" stroke-dasharray="9 7"/>
+<g data-route="sense" data-edge-label="schedule-plan">
+<rect x="1573.75" y="1140" width="152.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1650" y="1159" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">提交 / 修订计划</text>
+</g>
+<g data-route="sense" data-edge-label="schedule-due">
+<rect x="1995.75" y="1140" width="188.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2090" y="1159" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">到期事件 / 调度状态</text>
+</g>
+<g data-route="sense" data-edge-label="push">
+<rect x="262.5" y="1461" width="149.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="337" y="1480" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">SNMP / Webhook</text>
+<text x="337" y="1504" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">推送</text>
+</g>
+<g data-route="sense" data-edge-label="poll">
+<rect x="388.0" y="1586" width="124" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="450" y="1605" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">轮询外部来源</text>
+</g>
+<g data-route="sense" data-edge-label="poll-result">
+<rect x="549.0" y="1671" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="593" y="1690" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">轮询结果</text>
+</g>
+<g data-route="sense" data-edge-label="collect-dispatch">
+<rect x="911.75" y="1232" width="116.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="970" y="1251" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">调用 / 配置</text>
+</g>
+<g data-route="sense" data-edge-label="collect-result">
+<rect x="911.75" y="1259" width="116.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="970" y="1278" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">结果 / 事件</text>
+</g>
+<g data-route="sense" data-edge-label="ingest">
+<rect x="1151.0" y="796" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1195" y="815" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">提交观测</text>
+<text x="1195" y="839" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">批次</text>
+</g>
+<g data-route="sense" data-edge-label="input-ack">
+<rect x="1206.5" y="864" width="107.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1260" y="883" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">批次确认 /</text>
+<text x="1260" y="907" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">缺口</text>
+</g>
+<g data-route="read" data-edge-label="worker-query">
+<rect x="1346.0" y="434" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1390" y="453" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">调用资源</text>
+<text x="1390" y="477" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">查询工具</text>
+</g>
+<g data-route="read" data-edge-label="query-worker">
+<rect x="1299.5" y="553" width="181.0" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1390" y="572" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">数据 / 来源 / 缺口</text>
+</g>
+<g data-route="work" data-edge-label="user-message">
+<rect x="1920.75" y="363" width="188.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2015" y="382" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">自然语言委托 / 跟进</text>
+</g>
+<g data-route="approval" data-edge-label="structured-control">
+<rect x="2364.0" y="770" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2408" y="789" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">审批决定</text>
+</g>
+<g data-route="approval" data-edge-label="approval-presentation">
+<rect x="2363.5" y="591" width="89.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2408" y="610" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">待审批 /</text>
+<text x="2408" y="634" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">审批结果</text>
+</g>
+<g data-route="work" data-edge-label="router-reply">
+<rect x="2161.0" y="326" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2205" y="345" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">对话答复</text>
+</g>
+<g data-route="work" data-edge-label="worker-input">
+<rect x="1490.0" y="733" width="160" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1570" y="752" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">委派 / 跟进</text>
+<text x="1570" y="776" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">当前任务与上下文</text>
+</g>
+<g data-route="action" data-edge-label="worker-decision">
+<rect x="1716.0" y="796" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1760" y="815" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作请求</text>
+</g>
+<g data-route="work" data-edge-label="router-input">
+<rect x="1913.75" y="733" width="152.5" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1990" y="752" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">待决 / 协调事件</text>
+<text x="1990" y="776" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">正式工作结果</text>
+</g>
+<g data-route="work" data-edge-label="router-decision">
+<rect x="2109.5" y="788" width="181.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2200" y="807" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">目标 / 任务 / 修订</text>
+<text x="2200" y="831" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">控制决定</text>
+</g>
+<g data-route="context" data-edge-label="context-request">
+<rect x="1356.0" y="798" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1400" y="817" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">装配 /</text>
+<text x="1400" y="841" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">存检查点</text>
+</g>
+<g data-route="context" data-edge-label="context-return">
+<rect x="1335.5" y="881" width="89.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1380" y="900" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">上下文 /</text>
+<text x="1380" y="924" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">写入确认</text>
+</g>
+<g data-route="sense" data-edge-label="fact-change">
+<rect x="1282.0" y="693" width="166.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1365" y="712" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">变化事件</text>
+<text x="1365" y="736" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">匹配 Goal / Task</text>
+</g>
+<g data-route="context" data-edge-label="checkpoint">
+<rect x="1804.0" y="858" width="142" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1875" y="877" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">宿主提交检查点</text>
+</g>
+<g data-route="read" data-edge-label="query-external">
+<rect x="769.25" y="727" width="101.5" height="74" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="820" y="746" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">请求外部</text>
+<text x="820" y="770" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">只读执行</text>
+<text x="820" y="794" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">QueryPlan</text>
+</g>
+<g data-route="read" data-edge-label="query-back">
+<rect x="881.75" y="806" width="116.5" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="940" y="825" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">查询结果</text>
+<text x="940" y="849" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">来源 / 覆盖</text>
+</g>
+<g data-route="action" data-edge-label="evidence">
+<rect x="1046.0" y="727" width="88" height="74" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1090" y="746" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">提交效果</text>
+<text x="1090" y="770" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">观测</text>
+<text x="1090" y="794" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">测试材料</text>
+</g>
+<g data-route="action" data-edge-label="operation">
+<rect x="1332.0" y="1084" width="106" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1103" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">登记后执行</text>
+</g>
+<g data-route="action" data-edge-label="operation-result">
+<rect x="1341.0" y="1168" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1187" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">执行回执</text>
+</g>
+<g data-route="action" data-edge-label="admission">
+<rect x="606.0" y="1081" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="650" y="1100" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">请求准入</text>
+</g>
+<g data-route="action" data-edge-label="admission-result">
+<rect x="491.75" y="1264" width="116.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="550" y="1283" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">允许 / 拒绝</text>
+</g>
+<g data-route="read" data-edge-label="readonly-tool-call">
+<rect x="734.0" y="1135" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="778" y="1154" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">只读请求</text>
+</g>
+<g data-route="read" data-edge-label="readonly-tool-result">
+<rect x="734.0" y="1161" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="778" y="1180" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">查询返回</text>
+</g>
+<g data-route="work" data-edge-label="load-workflow">
+<rect x="1605.0" y="1384" width="160" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1685" y="1403" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">加载适用规则版本</text>
+</g>
+<g data-route="work" data-edge-label="workflow-return">
+<rect x="1971.5" y="1399" width="217.0" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2080" y="1418" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">触发 / 状态 / 动作条件</text>
+</g>
+<g data-route="action" data-edge-label="tool-call">
+<rect x="821.0" y="1188" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="865" y="1207" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作请求</text>
+</g>
+<g data-route="action" data-edge-label="tool-result">
+<rect x="821.0" y="1214" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="865" y="1233" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作结果</text>
+</g>
+<g data-route="action" data-edge-label="ticket-call">
+<rect x="1066.0" y="1159" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1110" y="1178" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">调用工单</text>
+<text x="1110" y="1202" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">工具</text>
+</g>
+<g data-route="action" data-edge-label="ticket-result">
+<rect x="1198.25" y="1217" width="99.5" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1248" y="1236" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">工单 ID /</text>
+<text x="1248" y="1260" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">反馈</text>
+</g>
+<g data-route="action" data-edge-label="cluster-call">
+<rect x="721.75" y="1474" width="116.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="780" y="1493" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">部署 / 测试</text>
+</g>
+<g data-route="action" data-edge-label="cluster-return">
+<rect x="882.5" y="1581" width="107.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="936" y="1600" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">作业状态 /</text>
+<text x="936" y="1624" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">结果</text>
+</g>
+<g data-route="read" data-edge-label="backend-read">
+<rect x="704.0" y="1611" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="748" y="1630" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">读取数据</text>
+<text x="748" y="1654" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">后端</text>
+</g>
+<g data-route="read" data-edge-label="backend-return">
+<rect x="961.0" y="1696" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1005" y="1715" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">查询数据</text>
+</g>
+<g data-route="action" data-edge-label="ticket-create">
+<rect x="1037.25" y="1470" width="135.5" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1105" y="1489" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">创建 / 更新 /</text>
+<text x="1105" y="1513" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">查询</text>
+</g>
+<g data-route="action" data-edge-label="ticket-callback">
+<rect x="1206.0" y="1586" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1250" y="1605" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">回执 /</text>
+<text x="1250" y="1629" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">人工反馈</text>
+</g>
+<g data-route="approval" data-edge-label="approval-needed">
+<rect x="448.0" y="1311" width="124" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="510" y="1330" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">提出审批 /</text>
+<text x="510" y="1354" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">重新准入结论</text>
+</g>
+<g data-route="approval" data-edge-label="approval-admission">
+<rect x="587.0" y="1011" width="106" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="640" y="1030" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">带有效决定</text>
+<text x="640" y="1054" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">重新准入</text>
+</g>
+<g data-route="approval" data-edge-label="approval-to-runtime">
+<rect x="1322.5" y="1271" width="125.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1290" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">登记待审批 /</text>
+<text x="1385" y="1314" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">返回审批结果</text>
+</g>
+<g data-route="approval" data-edge-label="approved-to-gateway">
+<rect x="1341.0" y="1031" width="88" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1050" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">有效审批</text>
+<text x="1385" y="1074" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">决定</text>
+</g>
+<g data-route="sense" data-edge-label="scheduled-collection">
+<rect x="1331.5" y="981" width="107.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1000" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">到期采集 /</text>
+<text x="1385" y="1024" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">NHC 检查</text>
+</g>
+<g data-route="sense" data-edge-label="collection-status">
+<rect x="1331.5" y="1216" width="107.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1385" y="1235" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">采集状态 /</text>
+<text x="1385" y="1259" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">确认游标</text>
+</g>
+<g data-route="read" data-edge-label="read-admission">
+<rect x="548.0" y="971" width="124" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="610" y="990" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">核验读取资格</text>
+</g>
+<g data-route="read" data-edge-label="read-admission-result">
+<rect x="448.0" y="1383" width="124" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="510" y="1402" font-size="18" fill="#2D5DB2" font-weight="650" text-anchor="middle">读取准入结论</text>
+</g>
+<g data-route="sense" data-edge-label="nhc-call">
+<rect x="782.25" y="1526" width="135.5" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="850" y="1545" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">主动 NHC 检查</text>
+</g>
+<g data-route="sense" data-edge-label="nhc-result">
+<rect x="837.0" y="1641" width="126.0" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="900" y="1660" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">NHC 检查结果</text>
+</g>
+<g data-route="work" data-edge-label="worker-progress">
+<rect x="1617.25" y="661" width="135.5" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1685" y="680" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">计划 / 进展 /</text>
+<text x="1685" y="704" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">待决</text>
+</g>
+<g data-route="action" data-edge-label="worker-action-receipt">
+<rect x="1756.5" y="711" width="107.0" height="50" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="1810" y="730" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作受理 /</text>
+<text x="1810" y="754" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">执行结果</text>
+</g>
+<g data-route="work" data-edge-label="ui-command">
+<rect x="2367.0" y="831" width="106" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2420" y="850" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">工作台命令</text>
+</g>
+<g data-route="work" data-edge-label="ui-command-result">
+<rect x="2376.0" y="531" width="88" height="26" rx="4" fill="#FCFBF7" stroke="none" stroke-width="1.5"/>
+<text x="2420" y="550" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">命令结果</text>
+</g>
+<text x="62" y="1960" font-size="22" fill="#536976" font-weight="400" text-anchor="start">采集调度、Worker 查询和任务操作复用同一套连接适配器，数据校验与登记统一归资源接入服务。</text>
+</g></svg><script>
+(function(){
+  const figure=document.getElementById('architecture-v2');
+  const descriptions={"work": "用户与工作台 → Router / 运行时 → Worker → 运行时 → 用户与工作台", "read": "Worker → 资源查询服务 → 网关与读取准入 → 共享工具 → 数据后端 → 原路返回", "sense": "采集计划到期 → 运行时 → 网关 → 共享工具 / NHC → 观测入库 → 状态与游标返回", "action": "Worker / 已生效规则 → 运行时 → 网关与准入 → 工具 / 工单 → 外部系统 → 原任务", "approval": "准入提出审批 → 网关 → 运行时 → 工作台 → 用户决定 → 运行时 → 网关 → 重新准入", "context": "执行宿主 / 运行时 → 上下文服务 → 保存或装配 → 运行时"};
+  const buttons=figure.querySelectorAll('[data-chain]');
+  const items=figure.querySelectorAll('[data-route]');
+  const status=figure.querySelector('.chain-description');
+  function select(chain){
+    buttons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.chain===chain)));
+    items.forEach(item=>{
+      const active=chain==='all'||item.dataset.route===chain;
+      item.style.opacity=active?'1':'0.06';
+      if(item.tagName.toLowerCase()==='path'){
+        item.style.strokeWidth=chain!=='all'&&active?'4':'2.6';
+      }
+    });
+    status.textContent=chain==='all'
+      ?'同一颜色贯穿一条业务链路，共用接口按链路分别画线。'
+      :descriptions[chain];
+  }
+  buttons.forEach(button=>button.addEventListener('click',()=>select(button.dataset.chain)));
+})();
+</script><p><a href="Research/ClusBot-分区协作架构图-V2.svg">打开完整 SVG</a> · <a href="Research/ClusBot-分区协作架构图-V2.png">查看 PNG</a></p></figure>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>V2 中的位置</th>
+<th>本文说明的内部职责</th>
+<th>对齐原则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用户与工作台</td>
+<td>用户身份、自然语言入口、结构化命令、待决、进度和成果视图</td>
+<td>普通查询直读正式状态；自然语言由 Router 理解，明确命令交运行时</td>
+</tr>
+<tr>
+<td>执行宿主及 Router / Worker</td>
+<td>模型适配、角色、会话、送达、取入、任务判断与交回</td>
+<td>两层 Agent 都在 Personal Agent 内；宿主执行模型，运行时管理责任</td>
+</tr>
+<tr>
+<td>工作运行时</td>
+<td>Goal/Task、分配、流程、事件、Wait、Operation、修订和验收</td>
+<td>状态归属不随工具/MCP 暴露方式转移；操作、批准和恢复沿原工作关联</td>
+</tr>
+<tr>
+<td>统一资源模型与持久上下文</td>
+<td>资源事实与查询、ContextManifest/检查点、个人记忆和经验知识</td>
+<td>内部分清事实、经验和装配职责；不新增第三层 Agent 或第二套通用状态库</td>
+</tr>
+<tr>
+<td>能力执行与治理</td>
+<td>连接与凭据、网关、准入与资源协调、共享适配器、Skill 和规范版本</td>
+<td>采集、临时查询和动作复用适配；观测、查询结果与操作回执按用途返回</td>
+</tr>
+<tr>
+<td>运维事件与状态规则</td>
+<td>领域类型、事件条件、流程依赖、测试、验收与外协升级</td>
+<td>规则被运行时和资源服务采用；确定性工作直接推进，决策点委派 Worker</td>
+</tr>
+<tr>
+<td>周期检查与触发设施</td>
+<td>计划配置、到期事件、来源订阅要求及调度状态</td>
+<td>与 Task Wait/超时分开。遵循运行时 V2：内置或独立服务的部署方式未定，本次不擅自固定实现</td>
+</tr>
+</tbody>
+</table></div>
+<p>总体图中的“运行时内部持久计划与触发调度”表达工作责任与触发控制；运行时详图进一步分开实际周期设施和工作状态。两图共同确定的是保存计划、触发调用、实际执行三种责任；不能仅凭总图的框位置推断 NHC 进程、常驻订阅连接和所有定时器都由运行时亲自执行。</p>
+<h3 id="逻辑组成">逻辑组成</h3>
+<p>ClusBot 按职责划分为五个逻辑部分。它们表达设计边界，不预设五个进程、服务或独立数据库。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>逻辑部分</th>
+<th>内部职责</th>
+<th>对外提供的结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>交互与工作台</td>
+<td>接收用户消息和页面操作，绑定用户与渠道，按统一查询与展示定义呈现资源、工作、成果和待决事项，承接模型维护与渠道投递</td>
+<td>带来源身份的输入、同源对象视图、受控修改请求、渠道回执</td>
+</tr>
+<tr>
+<td>Agent 协作</td>
+<td>Router 管理用户目标与整体协调；Worker 负责有边界工作的规划、调查、执行判断和核验</td>
+<td>任务与计划提议、能力调用请求、结果与证据、需要用户决定的问题</td>
+</tr>
+<tr>
+<td>工作运行时</td>
+<td>管理 Goal、Task、目标绑定、执行计划、分配、Run、事件、等待、预算、Operation、验收和交付记录；承接 Incident 与结构化诊断假设，推进确定性流程</td>
+<td>可恢复的工作状态、待执行动作、故障调查记录、唤醒与状态变化事件</td>
+</tr>
+<tr>
+<td>信息与上下文</td>
+<td>管理领域模型目录、资源身份、事实与关系、数据查询与溯源、领域判定与证据；装配 ContextManifest，维护经历、知识与主题视图</td>
+<td>发布模型与对象能力目录、带来源和有效性的查询结果、判定解释、本次 Run 的上下文</td>
+</tr>
+<tr>
+<td>能力执行与治理</td>
+<td>管理能力目录、连接与凭据、执行网关和适配器、资源协调、规范与 Skill 版本；核对查询和发布资格，执行受控读取及操作</td>
+<td>查询数据、观测、外部作业与回执、占用结果、允许使用的方法和规范版本</td>
+</tr>
+</tbody>
+</table></div>
+<p>运维领域在这五部分中提供具体定义。信息与上下文执行领域状态判定，依据观测形成带证据的结论；工作运行时承接持续收敛控制，按有效目标与规则产生或关联工作；能力执行与治理负责资源占用协调及外部适配。流程与验收定义由运行时推进，诊断与验证要求供 Worker 使用，运维视图由工作台呈现。这些确定性职责不增加 Agent 层级。</p>
+<h3 id="router-与-worker">Router 与 Worker</h3>
+<p>Router 是主会话中受理自然语言的 Agent，维护用户目标、工作优先级、跨任务进展和待决事项。它结合当前会话、明确的对象和 Task 引用理解用户意图，判断工作归属，再提交对应决定。一个输入可以拆为多个意图，分别关联责任。对象、权限范围或重要取舍仍有歧义时，Router 向用户提出具体问题。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>Router 识别的意图</th>
+<th>处理结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>普通问答或查已有进度、结果</td>
+<td>依据可读的事实和工作记录直接回答。需要新增调查时，转入已有工作跟进或新委托。</td>
+</tr>
+<tr>
+<td>给已有任务补充信息或委托范围内的进一步处理</td>
+<td>提交跟进及目标 Task。运行时登记在原任务内，需要新判断时唤醒当前负责的 Worker。</td>
+</tr>
+<tr>
+<td>暂停、恢复、取消或改变现有目标、验收要求与承诺</td>
+<td>提交作用范围明确的控制请求或修订提议。运行时核验权限和当前版本，保存控制意图或新版本，再按需要安排后续工作。</td>
+</tr>
+<tr>
+<td>提出新委托或持续责任</td>
+<td>明确目标、范围、约束与验收条件，提交 Task 或 Goal 提议。运行时校验并持久登记，按适用流程直接启动或分派 Worker。</td>
+</tr>
+</tbody>
+</table></div>
+<p>Worker 对一个有边界的 Task 负责，使用任务上下文、领域知识、Skill 和工具形成计划，在授权范围内直接决定委派给它的事项，提交计划修订或执行请求，并核验结果。复杂 Task 的负责人可以提出子任务，再整合子任务成果。规划、诊断、执行、验证与知识整理都是第二层 Worker 的角色，任务树的深度不会增加固定的 Agent 层级。</p>
+<p>Worker 的角色配置可以长期存在，活跃推理按需要启动。任务等待时保留责任与工作记录，释放当前 Run 的执行槽。执行槽是运行容量，Worker 是认知角色，外部工具进程与设备作业各有自己的生命周期。</p>
+<p>Router 不逐项介入工具调用。范围内需要判断的进展和异常交给任务负责人；跨任务冲突、目标变化及用户必须决定的问题进入整体协调。状态变化、定时器和外部结果能够由既定规则处理时，运行时直接推进。计划可以把选组、分批顺序等正常推进中的取舍委派给 Worker。事件满足相应条件，或既定分支不足以处理异常时，运行时按当前 Assignment 唤醒负责人。</p>
+<h3 id="控制关系与信息关系">控制关系与信息关系</h3>
+<p>工作运行时先登记输入和来源，按可信标识、当前绑定与规则判断投递路径。主会话自然语言随后交给 Router 理解。已关联的外部回执和观测变化按原 Operation、Task 或有效 Goal 匹配。Router 和 Worker 提交工作决定，运行时校验范围、权限、版本与预算，再保存任务修订、分配或待执行操作。工作运行时是负责持久状态、确定性编排和 Agent 调度的程序机制。Router 与 Worker 是负责语义判断的两个 Agent 角色。</p>
+<p>能力执行从运行时取得受控操作，通过适配器与外部系统交互。结果按操作和任务关联回到运行时，相关观测与证据进入信息模型。运行时依据当前计划和有效证据推进任务；需要判断时，上下文机制组装新的事实与待决问题交给 Worker。</p>
+<p>信息查询与状态修改使用不同的责任路径。上下文、工作台和报告可以读取同一任务或资源的查询视图；发起修改则必须回到对应状态的管理入口。查询缓存和摘要保留来源与新鲜度，不获得独立改写事实的权力。</p>
+<p>工作台直接读取工作运行时的进度和信息模型的对象视图，无需为每次浏览启动 Router。对象字段、指标、关联与可见动作由同一发布模型和查询定义解释。页面上的部署、复验、维护等动作进入工作运行时；模型定义草稿提交领域模型目录，经验证及发布身份核验后生效。</p>
+<p>资源查询由信息与上下文解析对象、数据绑定和查询约束；需要访问外部后端时，把已登记的 QueryPlan 交给能力执行与治理中的只读查询执行器。该执行器位于图中的“执行网关与适配器”，核验当前读取权限、连接能力、必需过滤与预算后执行，返回实际数据与覆盖情况。内部元数据查询可以直接完成。查询结果沿只读请求返回给请求方，附来源、时间、覆盖和缺失项。用于判断或验收的结果按证据规则另行固定。执行或测试产生的效果观测和测试材料经信息模块核验后登记为事实或证据，状态回执按原 Operation 回到工作运行时。诊断任务内的查询保留 Task/Run 关联，普通只读查询无需创建 Operation。</p>
+<h3 id="请求调用与实际执行">请求、调用与实际执行</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>环节</th>
+<th>负责方</th>
+<th>产生的记录或交接</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>提出请求</td>
+<td>Router、Worker、工作台，或已生效规则</td>
+<td>表达目标、对象、参数及依据。涉及工作变更时交所属状态入口核验，普通读取交查询入口。</td>
+</tr>
+<tr>
+<td>受理并安排</td>
+<td>工作运行时及相关领域服务</td>
+<td>确定责任、当前版本和条件，保存所需的 Task、Operation、等待或配置记录，安排后续调用。</td>
+</tr>
+<tr>
+<td>发出调用</td>
+<td>执行宿主中的调用分发器、执行网关与协议客户端</td>
+<td>将已经核验的请求落实为本地函数、工具接口、MCP 或外部 API 调用，携带调用身份与关联信息。</td>
+</tr>
+<tr>
+<td>实际执行</td>
+<td>接口背后的实现、持续服务、检查进程或外部作业系统</td>
+<td>完成检查、连接维护、数据读取或设备操作，保存必要的作业状态并返回结果或事件。</td>
+</tr>
+<tr>
+<td>确认并继续</td>
+<td>原请求所属的运行时或领域服务</td>
+<td>关联调用结果、更新正式记录，核验效果，并决定继续、等待、重试、审批或委派 Agent。</td>
+</tr>
+</tbody>
+</table></div>
+<p>工具或 MCP 描述调用入口。设计还需说明入口背后的实际执行者、状态保存位置及生命周期。Agent 返回工具调用请求后，由宿主或调用层执行实际调用；调用返回的接受确认、作业完成与业务验收分别按对应记录核对。</p>
+<p>长时工作可以在建立请求返回后继续运行，例如持久定时计划、外部订阅或部署作业。创建接口返回可查询的身份和状态，后续变更、停止、查询与事件继续引用该身份。运行时保存原工作与执行身份的关联，通过回执或查询续接。</p>
+<h3 id="v2-调用关系与感知运行方式">V2 调用关系与感知运行方式</h3>
+<p><a href="Research/ClusBot-分区协作架构图-V2.svg">V2 架构图</a>用颜色贯穿完整业务链路。实线表达请求或触发，虚线表达结果或回执。审批从准入提出请求、经网关和运行时送工作台、接收用户决定到重新准入，全程采用玫红色。采集与 NHC 检查全程采用青色，查询往返采用蓝色，动作执行采用橙色，任务协作采用绿色，上下文采用紫色。共用接口按业务用途分别画线。设计页可以选择单条链路，其他链路淡化显示。审批完成后继续原执行链路，执行结果仍关联原任务。</p>
+<p>运行时保存工作计划与触发配置的关联、工作事件订阅和所属 Goal / Task。周期检查计划及其调度器的内置或独立服务实现尚待确定。用户通过自然语言委托 Router，Worker 在任务授权内提出计划或调整建议，明确的工作台配置请求直接交运行时。运行时核验来源、范围、预算和当前修订后提交计划，需要确认时先进入审批。调度设施按已生效配置处理到期项，发布可恢复的触发事件，由运行时决定创建或关联哪项工作。暂停、取消、目标到期和重启恢复统一使用这份持久状态。</p>
+<p>“订阅”包含两种归属。工作事件订阅描述某项 Task / Wait 等待什么事件、哪些资源变化应触发有效 Goal，由运行时保存并匹配。外部来源订阅描述连接哪个监控源、接收哪类推送、如何建立或恢复连接，由共享连接适配服务维护。运行时保存需要这些数据的责任和订阅要求，适配服务保存实际连接与外部订阅标识，资源接入服务保存已提交批次和接入水位。</p>
+<p>工具是可调用的能力接口，服务是持续运行的执行组件。一次 NHC 检查、读取监控、建立或撤销来源订阅可以暴露为工具或管理 API，经网关受控调用。SNMP / Webhook 接收器和持续订阅连接由常驻适配服务维持，建立配置请求结束后仍可持续接收事件。服务启动时读取已生效连接配置，按状态重连和续接，接收的观测经网关路由到资源接入服务。运行时根据已经接入的事件匹配工作责任。共用来源的订阅调整需核对仍有效的使用责任。</p>
+<p>运行时拥有工作状态与调度控制，包括计划生效、触发去重、任务分配、Wait、审批、正式提交与恢复。后台定时扫描可以由进程内调度器或外部调度设施承载，运行时仍核对持久计划和执行资格。共享适配服务负责具体协议、连接、凭据使用、主动调用和被动接收。源端游标与接入水位按适配和入库契约维护，运行时保存的是任务触发位置与等待状态。</p>
+<p>NHC 在当前方案中表示主动轮询检查。周期计划到期或用户要求临时检查时，运行时组织检查批次并登记所需执行，由共享 NHC 工具主动检查目标节点，结果通过网关进入资源接入与原工作记录。运行时记录本次完成、失败、超时和下次调度时间。SNMP Trap / Inform 与 Webhook 属于外部主动推送，由共享适配器中的常驻接收器承接。</p>
+<p>共享适配器提供 MCP、原生 API、SNMP 和 Webhook 接入。网关按调用用途核验身份、范围和资格，将观测送资源接入服务完成去重、身份解析、质量与覆盖校验，持久登记批次后确认水位。连接、协议实现和凭据由能力执行与治理统一管理。周期检查、Worker 临时查询和 Task 操作复用同一套连接与适配器。</p>
+<p>工作台有两条明确入口。自然语言委托、跟进和解释请求由 Router 理解，再提交工作决定。按钮命令、采集计划配置和结构化审批决定直接进入运行时校验。运行时直接向工作台提供待审批事项与操作结果，Router 负责对话说明和需要语义澄清的事项。</p>
+<p>准入与资源协调返回允许、拒绝或需要审批。需要审批时，经网关交回运行时，运行时保存待审批事项及受影响的 Operation / 计划 / Skill 提案，并投递工作台。审批事项固定请求 ID、版本、对象范围、动作和参数，以及所需的授权或确认内容。工作台返回可信用户身份、审批事项 ID、对应版本及允许或拒绝决定。运行时核验审批资格与适用性后保存决定，再安排准入复核和续接。参数、范围或版本变化后重新判断审批适用性，资源占用与事实前提仍由最终准入校验。已有有效授权的动作按既定策略执行。</p>
+<p>Worker 通过资源查询工具调用统一资源模型的查询服务。内部事实直接返回，需要监控或日志后端的实时数据时，查询服务生成 QueryPlan，调用网关内的只读执行器及连接适配器，再将返回数据与来源交回 Worker。运行时负责上下文装配和流程推进，也可以为既定步骤发起查询。V2 的蓝色调用链以 Worker 为发起者展示，流程查询复用同一查询入口。</p>
+<p>集群运维以事件驱动工作推进。资源变化、作业回执、定时到期、用户修订和人工反馈进入运行时，先持久保存并去重，再匹配有效 Goal、Task、Operation 或 Wait。运行时结合当前状态、前置条件、规则版本和授权，决定执行动作、继续等待、委派 Worker 判断或交 Router 协调。事件发生后也可能只更新事实，具体推进由这些条件共同确定。</p>
+<p>运维事件与状态规则定义触发条件、状态转换、步骤依赖、验收和外协升级条件。Workflow / Step 保存一项工作的组织关系与推进位置，部署后测试等依赖仍需满足。并行、重试、局部复验和人工等待按各自的事件与当前状态续接。运行时提交状态变更及后续投递，执行产生的新回执再次进入这条处理链。Worker 的决定提交后形成正式工作变更，随后仍由运行时按规则推进。</p>
+<p>能力执行与治理接收运行时登记的 Operation，或者查询服务生成的外部只读请求。图中的运维事件与状态规则模块提供领域规则，事件受理和实际调度统一归工作运行时。</p>
+<p>工单适配器作为工具注册到执行网关。Worker 提出开单、更新等动作，或已生效流程命中外协规则后，由运行时登记操作，再经网关准入并调用工单工具。工单工具调用外部工单系统，返回工单 ID，并将可信回调或查询到的人工反馈经网关关联回原 Operation / Task。运行时匹配 Wait，需要判断时唤醒 Worker，工单关闭后按原任务的恢复条件复验。</p>
+<p>执行宿主接收运行时投递并保存送达、取入记录，通过运行时的上下文接口持久保存检查点。运行时、宿主和查询服务都带当前身份、工作引用与权限调用所属入口。</p>
+<h3 id="工作运行时详图-v2-的边界与阅读顺序">工作运行时详图 V2 的边界与阅读顺序</h3>
+<p>从左侧工作台或事件来源进入，先持久接收，再按当前责任和状态匹配。需要理解或判断的输入进入分配与投递，由边界外的执行宿主交给 Router 或 Worker。宿主确认持久接受并记录实际交给本轮模型的输入，运行时分别保存送达、取入和正式处理结果。已知回执与规则可确定的事件进入原 Operation / Wait 或状态处理。</p>
+<p>详图中央边界包含事件与投递记录、归属匹配、任务分配、正式提交、Operation、Wait 和恢复责任。持久上下文服务、执行宿主及 Router / Worker、能力调用层和实际执行者分别置于边界外。调用层落实工具 / MCP / API 调用，接口背后的检查进程、服务或外部系统实际执行。工具接口的存在不决定这些组件必须部署在不同进程。</p>
+<p>周期巡检配置与定时触发设施单独展示，其内置或独立服务实现尚待确定。运行时保留所委托计划和当前工作之间的关联。Task 自身的等待条件、超时状态、暂停及恢复仍归运行时。图下方按暂停、进程重启、改派分别展开续接要求，未正式处理的输入与在途操作继续关联原 Task。</p>
+<p>设计页默认显示全部链路，可选择突出显示入口与 Agent 协作、操作、审批、上下文及事件恢复。颜色保持整条链路一致，交叉处留白表示跨越，箭头端点表示交接。</p>
+<h3 id="工作运行时的内部职责">工作运行时的内部职责</h3>
+<p>工作运行时位于 Personal Agent 核心，连接 Router、Worker、上下文装配和受控执行。以下职责共享同一套正式工作状态，按模块组织代码与事务。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>运行时内部职责</th>
+<th>持久记录与交接</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>事件与投递</td>
+<td>登记和去重 Event，按可信引用匹配目标。保存投递身份、宿主送达和实际取入记录，向任务分配或等待匹配交付输入。</td>
+</tr>
+<tr>
+<td>任务与分配</td>
+<td>管理 Goal、Task、预算和当前 Assignment / Run。按路由结果请求装配 ContextManifest，复核资格后经执行宿主投递给 Router 或 Worker。</td>
+</tr>
+<tr>
+<td>提交与反馈</td>
+<td>接收 Router 的目标、控制或协调决定，以及 Worker 的计划、进展、待决与交回。事务内核对当前修订、授权和分配代际，提交正式结果和后续投递。</td>
+</tr>
+<tr>
+<td>等待与恢复</td>
+<td>保存 Wait 和关联位置，引用上下文模块的检查点。按当前控制意图、未处理输入和在途 Operation 核对结果续接原 Task，必要时替换 Assignment。</td>
+</tr>
+<tr>
+<td>流程推进</td>
+<td>按 Workflow 和 Step 推进确定性工作、记录 Operation，经执行网关下发。到达委派点时通过当前分配唤醒 Worker。</td>
+</tr>
+<tr>
+<td>验收与交付</td>
+<td>使用统一资源模型中的事实与证据核对当前契约，保存 AcceptanceRecord 和 DeliveryRecord，登记后续交接与通知。</td>
+</tr>
+</tbody>
+</table></div>
+<p>执行宿主管理会话和模型运行，持久上下文管理 ContextManifest 与检查点，执行网关负责最终准入与外部调用。运行时通过这些接口取得结果并保存工作状态。 <a href="Research/ClusBot-工作运行时内部设计图-V2.svg">工作运行时内部设计图 V2</a> · <a href="Research/ClusBot-分区协作架构图-V2.svg">分区协作架构图</a></p>
+<h3 id="权威状态与持久化边界">权威状态与持久化边界</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>信息</th>
+<th>权威管理职责</th>
+<th>其他部分的使用方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Goal、Task、计划、分配、等待、预算与控制意图</td>
+<td>工作运行时</td>
+<td>通过请求修订，通过查询或事件获取进展</td>
+</tr>
+<tr>
+<td>Operation 意图与执行记录、交付记录</td>
+<td>工作运行时保存，执行及渠道适配器提交确认结果</td>
+<td>查询真实确认状态，未知结果保留待核对状态</td>
+</tr>
+<tr>
+<td>DesiredBinding、Incident 与结构化 Hypothesis</td>
+<td>工作运行时中的目标和故障管理职责</td>
+<td>资源模型按引用解析目标和影响；上下文与知识读取正式记录及证据</td>
+</tr>
+<tr>
+<td>模型定义、ModelChangeSet 与 ModelPackRevision</td>
+<td>信息与上下文中的领域模型目录；能力治理核验发布资格</td>
+<td>按已发布版本发现类型、数据、方法与展示定义，更新各消费者的加载版本</td>
+</tr>
+<tr>
+<td>配置、测试、验收规范与规则版本</td>
+<td>能力执行与治理</td>
+<td>资源判定和工作验收引用不可变版本，目标生效范围由运行时管理</td>
+</tr>
+<tr>
+<td>资源身份、外部映射与类型</td>
+<td>信息与上下文中的资源目录</td>
+<td>所有任务、证据与知识共用稳定引用</td>
+</tr>
+<tr>
+<td>资源属性、关系、观测与领域判定</td>
+<td>对应领域数据提供方及信息与上下文中的判定规则，保存来源和历史</td>
+<td>当前操作查询有效事实，历史分析引用当时版本</td>
+</tr>
+<tr>
+<td>资源预留、占用与释放</td>
+<td>能力执行与治理中的领域资源协调能力；外部业务分配由业务调度器负责</td>
+<td>运行时保存关联并核对双方状态，不以本地意图代替外部事实</td>
+</tr>
+<tr>
+<td>会话、上下文检查点、知识与派生视图</td>
+<td>信息与上下文，按各类记录的更新规则维护</td>
+<td>工作上下文从权威记录重建，知识引用证据</td>
+</tr>
+<tr>
+<td>Skill 内容、版本、启用状态与变更确认</td>
+<td>能力执行与治理</td>
+<td>任务使用允许的固定版本，变更经确认后发布</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些职责限定写入规则，不要求不同信息物理隔离存储。持续执行所需的任务状态、执行意图、等待、事件位置和占用引用必须持久保存；全文、向量、关系索引和主题摘要可以由其来源重建。外部实时事实的缓存只能在其有效范围内使用。</p>
+<h3 id="跨模块请求-回执与一致性">跨模块请求 回执与一致性</h3>
+<p>下表是目标逻辑接口，非当前 HTTP API 清单。传输可为进程内调用、工具或 MCP，语义保持一致。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>接口</th>
+<th>发起 → 所属模块</th>
+<th>必需内容</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SubmitInput / ControlTask</td>
+<td>工作台/入口 → 运行时</td>
+<td>主体、幂等键、原工作引用、预期修订</td>
+<td>接收记录、当前状态或冲突</td>
+</tr>
+<tr>
+<td>ProposeTask / CommitDecision</td>
+<td>Router/Worker → 运行时</td>
+<td>TaskSpec、输入引用、Assignment 代际、依据和修订</td>
+<td>正式版本或拒绝理由</td>
+</tr>
+<tr>
+<td>AssembleContext</td>
+<td>运行时/宿主 → 上下文</td>
+<td>任务修订、角色、权限、预算、检查点</td>
+<td>Manifest、输入包、缺口</td>
+</tr>
+<tr>
+<td>RetrieveMemory / ApplyMemoryAction</td>
+<td>上下文/学习工作 → 记忆</td>
+<td>任务特征/路由；来源、策略版本、预期记忆修订</td>
+<td>适用条目或幂等更新结果</td>
+</tr>
+<tr>
+<td>QueryObjects / QueryData</td>
+<td>Agent/上下文/页面 → 资源</td>
+<td>ObjectRef、时间语义、字段/范围、预算</td>
+<td>ResultEnvelope；必要时 QueryPlan</td>
+</tr>
+<tr>
+<td>RegisterOperation / Execute</td>
+<td>Worker/流程 → 运行时 → 网关</td>
+<td>意图、对象集合、参数摘要、授权、版本、幂等键</td>
+<td>准入决定、JobRef、回执或 unknown</td>
+</tr>
+<tr>
+<td>IngestBatch</td>
+<td>网关/适配 → 资源</td>
+<td>来源身份、批次 ID、序号、覆盖、观测时间</td>
+<td>提交水位、缺口、变化事件</td>
+</tr>
+<tr>
+<td>SubmitTrigger / ResumeWait</td>
+<td>调度/回执 → 运行时</td>
+<td>来源、计划修订/原关联、事件幂等键</td>
+<td>唯一消费、唤醒/等待/忽略理由</td>
+</tr>
+<tr>
+<td>Verify / Accept</td>
+<td>验证器/用户 → 运行时</td>
+<td>契约修订、成果/证据版本、验证者身份</td>
+<td>验收记录或缺口</td>
+</tr>
+</tbody>
+</table></div>
+<p>正式写入用预期修订防止覆盖；运行时提交与后续 Outbox 同事务。跨模块独立存储时由 Outbox/Inbox 和幂等消费实现最终一致，关键准入回读权威源；读模型延迟必须显示水位。外部系统无法加入该事务，以意图、回执和补偿显式收敛。</p>
+<h2 id="3-统一工作模型">3 统一工作模型</h2>
+<h3 id="goal-与-task">Goal 与 Task</h3>
+<p>Goal 表达希望达到或持续维持的结果，例如完成一批节点交付，或持续负责一个集群的健康。它记录范围、成功或维持条件、预算、有效期、触发和停止规则、通知方式。简单的一次性工作可以直接建立 Task；持续责任由 Goal 管理触发规则，每次有意义的执行形成有界 Task。</p>
+<p>Task 是能够分配责任、执行、等待和验收的工作单元。接受任务时形成工作契约：要交付什么、作用于哪些对象、受哪些限制、如何判断完成、失败后如何处理。按任务类型补充目标配置、资源占用和执行窗口等要求，普通任务无需填写运维专有字段。</p>
+<p>一个 Task 至多有一个父任务，父子关系表达工作归属、预算分配和成果汇总。依赖关系单独表达执行前提，可以引用其他任务的成果，但不产生第二个生命周期负责人。运行时拒绝循环依赖。</p>
+<p>需要独立责任、调度、并行、上下文或验收边界的工作才拆成子 Task。紧密关联的机械步骤由流程 Step 表达。父任务需要定义哪些成果必需、哪些可选、能否接受部分结果，以及局部失败后的处理方式；子任务全部结束不自动等于整体交付成功。</p>
+<h3 id="通用任务契约与输出格式">通用任务契约与输出格式</h3>
+<p>下列契约供 Router/Worker 与运行时交换工作要求；它是 V2 的内部细化，不是当前数据库字段清单。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>字段组</th>
+<th>内容与来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>身份</td>
+<td>task_id、revision、owner、scope、原 input_id；由运行时生成/绑定</td>
+</tr>
+<tr>
+<td>目标</td>
+<td>要完成什么、作用于哪些材料/对象；来自用户或有效 Goal</td>
+</tr>
+<tr>
+<td>交付</td>
+<td>输出类型、Artifact/目标位置、结构化 Schema（如需）</td>
+</tr>
+<tr>
+<td>验收</td>
+<td>可核对条件、证据要求、验证者与是否需用户确认</td>
+</tr>
+<tr>
+<td>约束</td>
+<td>权限范围、允许工具、时间/费用预算、停止条件</td>
+</tr>
+<tr>
+<td>上下文</td>
+<td>指定材料、历史工作引用、环境/工具版本、隐私范围</td>
+</tr>
+<tr>
+<td>组织</td>
+<td>父任务、依赖、是否允许部分成果；由计划提议并校验</td>
+</tr>
+</tbody>
+</table></div>
+<p>固定任务优先使用已有领域/Skill 契约；开放任务可由模型提议 Markdown 报告、表格或结构化结果。Memory Router 消费已受理的契约，不负责定义业务验收。格式正确只说明可解析，内容与效果另验。</p>
+<p>同一报告的追加修改继续原 Task，新增 TaskRevision、Run 和成果版本；历史验收保持绑定旧版本。独立目标、不同责任范围或周期执行实例创建关联 Task。用户不需要为了持续修订另起会话。</p>
+<h3 id="执行计划与实际执行">执行计划与实际执行</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>对象</th>
+<th>生命周期与关系</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workflow</td>
+<td>Task 的版本化执行计划，包含阶段、依赖、继续条件、验证与失败处理；可引用复用流程定义及其版本</td>
+</tr>
+<tr>
+<td>Step</td>
+<td>计划中的持久步骤，记录已完成工作、等待和恢复依据，可以跨多个 Run；需要独立工作边界时映射为子 Task</td>
+</tr>
+<tr>
+<td>Assignment</td>
+<td>Task 与责任 Worker 的分配关系；改派产生新的执行资格，旧分配不能控制当前任务</td>
+</tr>
+<tr>
+<td>Run</td>
+<td>一次有界的 Agent 活跃执行，承担推理和调用；同一分配可经历多次 Run，等待后按需重新启动</td>
+</tr>
+<tr>
+<td>Session</td>
+<td>模型对话与上下文连续性的记录，可跨 Run，也可由检查点重建；不承担任务权威状态</td>
+</tr>
+<tr>
+<td>Operation</td>
+<td>对有副作用动作的持久执行契约，属于 Task 或其 Step，跨 Run 追踪外部执行和结果</td>
+</tr>
+</tbody>
+</table></div>
+<p>Workflow 的定义提供可复用的执行步骤与条件，Task 保存本次采用的版本和实际推进状态。计划可以声明在什么事件和前置条件下由 Worker 选择下一步，以及可选择的范围、约束和超出范围时的协调路径。Worker 提交决定及依据，运行时复核 Task / Workflow 修订、当前分配、授权、预算和相关资源与证据版本后保存计划或操作。若依据已经变化，先刷新并按现行条件继续。已执行的步骤及其依据保留。流程定义、执行实例和会话历史不混为一份可随意改写的内容。</p>
+<p>确定性步骤可以在无活跃 Run 时由运行时和执行能力推进。其过程仍有 Step 与 Operation 记录。Agent 发出的调用则同时关联实际 Run，便于追溯当次判断。持续执行依赖这些持久对象，模型无需一直在线等待。</p>
+<h3 id="task-状态与控制意图">Task 状态与控制意图</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>执行阶段</th>
+<th>含义与离开条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>待执行</td>
+<td>已具备当前阶段的开始条件，等待分配或可用执行容量</td>
+</tr>
+<tr>
+<td>执行中</td>
+<td>Agent 或已确定的流程正在推进工作</td>
+</tr>
+<tr>
+<td>等待</td>
+<td>保存外部结果、子任务、时间、用户输入、授权或资源条件；满足条件后重新检查是否可以继续</td>
+</tr>
+<tr>
+<td>验证中</td>
+<td>检查结果、证据及其对当前要求的适用性</td>
+</tr>
+<tr>
+<td>成功</td>
+<td>当前契约中的交付条件已经通过验证</td>
+</tr>
+<tr>
+<td>失败</td>
+<td>本次工作无法在当前条件下完成，保留原因、证据与已发生效果</td>
+</tr>
+<tr>
+<td>取消</td>
+<td>取消意图已经完成必要核对，历史效果和后续处置责任仍可追踪</td>
+</tr>
+</tbody>
+</table></div>
+<p>暂停是阻止继续推进的控制意图，独立于执行阶段；暂停不能抹去原来等待什么。取消首先阻止新动作，再处理已发出的操作和未释放占用，不能用一个取消标记宣称外部工作已经停止。</p>
+<p>未完成任务可以在有效授权内修订，修订保留要求、计划和验收条件的版本。同一交付目标的后续修订沿用原 Task，产生新的 Run、成果和验收版本，原验收记录仍绑定原成果；独立目标、不同责任范围或新一轮周期实例才创建关联 Task。取消后的重新委托需要显式受理，不能由晚到回执自行恢复。失败任务的显式重试可以建立新的 Assignment 和 Run，是否重新执行外部动作仍以 Operation 核对结果为准。用户可以在同一对话中持续修改成果，无需重述已有背景。</p>
+<h3 id="输入归属与持续触发">输入归属与持续触发</h3>
+<p>Event 保存输入来源、可信身份、时间、原始内容引用及关联标识。Thread 保存渠道中的讨论关系，一个 Thread 可以涉及多项工作。Subscription 决定哪些任务能接收相关上下文；触发规则决定在何种条件下恢复或产生工作。</p>
+<p>运行时依据输入类型、可信身份和已登记的关联记录先匹配投递路径。路由规则决定由谁接收，授权规则决定接收方可以执行哪些动作。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>输入</th>
+<th>运行时先匹配什么</th>
+<th>匹配后的处理</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>主会话的自然语言</td>
+<td>会话、身份及明确的任务引用。页面当前选中的 Task 可作为上下文。</td>
+<td>交给 Router 理解意图和判断归属。</td>
+</tr>
+<tr>
+<td>工作台结构化命令</td>
+<td>明确的动作、Task 或 Goal 标识、当前版本及权限。</td>
+<td>按动作契约校验和提交，例如暂停指定 Task。</td>
+</tr>
+<tr>
+<td>外部作业或工单回执</td>
+<td>可信来源及已登记的外部作业 ID 或工单 ID。</td>
+<td>关联原 Operation 或原 Task。当前规则能确定下一步时直接推进，到了委派决策点或需要新判断时唤醒 Worker。</td>
+</tr>
+<tr>
+<td>资源变化、告警和定时触发</td>
+<td>观测对象、有效 Goal、触发规则及已有工作。</td>
+<td>更新事实或关联工作。需要新判断时唤醒负责 Task 的 Worker，跨任务或超出授权范围的事项交 Router 协调。</td>
+</tr>
+</tbody>
+</table></div>
+<p>通用模型预留任务专属跟进。只有入口有明确的跟进投递约定、消息命中可信任务绑定，且任务与负责分配有效时，运行时才可直接续接当前 Worker。仅作上下文的订阅用于供任务读取材料。当前尚未为 ClusBot 任务专属会话或飞书话题定义这项投递约定。语义相似度可用于查找候选，明确关联或订阅本身也不扩大操作授权。</p>
+<p>输入事件、执行意图、Task 和 Operation 分别去重。一个事实可以合法影响多个任务，重复收到该事实不应反复创建相同操作。事件接收先持久保存，再匹配等待与触发规则；匹配位置可回查，避免结果早于等待登记时丢失唤醒。</p>
+<p>周期工作、状态收敛和持续监测都绑定有效 Goal 或明确的授权责任。到期、停止、预算不足或没有需要处理的新变化时，不应无限产生工作。连接某个应用、记住用户偏好或订阅一段讨论，本身不构成持续行动授权。</p>
+<h2 id="4-统一资源与证据模型">4 统一资源与证据模型</h2>
+<h3 id="模型定义与统一读取">模型定义与统一读取</h3>
+<p>“统一资源与证据”内部承担领域模型目录、资源身份目录、事实与关系管理、数据查询与溯源、领域判定与影响分析、证据管理六项职责。模型定义描述类型、字段、关系、数据集、存储与方法绑定及展示规则；运行实例保存实际资源与事实。工作对象、故障、知识和方法通过 ObjectRef 关联查询，各自的状态修改继续由原管理入口负责。</p>
+<p>模型变更以 ModelChangeSet 保存基准版本、差异、样例验证和影响清单。目录核验发布资格与基准版本，发布完整不可变的 ModelPackRevision 并切换发布指针。查询、适配器、上下文和工作台按版本加载；未完成的迁移和投影明确显示水位。模型发布不直接改变设备状态；涉及 Skill 内容或行为的变更仍须用户明确确认。</p>
+<p>查询遵循“定位对象 → 发现数据与方法 → 固定对象上下文和绑定 → 准备 QueryPlan → 执行受控读取 → 返回数据及来源”。计划与数据在结果信封中分别标识，数据注明当前/历史时间、采用版本、覆盖、截断、缺失来源和新鲜度。高频指标和完整日志留在对应后端；用于判断和验收的材料按需固定为证据。</p>
+<h3 id="身份-属性与关系">身份 属性与关系</h3>
+<p>Resource 表示工作所作用的稳定对象。其通用结构包含对象类型、所属范围、稳定标识、外部系统映射、属性结构版本、来源、时间和访问要求。名称、地址和展示位置可以变化，任务与历史证据仍通过稳定身份关联。</p>
+<p>对象关系也保存类型、来源和有效期，支持当前关系与历史关系查询。目录负责身份和映射，各领域数据提供方负责具体属性与关系。存在身份冲突时保留候选并核对，不能凭名称或地址相似度直接合并。</p>
+<p>统一引用用于 Resource、Task、Operation、Artifact、Evidence、Memory 和 Skill，但各对象保留自己的语义与状态。引用至少定位对象类型、所属范围和稳定标识，需要重现历史依据时再指定版本或快照；引用本身不授予读取权限。</p>
+<p>资源选择条件与本次实际集合分别记录。任务可以按条件寻找资源，开始执行后必须保存实际使用的对象及相关版本。后续查询结果变化不应悄悄改变执行对象。涉及多个来源时保留各自版本与采集时间，不将不同系统的版本号比较大小，也不假定快照天然对应同一时刻。</p>
+<h3 id="目标-观测-判定与执行条件">目标 观测 判定与执行条件</h3>
+<p>资源模型允许各领域定义四类相互关联的信息：目标状态说明希望达到什么；实际观测说明看到了什么；领域判定说明规则与证据支持的结论；执行条件说明某个动作当前是否可以开展。</p>
+<p>目标状态关联提出它的 Goal、Task 或有效策略，记录作用范围、版本与有效期。同一对象存在冲突目标时按明确规则解决，不能无条件采用最后一次写入。目标配置版本与资源记录版本不同，一次新的观测不会自动改变目标。</p>
+<p>运行时保存 DesiredBinding，并将当前有效绑定、工作修订和规范引用提供给资源模型；领域规则解析 EffectiveDesired 后与实际事实比较。Condition 使用 True、False、Unknown 表达有依据的满足、不满足和未知。针对某次动作的 EligibilityDecision 则结合操作者、动作参数、目标与影响集合、当前目标修订计算 Allow、Deny 或 Unknown，并返回阻塞原因与依赖版本。</p>
+<p>资源协调授予的 Claim 只证明相应使用条件已经落实。最终执行资格还需执行网关核对当前任务授权、身份、领域判定、事实时效和占用；验收提交也重新核对必要版本。查询投影、页面缓存和过期的准入解释不能直接作为执行许可。</p>
+<p>观测保留来源、发生或生效时间、采集时间与系统获知时间。领域判定关联所用观测、规则版本和适用范围，能够表达未知。执行前综合判定、授权、资源占用和事实新鲜度；未知、过期或失效的信息不默认满足条件。通用模型承载这些关系，具体状态维度与判定函数由领域定义。</p>
+<h3 id="artifact-evidence-与验收">Artifact Evidence 与验收</h3>
+<p>Artifact 是文件、报告或其他可交付成果。Evidence 是支持某项判断的可追溯材料，可以引用 Artifact、原始观测、外部记录或 Operation 结果。证据记录其来源、适用对象与版本、时间范围及判断用途，不能只保存模型给出的结论。</p>
+<p>Task 的验收要求关联需要满足的条件和证据。工具返回成功只证明其报告的执行结果；目标是否实现，需要查询或验证实际效果。涉及多个资源时，验证覆盖本次实际集合与整体要求，局部步骤成功不替代整体验收。</p>
+<p>验收结论与历史结果固定当时依据。资源或规则后来改变，不追改过去曾经完成的事实；系统判断旧证据对当前操作是否仍适用，需要时安排新的验证工作。</p>
+<p>联机测试固定 ResourceSetSnapshot、成员角色与 SnapshotManifest，EvidenceUse 单独说明历史材料对当前契约的适用性。验证门禁按“要求 × 对象/对象组”检查覆盖、缺失和失败，返回 AcceptanceRecord 及采用的 Task 修订；交付还需独立核对业务接收及投递结果。</p>
+<h3 id="变化传播与有效性">变化传播与有效性</h3>
+<p>任务、操作、判定和派生知识记录对资源、规则与证据的依赖。事实或规则变化后，领域规则说明哪些结论可能受影响，运行时标记相关工作需要复查，上下文机制更新下一次执行的依据。该机制同时服务资源变化、用户要求修订和知识纠正。</p>
+<p>复查需要区分与当前任务无关的变化、仍可复用的证据和必须重验的部分。变化不能被摘要隐藏，也不意味着全部结果统一失效。关键动作在执行入口重新检查相关条件，当前事实查询与历史解释使用各自适用的版本。</p>
+<p>事实、关系、目标或规则提交后发布可恢复的变化事件，影响分析按依赖重算 Condition、EvidenceUse 和待复查范围；定时到期与读取时检查处理没有新事件的失效。事件与恢复机制接收已解释的变化和受影响工作，在有效 Goal 下按偏差 episode 关联或创建有界 Task；重复采样不逐次唤醒 Agent。</p>
+<p>资源模型的具体定义、查询契约及领域规则见<a href="Research/ClusBot-统一资源模型设计方案.md">统一资源模型设计方案</a>。</p>
+<h2 id="5-任务执行与持续运行">5 任务执行与持续运行</h2>
+<h3 id="一次工作的完整运行过程">一次工作的完整运行过程</h3>
+<p>下表描述需要持续执行的工作如何经过各组件。简单对话可以由 Router 直接处理；进入任务体系的工作按相同关系推进。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>主要负责人</th>
+<th>状态与结果如何衔接</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>接收与归属</td>
+<td>交互或外部适配器、工作运行时、Router</td>
+<td>保存并去重事件，按可信记录匹配投递；主会话由 Router 判断语义和工作归属，已关联的外部回执按原任务接续</td>
+</tr>
+<tr>
+<td>分配与准备</td>
+<td>工作运行时、信息与上下文</td>
+<td>关联责任任务。需要 Worker 决策时建立或复核 Assignment，装配当前上下文，启动有界 Run</td>
+</tr>
+<tr>
+<td>规划与取舍</td>
+<td>负责 Task 的 Worker</td>
+<td>在任务授权内决定计划、分批或调整，提交选择和依据；运行时校验后保存计划版本</td>
+</tr>
+<tr>
+<td>执行</td>
+<td>工作运行时、能力执行与治理</td>
+<td>检查依赖、授权、资源占用和前置条件；登记 Operation 并下发，保存外部标识和结果</td>
+</tr>
+<tr>
+<td>等待与继续</td>
+<td>工作运行时、外部适配器</td>
+<td>保存继续条件并释放无需使用的执行槽；事件匹配原 Task / Step / Operation 后，按规则继续、唤醒 Worker 决策或提交 Router 协调</td>
+</tr>
+<tr>
+<td>核验</td>
+<td>领域规则、负责或独立核验的 Worker、工作运行时</td>
+<td>检查效果与有效证据；满足要求才完成 Task，失败则在范围与预算内修正或提出待决问题</td>
+</tr>
+<tr>
+<td>汇总与交付</td>
+<td>父任务负责人、Router、交付适配器</td>
+<td>汇总整体目标进展，生成成果与说明；保存发送状态，单独恢复失败的投递</td>
+</tr>
+<tr>
+<td>反馈与后续</td>
+<td>Router、原任务负责人或新的关联 Task</td>
+<td>用户修订改变当前工作；结果进入经历与证据，持续 Goal 保留后续触发，方法变更进入提案流程</td>
+</tr>
+</tbody>
+</table></div>
+<p>父子任务结果先回到父任务负责人，重要进展再由 Router 向用户呈现。周期责任的一次 Task 完成后，Goal 可以继续有效；一次交付完成也不意味着所有长期维护责任结束。工作台始终从同一记录查询目标、任务、待决问题和成果。</p>
+<p>交付、故障恢复和复验场景都遵守同一反馈路径：运行时登记结果或待决事件，取得当前 Router 上下文并唤醒 Router，再由 Router 通过工作台说明已完成范围、剩余责任和具体取舍。任务内的常规结果由运行时按计划推进；已委派的取舍由 Worker 决定。涉及跨任务冲突、整体承诺变化、预算不足或需额外授权时，运行时记录待决项，阻塞依赖该决定的步骤并交由 Router 协调。用户后续回复先保存为 Event，再解释范围并形成正式工作修订。</p>
+<h3 id="消息投递与协作同步">消息投递与协作同步</h3>
+<p>运行时保存 Event，并在确认接收前持久登记其待匹配或待投递责任。一个 Event 可以被多方引用。每项可执行意图有一个当前责任方，只有它能提交该意图的决定；其他接收方按权限读取上下文或进展。投递记录引用原 Event、接收责任、用途和对应的 Task 或会话。重复发送复用同一投递身份，尝试时记录当前 Assignment、Run 和失败原因。改派时沿用原 Task 的待处理输入，由新 Assignment 继续，旧分配的资格随代际变更失效。上下文订阅仅用于补充事实。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md#engine">DeepSeek Engine 与投递实现</a> · <a href="https://arxiv.org/abs/2308.08155">AutoGen 论文</a> · <a href="https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/framework/message-and-communication.html">AutoGen 消息与通信</a></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>里程碑</th>
+<th>可核对的依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>已接收</td>
+<td>Event 与接收责任已持久登记，可用来源 ID 查询或去重。</td>
+</tr>
+<tr>
+<td>已投递</td>
+<td>目标会话或 Run 宿主确认收到输入，保留该次投递和接收实例的关联。</td>
+</tr>
+<tr>
+<td>已纳入推理上下文</td>
+<td>宿主记录实际交给本轮模型的输入引用与版本。检查点只推进已覆盖的消息位置，缺口单独保留。</td>
+</tr>
+<tr>
+<td>已处理或生效</td>
+<td>运行时提交明确的处理结果，例如记录为事实补充、退回协调、发起待决事项或提交正式修订。业务效果继续以相应 Operation 和验证证据核对。</td>
+</tr>
+</tbody>
+</table></div>
+<p>宿主在确认投递前后中断时，按稳定投递身份补投或核对。已纳入上下文但没有持久处理结果的输入继续保留，恢复时随当前 Task、有效授权和检查点装配。运行时在同一事务内记录一次有效处理及相应状态变更或后续投递，重复尝试返回已有结果。跨系统调用继续按原 Operation 对账；回执不明确时保存待核对状态。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/tests/followups.spec.ts">DeepSeek 跟进测试</a> · <a href="https://www.cidrdb.org/cidr2007/papers/cidr07p15.pdf">Helland，Life beyond Distributed Transactions，§5</a></p>
+<p>Router、Worker 和工作台通过同一份正式工作记录同步。Worker 提交进展、决定或待决项时引用 Task 修订、Assignment、所依据的输入与证据。常规进展写入原 Task，供工作台和 Router 查询；用户待决、超出授权、跨任务冲突及约定的交付结果通过持久事件按需唤醒 Router。Worker 发现跟进超出本任务的范围时，引用原 Event 和原因交回 Router，运行时记录责任移交，避免同一意图在两边同时推进。报告或通知发送失败按原投递恢复。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md#runtime">DeepSeek 通知与跟进实现</a> · <a href="https://arxiv.org/abs/2503.13657">Why Do Multi-Agent LLM Systems Fail?</a></p>
+<p>对同一 Task，运行时以正式修订的提交顺序处理互斥控制变更。结构化暂停等命令在核验后立即提交。主会话中的自然语言先由 Router 解释，正式控制请求提交后生效。运行时在提交 Worker 决定的事务内核验控制意图、授权和相关修订，执行网关在实际下发前执行最终准入。已下发或派发状态未确定的作业继续沿原 Operation 核对。恢复按当前版本及指定的 Wait、Task 或待决事项定位责任，必要时重新装配上下文。 <a href="https://docs.temporal.io/encyclopedia/workflow-message-passing">Temporal 工作流消息机制</a> · <a href="https://docs.langchain.com/oss/python/langgraph/interrupts">LangGraph 中断与恢复</a></p>
+<h3 id="工作运行时的投递与续接契约">工作运行时的投递与续接契约</h3>
+<figure id="runtime-detail" aria-labelledby="runtime-detail-caption"><figcaption id="runtime-detail-caption">工作运行时内部设计 V2 · 从入口到正式提交</figcaption><style>
+#runtime-detail .runtime-controls{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}
+#runtime-detail button{font:inherit;font-size:14px;background:white;border:1px solid var(--chain,#627676);color:var(--chain,#334848);border-radius:6px;padding:7px 12px;cursor:pointer}
+#runtime-detail button[aria-pressed=true]{color:white;background:var(--chain,#334848)}
+#runtime-detail svg{display:block;width:100%;height:auto}
+#runtime-detail .runtime-description{font-size:15px;line-height:1.7;min-height:3.4em}
+#runtime-detail [data-route]{transition:opacity .12s}
+</style><div class="runtime-controls" role="group" aria-label="选择工作运行时链路"><button type="button" data-runtime-chain="all" aria-pressed="true">全部链路</button><button type="button" data-runtime-chain="work" aria-pressed="false" style="--chain:#276B50">入口与 Agent 协作</button><button type="button" data-runtime-chain="action" aria-pressed="false" style="--chain:#B45D20">请求、调用与执行</button><button type="button" data-runtime-chain="approval" aria-pressed="false" style="--chain:#9C426C">审批闭环</button><button type="button" data-runtime-chain="context" aria-pressed="false" style="--chain:#7852A0">上下文与检查点</button><button type="button" data-runtime-chain="sense" aria-pressed="false" style="--chain:#137C80">事件与恢复</button></div><p class="runtime-description" aria-live="polite"></p><svg xmlns="http://www.w3.org/2000/svg" width="2590" height="1610" viewBox="0 0 2590 1610" role="img" aria-labelledby="runtime-v2-runtime-title runtime-v2-runtime-desc">
+<title id="runtime-v2-runtime-title">ClusBot 工作运行时内部设计 V2</title>
+<desc id="runtime-v2-runtime-desc">从左侧用户与事件入口进入。运行时框内保存工作和输入状态，框外为执行宿主、认知角色、上下文服务、调用层和实际执行者。宿主送达、本轮取入和正式提交分别记录。请求、调用与实际执行各有负责人。暂停、重启和改派按原任务恢复。</desc><defs>
+<marker id="runtime-v2-work-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#276B50" /></marker>
+<marker id="runtime-v2-context-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#7852A0" /></marker>
+<marker id="runtime-v2-action-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#B45D20" /></marker>
+<marker id="runtime-v2-sense-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#137C80" /></marker>
+<marker id="runtime-v2-approval-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M0 0 L10 5 L0 10 Z" fill="#9C426C" /></marker>
+</defs><g font-family="PingFang SC, Microsoft YaHei, sans-serif" stroke-linecap="round" stroke-linejoin="round">
+<rect x="0.0" y="0" width="2590.0" height="1610" rx="0" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="55.0" y="65" font-size="43" fill="#203641" font-weight="650" text-anchor="start">ClusBot 工作运行时内部设计 V2</text>
+<text x="57.0" y="105" font-size="24" fill="#48616C" font-weight="400" text-anchor="start">从左侧入口进入，沿同色链路查看请求、处理和返回</text>
+<path d="M58.0 146 h34" stroke="#276B50" stroke-width="3" marker-end="url(#runtime-v2-work-arrow)" />
+<text x="104.0" y="153" font-size="21" fill="#276B50" font-weight="650" text-anchor="start">消息与协作闭环</text>
+<path d="M360.0 146 h34" stroke="#7852A0" stroke-width="3" marker-end="url(#runtime-v2-context-arrow)" />
+<text x="406.0" y="153" font-size="21" fill="#7852A0" font-weight="650" text-anchor="start">上下文装配与保存</text>
+<path d="M700.0 146 h34" stroke="#B45D20" stroke-width="3" marker-end="url(#runtime-v2-action-arrow)" />
+<text x="750.5" y="153" font-size="21" fill="#B45D20" font-weight="650" text-anchor="start">操作执行与结果</text>
+<path d="M1075.0 146 h34" stroke="#137C80" stroke-width="3" marker-end="url(#runtime-v2-sense-arrow)" />
+<text x="1121.0" y="153" font-size="21" fill="#137C80" font-weight="650" text-anchor="start">事件触发与恢复</text>
+<path d="M1445.0 146 h34" stroke="#9C426C" stroke-width="3" marker-end="url(#runtime-v2-approval-arrow)" />
+<text x="1491.0" y="153" font-size="21" fill="#9C426C" font-weight="650" text-anchor="start">审批请求与决定</text>
+<text x="1820.0" y="153" font-size="20" fill="#48616C" font-weight="400" text-anchor="start">实线 → 请求 / 触发　虚线 ⇢ 结果 / 回执</text>
+<g id="runtime-v2-runtime-boundary">
+<rect x="425.0" y="345" width="1280.0" height="1105" rx="26" fill="#EAF4EC" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="449.0" y="384" font-size="29" fill="#203641" font-weight="650" text-anchor="start">工作运行时 · 受理、调度与正式状态</text>
+</g>
+<g id="runtime-v2-intake">
+<rect x="460.0" y="450" width="280.0" height="172" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="478.0" y="484" font-size="25" fill="#203641" font-weight="650" text-anchor="start">① 接收与登记</text>
+<text x="478.0" y="516" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">保存 Event、可信身份</text>
+<text x="478.0" y="543" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">去重，登记待处理责任</text>
+<text x="478.0" y="570" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">返回接收确认</text>
+</g>
+<g id="runtime-v2-match">
+<rect x="880.0" y="450" width="300.0" height="172" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="898.0" y="484" font-size="25" fill="#203641" font-weight="650" text-anchor="start">归属与状态评估</text>
+<text x="898.0" y="516" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">主会话 / 已绑定工作</text>
+<text x="898.0" y="543" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">当前 Goal / Task / Wait</text>
+<text x="898.0" y="570" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">事件 + 状态 + 规则</text>
+</g>
+<g id="runtime-v2-dispatch">
+<rect x="1310.0" y="450" width="350.0" height="172" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1328.0" y="484" font-size="25" fill="#203641" font-weight="650" text-anchor="start">分配、装配与投递</text>
+<text x="1328.0" y="516" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">复核修订、代际和预算</text>
+<text x="1328.0" y="543" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">登记目标绑定与投递 ID</text>
+<text x="1328.0" y="570" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">延期 / 退避 / 转待决</text>
+</g>
+<g id="runtime-v2-operation">
+<rect x="460.0" y="790" width="280.0" height="190" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="478.0" y="824" font-size="25" fill="#203641" font-weight="650" text-anchor="start">操作与结果核对</text>
+<text x="478.0" y="856" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">持久登记 Operation</text>
+<text x="478.0" y="883" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">最终准入后登记派发</text>
+<text x="478.0" y="910" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">按原作业 ID 核对回执</text>
+<text x="478.0" y="937" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">验收条件与有效证据</text>
+</g>
+<g id="runtime-v2-commit">
+<rect x="880.0" y="790" width="300.0" height="190" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="898.0" y="824" font-size="25" fill="#203641" font-weight="650" text-anchor="start">④ 正式提交</text>
+<text x="898.0" y="856" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">复核修订、授权与代际</text>
+<text x="898.0" y="883" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">原意图只结清一次</text>
+<text x="898.0" y="910" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">处理结果 + 状态变更</text>
+<text x="898.0" y="937" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">后续投递一起提交</text>
+</g>
+<g id="runtime-v2-receipt">
+<rect x="1310.0" y="790" width="350.0" height="190" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1328.0" y="824" font-size="25" fill="#203641" font-weight="650" text-anchor="start">② 送达与 ③ 取入</text>
+<text x="1328.0" y="856" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">② 宿主持久接受回执</text>
+<text x="1328.0" y="883" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">③ Run / 轮次 / 输入版本</text>
+<text x="1328.0" y="910" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">关联 ContextManifest</text>
+<text x="1328.0" y="937" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">取入后仍等待正式结果</text>
+</g>
+<g id="runtime-v2-recovery">
+<rect x="460.0" y="1175" width="1200.0" height="230" rx="26" fill="#F1F6F3" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="484.0" y="1214" font-size="29" fill="#203641" font-weight="650" text-anchor="start">等待、暂停与恢复</text>
+</g>
+<text x="480.0" y="1252" font-size="23" fill="#137C80" font-weight="650" text-anchor="start">暂停 / 继续</text>
+<text x="480.0" y="1287" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">暂停先提交则拦截新派发</text>
+<text x="480.0" y="1314" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">已登记开始的操作继续对账</text>
+<text x="900.0" y="1252" font-size="23" fill="#137C80" font-weight="650" text-anchor="start">进程重启</text>
+<text x="900.0" y="1287" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">扫描 Wait、待投递及未处理输入</text>
+<text x="900.0" y="1314" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">已提交结果复用，缺口继续处理</text>
+<text x="1310.0" y="1252" font-size="23" fill="#137C80" font-weight="650" text-anchor="start">Worker 改派</text>
+<text x="1310.0" y="1287" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">原子换代，旧分配失效</text>
+<text x="1310.0" y="1314" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">换绑定用新投递 ID，沿用原输入</text>
+<text x="480.0" y="1370" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">核对当前 Task、授权、检查点、在途 Operation 与占用，再确定等待、按规则推进或重新委派。</text>
+<text x="65.0" y="383" font-size="28" fill="#276B50" font-weight="650" text-anchor="start">从这里进入</text>
+<g id="runtime-v2-ui">
+<rect x="65.0" y="420" width="280.0" height="170" rx="16" fill="#F0F5F2" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="83.0" y="454" font-size="25" fill="#203641" font-weight="650" text-anchor="start">用户与工作台</text>
+<text x="83.0" y="486" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">自然语言委托、跟进</text>
+<text x="83.0" y="513" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">明确命令、审批决定</text>
+<text x="83.0" y="540" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">接收确认、结果与待决</text>
+</g>
+<g id="runtime-v2-events">
+<rect x="65.0" y="800" width="280.0" height="185" rx="16" fill="#ECF5F4" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="83.0" y="834" font-size="25" fill="#203641" font-weight="650" text-anchor="start">事件来源</text>
+<text x="83.0" y="866" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">资源模型的变化事件</text>
+<text x="83.0" y="893" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">作业 / 工单关联回执</text>
+<text x="83.0" y="920" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">定时到期、服务状态</text>
+<text x="83.0" y="947" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">保留来源与关联身份</text>
+</g>
+<g id="runtime-v2-timing">
+<rect x="65.0" y="1185" width="280.0" height="220" rx="16" fill="#F3F4F2" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="83.0" y="1219" font-size="25" fill="#203641" font-weight="650" text-anchor="start">周期检查与触发设施</text>
+<text x="83.0" y="1251" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">保存、执行周期检查配置</text>
+<text x="83.0" y="1278" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">向运行时交付到期事件</text>
+<text x="83.0" y="1305" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">内置或独立服务尚待确定</text>
+<text x="83.0" y="1332" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">任务 Wait / 超时状态</text>
+<text x="83.0" y="1359" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">由运行时保存与恢复</text>
+</g>
+<g id="runtime-v2-context">
+<rect x="1110.0" y="210" width="550.0" height="108" rx="16" fill="#F1EDF7" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1128.0" y="244" font-size="25" fill="#203641" font-weight="650" text-anchor="start">持久上下文与资源查询</text>
+<text x="1128.0" y="276" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">装配 ContextManifest，保存会话检查点</text>
+<text x="1128.0" y="303" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">读取当前资源、证据、知识与方法版本</text>
+</g>
+<g id="runtime-v2-host">
+<rect x="1810.0" y="300" width="680.0" height="435" rx="26" fill="#EDF3F8" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1834.0" y="339" font-size="29" fill="#203641" font-weight="650" text-anchor="start">执行宿主 · 会话与模型运行</text>
+</g>
+<g id="runtime-v2-inbox">
+<rect x="1840.0" y="370" width="620.0" height="100" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1858.0" y="404" font-size="25" fill="#203641" font-weight="650" text-anchor="start">会话接收与模型输入</text>
+<text x="1858.0" y="436" font-size="19" fill="#48616C" font-weight="400" text-anchor="start">按投递 ID 去重，持久接受后确认；记录实际交给模型的输入</text>
+</g>
+<g id="runtime-v2-router">
+<rect x="1840.0" y="535" width="285.0" height="115" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1858.0" y="569" font-size="25" fill="#203641" font-weight="650" text-anchor="start">Router</text>
+<text x="1858.0" y="601" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">理解主会话与工作归属</text>
+<text x="1858.0" y="628" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">目标修订、协调与待决</text>
+</g>
+<g id="runtime-v2-worker">
+<rect x="2170.0" y="535" width="290.0" height="115" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="2188.0" y="569" font-size="25" fill="#203641" font-weight="650" text-anchor="start">Worker</text>
+<text x="2188.0" y="601" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">任务内规划、诊断与取舍</text>
+<text x="2188.0" y="628" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">提交计划、动作与进展</text>
+</g>
+<g id="runtime-v2-execution">
+<rect x="1810.0" y="1070" width="680.0" height="430" rx="26" fill="#FAF0E5" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1834.0" y="1109" font-size="29" fill="#203641" font-weight="650" text-anchor="start">调用与实际执行</text>
+</g>
+<g id="runtime-v2-gateway">
+<rect x="1840.0" y="1140" width="620.0" height="120" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1858.0" y="1174" font-size="25" fill="#203641" font-weight="650" text-anchor="start">能力调用层 · 网关与准入</text>
+<text x="1858.0" y="1206" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">接收已登记操作，核验当前资格与资源条件</text>
+<text x="1858.0" y="1233" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">通过本地工具 / MCP Client / API 发出调用</text>
+</g>
+<g id="runtime-v2-executor">
+<rect x="1840.0" y="1360" width="620.0" height="110" rx="16" fill="#FFFFFF" stroke="#BDCBCB" stroke-width="1.5" />
+<text x="1858.0" y="1394" font-size="25" fill="#203641" font-weight="650" text-anchor="start">实际执行者</text>
+<text x="1858.0" y="1426" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">工具实现 / NHC 检查进程 / 外部作业系统</text>
+<text x="1858.0" y="1453" font-size="21" fill="#48616C" font-weight="400" text-anchor="start">常驻连接服务负责 SNMP / Webhook 接收</text>
+</g>
+<path data-route="work" class="crossing-clearance" d="M345 470 H460" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-input" data-route="work" d="M345 470 H460" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M460 540 H345" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-received" data-route="work" d="M460 540 H345" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M740 493 H880" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-match-input" data-route="work" d="M740 493 H880" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M1180 493 H1310" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-assign" data-route="work" d="M1180 493 H1310" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M1660 495 C1750 495 1750 407 1840 407" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-dispatch-host" data-route="work" d="M1660 495 C1750 495 1750 407 1840 407" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M1980 470 V535" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-inbox-router" data-route="work" d="M1980 470 V535" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M2310 470 V535" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-inbox-worker" data-route="work" d="M2310 470 V535" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M1980 650 V675 C1980 702 1910 720 1810 720" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-router-report" data-route="work" d="M1980 650 V675 C1980 702 1910 720 1810 720" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M2300 650 V696 C2300 720 2270 720 2240 720 H1810" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-worker-report" data-route="work" d="M2300 650 V696 C2300 720 2270 720 2240 720 H1810" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="action" class="crossing-clearance" d="M2360 650 V710 C2360 728 2330 728 2300 728 H1810" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-worker-action" data-route="action" d="M2360 650 V710 C2360 728 2330 728 2300 728 H1810" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M1840 455 C1820 455 1820 640 1810 670" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-input-taken-record" data-route="work" d="M1840 455 C1820 455 1820 640 1810 670" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M1840 443 C1740 443 1740 823 1660 823" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-host-delivered" data-route="work" d="M1840 443 C1740 443 1740 823 1660 823" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M1810 670 C1760 670 1760 900 1660 900" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-host-taken" data-route="work" d="M1810 670 C1760 670 1760 900 1660 900" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M1810 720 C1750 720 1750 998 1710 998 H1245 C1196.25 998 1196.25 950 1180 950" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-host-decision" data-route="work" d="M1810 720 C1750 720 1750 998 1710 998 H1245 C1196.25 998 1196.25 950 1180 950" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M1310 847 H1180" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-record-reference" data-route="work" d="M1310 847 H1180" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="work" class="crossing-clearance" d="M1120 790 V622" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-feedback-match" data-route="work" d="M1120 790 V622" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" />
+<path data-route="work" class="crossing-clearance" d="M880 578 H740" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-feedback-ui" data-route="work" d="M880 578 H740" fill="none" stroke="#276B50" stroke-width="2.6" marker-end="url(#runtime-v2-work-arrow)" stroke-dasharray="9 7" />
+<path data-route="context" class="crossing-clearance" d="M1500 790 V622" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-restore-context" data-route="context" d="M1500 790 V622" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#runtime-v2-context-arrow)" />
+<path data-route="context" class="crossing-clearance" d="M1370 450 V318" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-assemble" data-route="context" d="M1370 450 V318" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#runtime-v2-context-arrow)" />
+<path data-route="context" class="crossing-clearance" d="M1580 318 V450" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-manifest" data-route="context" d="M1580 318 V450" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#runtime-v2-context-arrow)" stroke-dasharray="9 7" />
+<path data-route="sense" class="crossing-clearance" d="M345 845 C390 845 400 810 400 750 V625 C400 600 420 600 460 600" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-external-event" data-route="sense" d="M345 845 C390 845 400 810 400 750 V625 C400 600 420 600 460 600" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="sense" class="crossing-clearance" d="M205 1185 V985" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-timer-event" data-route="sense" d="M205 1185 V985" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="sense" class="crossing-clearance" d="M985 622 V790" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-rule-evaluation" data-route="sense" d="M985 622 V790" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M560 622 V790" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-operation-event" data-route="action" d="M560 622 V790" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M880 847 H740" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-commit-operation" data-route="action" d="M880 847 H740" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M740 938 H880" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-operation-evidence" data-route="action" d="M740 938 H880" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" stroke-dasharray="9 7" />
+<path data-route="action" class="crossing-clearance" d="M630 980 V1010 C630 1030 650 1030 670 1030 H1710 C1770 1030 1780 1180 1840 1180" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-operation-call" data-route="action" d="M630 980 V1010 C630 1030 650 1030 670 1030 H1710 C1770 1030 1780 1180 1840 1180" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M1840 1230 C1750 1230 1750 1125 1690 1125 H580 C550 1125 550 1050 550 980" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-operation-result" data-route="action" d="M1840 1230 C1750 1230 1750 1125 1690 1125 H580 C550 1125 550 1050 550 980" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" stroke-dasharray="9 7" />
+<path data-route="action" class="crossing-clearance" d="M1960 1260 V1360" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-tool-invoke" data-route="action" d="M1960 1260 V1360" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M2330 1360 V1260" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-executed" data-route="action" d="M2330 1360 V1260" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" stroke-dasharray="9 7" />
+<path data-route="sense" class="crossing-clearance" d="M490 980 V1175" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-waiting" data-route="sense" d="M490 980 V1175" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="sense" class="crossing-clearance" d="M940 980 V1175" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-control-recovery" data-route="sense" d="M940 980 V1175" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="sense" class="crossing-clearance" d="M775 1175 V727 C775 700 810 680 880 680 V610" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-resume-match" data-route="sense" d="M775 1175 V727 C775 700 810 680 880 680 V610" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M1840 1240 C1750 1240 1750 1140 1690 1140 H570 C535 1140 535 1050 535 980" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-gateway" data-route="approval" d="M1840 1240 C1750 1240 1750 1140 1690 1140 H570 C535 1140 535 1050 535 980" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" stroke-dasharray="9 7" />
+<path data-route="approval" class="crossing-clearance" d="M740 952 H880" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-commit" data-route="approval" d="M740 952 H880" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M1140 790 V622" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-feedback" data-route="approval" d="M1140 790 V622" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M880 591 H740" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-notice" data-route="approval" d="M880 591 H740" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" stroke-dasharray="9 7" />
+<path data-route="approval" class="crossing-clearance" d="M460 555 H345" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-ui" data-route="approval" d="M460 555 H345" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" stroke-dasharray="9 7" />
+<path data-route="approval" class="crossing-clearance" d="M345 490 H460" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-decision" data-route="approval" d="M345 490 H460" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M740 510 H880" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-match" data-route="approval" d="M740 510 H880" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M1010 622 V790" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-validate" data-route="approval" d="M1010 622 V790" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M880 866 H740" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approval-operation" data-route="approval" d="M880 866 H740" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="approval" class="crossing-clearance" d="M645 980 V1000 C645 1018 665 1018 685 1018 H1715 C1780 1018 1790 1165 1840 1165" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-approved-call" data-route="approval" d="M645 980 V1000 C645 1018 665 1018 685 1018 H1715 C1780 1018 1790 1165 1840 1165" fill="none" stroke="#9C426C" stroke-width="2.6" marker-end="url(#runtime-v2-approval-arrow)" />
+<path data-route="sense" class="crossing-clearance" d="M740 530 H880" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-event-match" data-route="sense" d="M740 530 H880" fill="none" stroke="#137C80" stroke-width="2.6" marker-end="url(#runtime-v2-sense-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M345 857 C385 857 385 820 385 760 V637 C385 612 420 612 460 612" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-action-event" data-route="action" d="M345 857 C385 857 385 820 385 760 V637 C385 612 420 612 460 612" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="action" class="crossing-clearance" d="M1810 728 C1750 728 1750 1006 1710 1006 H1245 C1196.25 1006 1196.25 958 1180 958" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-host-action" data-route="action" d="M1810 728 C1750 728 1750 1006 1710 1006 H1245 C1196.25 1006 1196.25 958 1180 958" fill="none" stroke="#B45D20" stroke-width="2.6" marker-end="url(#runtime-v2-action-arrow)" />
+<path data-route="context" class="crossing-clearance" d="M1810 688 C1770 688 1770 920 1660 920" fill="none" stroke="#F8F7F2" stroke-width="7" />
+<path id="runtime-v2-host-checkpoint" data-route="context" d="M1810 688 C1770 688 1770 920 1660 920" fill="none" stroke="#7852A0" stroke-width="2.6" marker-end="url(#runtime-v2-context-arrow)" />
+<g data-route="work" data-edge-label="input">
+<rect x="358.0" y="429" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="402.0" y="448" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">提交输入</text>
+</g>
+<g data-route="work" data-edge-label="received">
+<rect x="358.0" y="546" width="88" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="402.0" y="565" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">接收确认</text>
+<text x="402.0" y="589" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">/ 结果</text>
+</g>
+<g data-route="work" data-edge-label="match-input">
+<rect x="784.0" y="460" width="52" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="479" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">匹配</text>
+</g>
+<g data-route="work" data-edge-label="assign">
+<rect x="1210.0" y="460" width="70" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1245.0" y="479" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">需判断</text>
+</g>
+<g data-route="work" data-edge-label="dispatch-host">
+<rect x="1688.0" y="404" width="124" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1750.0" y="423" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">投递输入</text>
+<text x="1750.0" y="447" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">当前接收绑定</text>
+</g>
+<g data-route="work" data-edge-label="inbox-router">
+<rect x="1945.0" y="490" width="70" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1980.0" y="509" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">主会话</text>
+</g>
+<g data-route="work" data-edge-label="inbox-worker">
+<rect x="2251.75" y="490" width="116.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="2310.0" y="509" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">委派 / 续接</text>
+</g>
+<g data-route="work" data-edge-label="router-report">
+<rect x="1906.0" y="678" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1950.0" y="697" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">协调决定</text>
+</g>
+<g data-route="work" data-edge-label="worker-report">
+<rect x="2231.75" y="677" width="116.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="2290.0" y="696" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">计划 / 进展</text>
+</g>
+<g data-route="action" data-edge-label="worker-action">
+<rect x="2081.0" y="710" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="2125.0" y="729" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作请求</text>
+</g>
+<g data-route="work" data-edge-label="input-taken-record">
+<rect x="1796.0" y="654" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1840.0" y="673" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">取入记录</text>
+</g>
+<g data-route="work" data-edge-label="host-delivered">
+<rect x="1677.25" y="584" width="115.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1735.0" y="603" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">② 持久接受</text>
+</g>
+<g data-route="work" data-edge-label="host-taken">
+<rect x="1684.25" y="757" width="151.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1760.0" y="776" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">③ 本轮输入记录</text>
+</g>
+<g data-route="work" data-edge-label="host-decision">
+<rect x="1290.75" y="981" width="358.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1470.0" y="1000" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">Router / Worker 决定 + 输入与证据引用</text>
+</g>
+<g data-route="work" data-edge-label="record-reference">
+<rect x="1201.0" y="804" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1245.0" y="823" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">取入依据</text>
+</g>
+<g data-route="work" data-edge-label="feedback-match">
+<rect x="1053.75" y="692" width="152.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1130.0" y="711" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">后续投递 / 待决</text>
+</g>
+<g data-route="work" data-edge-label="feedback-ui">
+<rect x="784.0" y="588" width="52" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="607" font-size="18" fill="#276B50" font-weight="650" text-anchor="middle">反馈</text>
+</g>
+<g data-route="context" data-edge-label="restore-context">
+<rect x="1447.0" y="712" width="106" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1500.0" y="731" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">记录检查点</text>
+</g>
+<g data-route="context" data-edge-label="assemble">
+<rect x="1291.75" y="361" width="116.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1350.0" y="380" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">装配 / 保存</text>
+</g>
+<g data-route="context" data-edge-label="manifest">
+<rect x="1494.75" y="392" width="170.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1580.0" y="411" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">上下文 / 写入确认</text>
+</g>
+<g data-route="sense" data-edge-label="external-event">
+<rect x="356.0" y="721" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="400.0" y="740" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">事件入库</text>
+</g>
+<g data-route="sense" data-edge-label="timer-event">
+<rect x="161.0" y="1076" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="205.0" y="1095" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">到期事件</text>
+</g>
+<g data-route="sense" data-edge-label="rule-evaluation">
+<rect x="923.0" y="661" width="124" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="985.0" y="680" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">规则确定</text>
+<text x="985.0" y="704" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">提交状态变化</text>
+</g>
+<g data-route="action" data-edge-label="operation-event">
+<rect x="492.5" y="676" width="165.0" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="575.0" y="695" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">关联原 Operation</text>
+<text x="575.0" y="719" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">回查已有回执</text>
+</g>
+<g data-route="action" data-edge-label="commit-operation">
+<rect x="766.0" y="804" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="823" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">登记动作</text>
+</g>
+<g data-route="action" data-edge-label="operation-evidence">
+<rect x="733.75" y="988" width="152.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="1007" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">核对 / 验收结果</text>
+</g>
+<g data-route="action" data-edge-label="operation-call">
+<rect x="1458.0" y="1036" width="124" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1520.0" y="1055" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">请求受控调用</text>
+</g>
+<g data-route="action" data-edge-label="operation-result">
+<rect x="1233.75" y="1101" width="192.5" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1330.0" y="1120" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">回执 / 外部作业状态</text>
+<text x="1330.0" y="1144" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">沿原 Operation 核对</text>
+</g>
+<g data-route="action" data-edge-label="tool-invoke">
+<rect x="1849.0" y="1287" width="202.0" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1950.0" y="1306" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">调用工具 / MCP / API</text>
+</g>
+<g data-route="action" data-edge-label="executed">
+<rect x="2225.75" y="1321" width="188.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="2320.0" y="1340" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">执行结果 / 作业事件</text>
+</g>
+<g data-route="sense" data-edge-label="waiting">
+<rect x="431.75" y="1066" width="116.5" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="490.0" y="1085" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">保存 Wait</text>
+<text x="490.0" y="1109" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">等待 / 超时</text>
+</g>
+<g data-route="sense" data-edge-label="control-recovery">
+<rect x="881.75" y="1091" width="116.5" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="940.0" y="1110" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">控制修订</text>
+<text x="940.0" y="1134" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">暂停 / 改派</text>
+</g>
+<g data-route="sense" data-edge-label="resume-match">
+<rect x="748.5" y="731" width="88" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="792.5" y="750" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">按原任务</text>
+<text x="792.5" y="774" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">恢复评估</text>
+</g>
+<g data-route="approval" data-edge-label="approval-gateway">
+<rect x="1445.75" y="1141" width="188.5" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1540.0" y="1160" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">需要审批 / 准入结论</text>
+</g>
+<g data-route="approval" data-edge-label="approval-commit">
+<rect x="748.25" y="1015" width="106" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="801.25" y="1034" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">登记待审批</text>
+</g>
+<g data-route="approval" data-edge-label="approval-feedback">
+<rect x="1087.0" y="739" width="106" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1140.0" y="758" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">待审批事项</text>
+</g>
+<g data-route="approval" data-edge-label="approval-notice">
+<rect x="784.0" y="617" width="52" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="636" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">通知</text>
+</g>
+<g data-route="approval" data-edge-label="approval-ui">
+<rect x="367.0" y="596" width="70" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="402.0" y="615" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">待审批</text>
+</g>
+<g data-route="approval" data-edge-label="approval-decision">
+<rect x="358.0" y="496" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="402.0" y="515" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">用户决定</text>
+</g>
+<g data-route="approval" data-edge-label="approval-match">
+<rect x="766.0" y="526" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="545" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">审批绑定</text>
+</g>
+<g data-route="approval" data-edge-label="approval-validate">
+<rect x="957.0" y="727" width="106" height="50" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1010.0" y="746" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">核验决定</text>
+<text x="1010.0" y="770" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">与适用版本</text>
+</g>
+<g data-route="approval" data-edge-label="approval-operation">
+<rect x="766.0" y="875" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="894" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">有效决定</text>
+</g>
+<g data-route="approval" data-edge-label="approved-call">
+<rect x="1449.0" y="1064" width="142" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1520.0" y="1083" font-size="18" fill="#9C426C" font-weight="650" text-anchor="middle">带决定重新准入</text>
+</g>
+<g data-route="sense" data-edge-label="event-match">
+<rect x="766.0" y="556" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="810.0" y="575" font-size="18" fill="#137C80" font-weight="650" text-anchor="middle">事件匹配</text>
+</g>
+<g data-route="action" data-edge-label="action-event">
+<rect x="356.0" y="763" width="88" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="400.0" y="782" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">作业回执</text>
+</g>
+<g data-route="action" data-edge-label="host-action">
+<rect x="1289.0" y="1018" width="142" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1360.0" y="1037" font-size="18" fill="#B45D20" font-weight="650" text-anchor="middle">动作提议与依据</text>
+</g>
+<g data-route="context" data-edge-label="host-checkpoint">
+<rect x="1707.0" y="820" width="106" height="26" rx="4" fill="#F8F7F2" stroke="none" stroke-width="1.5" />
+<text x="1760.0" y="839" font-size="18" fill="#7852A0" font-weight="650" text-anchor="middle">检查点请求</text>
+</g>
+<text x="58.0" y="1540" font-size="23" fill="#48616C" font-weight="400" text-anchor="start">运行时保存工作状态与恢复责任；执行宿主运行 Agent；调用层发出调用；接口背后的进程或服务实际执行。</text>
+<text x="58.0" y="1580" font-size="18" fill="#48616C" font-weight="400" text-anchor="start">交叉处留白跨越，箭头端点表示模块交接。</text>
+</g></svg><script>
+(function(){
+ const figure=document.getElementById('runtime-detail');
+ const descriptions={"work": "从左侧工作台进入 → 运行时登记、匹配与投递 → 宿主持久接受并记录本轮取入 → Router / Worker 提交决定 → 运行时正式提交。", "action": "Agent 提出动作 → 运行时登记 Operation → 调用层准入并调用工具 / MCP → 实际进程或外部系统执行 → 按原操作核对结果和验收。", "approval": "需要审批 → 运行时保存待审批事项 → 工作台 → 用户决定 → 核验版本与适用性 → 带有效决定重新准入。", "context": "执行宿主提交检查点 → 运行时关联本轮记录 → 上下文入口保存或装配 → 返回当前 ContextManifest。", "sense": "事件到达或任务恢复 → 匹配当前工作和状态 → 规则可以确定时提交变更；暂停、重启和改派按原 Task、未处理输入及原 Operation 续接。"};
+ const buttons=figure.querySelectorAll('[data-runtime-chain]');
+ const items=figure.querySelectorAll('[data-route]');
+ const status=figure.querySelector('.runtime-description');
+ function select(route){
+   buttons.forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.runtimeChain===route)));
+   items.forEach(item=>{
+     const active=route==='all'||item.dataset.route===route;
+     item.style.opacity=active?'1':'0.05';
+     if(item.tagName.toLowerCase()==='path'){
+       const clearance=item.classList.contains('crossing-clearance');
+       item.style.strokeWidth=clearance?'7':(route!=='all'&&active?'4':'2.6');
+     }
+   });
+   status.textContent=route==='all'
+     ?'从左侧入口进入。运行时边界内保存工作状态并调度，边界外的宿主、调用层和实际执行者承担各自职责。'
+     :descriptions[route];
+ }
+ buttons.forEach(button=>button.addEventListener('click',()=>select(button.dataset.runtimeChain)));
+ select('all');
+})();
+</script><p><a href="Research/ClusBot-工作运行时内部设计图-V2.svg">放大 V2 SVG</a> · <a href="Research/ClusBot-工作运行时内部设计图-V2.png">查看 PNG</a> · <a href="Research/ClusBot-工作运行时内部设计图.svg">上一版</a></p></figure>
+<p>采用 DeepSeek 原型的稳定请求身份、宿主去重、持久接受确认和按需通知。ClusBot 把待处理责任留在工作运行时，在暂停、重启或改派后都从正式任务记录恢复。下面的记录是逻辑契约，可在同一进程实现。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/delivery.ts#L40-L84">原型投递与持久化</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/tickets.ts#L317-L336">原型重启补投</a></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>记录</th>
+<th>由谁写入</th>
+<th>重试或续接时如何使用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Event 与待处理输入</td>
+<td>运行时先保存来源标识、原文引用与待匹配责任，归属确定后关联原输入和唯一责任方。</td>
+<td>同一来源事件重试复用接收结果。改派保留原输入身份和所属 Task，更新接收绑定。上下文引用可多方共享。</td>
+</tr>
+<tr>
+<td>投递与送达</td>
+<td>运行时先登记目标绑定和投递标识。执行宿主持久接受后返回确认，运行时记录该投递、接收会话或 Run 和确认时间。</td>
+<td>同一接收绑定重试复用投递标识，宿主查询队列及已接受记录后返回原确认。绑定变化才生成新投递，仍引用同一输入。</td>
+</tr>
+<tr>
+<td>本轮取入</td>
+<td>执行宿主记录实际交给模型适配器的请求所含输入引用与版本，关联 Run、轮次和 ContextManifest。运行时关联这条记录，供提交和恢复核对。</td>
+<td>预先装配的材料与已交给适配器的请求分别记录。请求交接状态不明时保留未处理输入，按当前授权重新装配。检查点保留尚无处理结果的输入缺口。</td>
+</tr>
+<tr>
+<td>处理结果与正式决定</td>
+<td>Router 或 Worker 提交稳定请求标识、相关输入、轮次或其他决策依据，以及适用的任务修订和分配代际。运行时复核后，在一个事务内保存输入处置、状态变更和后续投递。</td>
+<td>同一提交重试返回已登记结果。运行时按原待处理意图保证只结清一次，提交请求 ID 变化仍复用原处理结果。一个 Event 拆出的多个意图各有独立处理身份，常规进展可以多次记录。过期决定拒绝生效，未处理的输入留给当前责任方。Worker 的常规进展写入 Task，待决、交回与约定交付由后续投递唤醒 Router。</td>
+</tr>
+</tbody>
+</table></div>
+<p>接收绑定由目标角色与会话、当前 Assignment 代际及指定 Run 确定，适用的标识随投递一起保存。宿主迟到的确认按原绑定归档，当前责任与处理状态仍以运行时记录为准。普通跟进在宿主下一安全点取入，必要时唤醒空闲会话。仅用于补充背景的输入登记后随下一次装配读取。结构化暂停走控制提交，仍接受回执并做只读对账。自然语言的暂停先由 Router 解释，再进入同一控制提交。可信任务绑定只在入口有明确的绑定契约时启用。</p>
+<p>运行时持久保存待投递记录，调度重启后按原记录续跑。宿主无空闲槽位时延期调度，等待占用时间预算但不计为投递失败。暂时故障按退避与重试预算处理，达到上限或目标不可用时转待决，工作台展示受影响工作、失败原因和责任。重试前再次复核当前绑定，恢复后同一绑定仍用原投递 ID。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/effects.ts#L98-L153">DeepSeek Effects 调度实现</a></p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>续接入口</th>
+<th>运行时如何恢复</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>暂停后继续</td>
+<td>暂停提交后，运行时阻止新的任务推进和业务动作下发，保留输入、Wait、在途 Operation 与相关占用。收到继续请求并提交后，按最新控制状态、授权与在途对账结果恢复。</td>
+</tr>
+<tr>
+<td>进程重启</td>
+<td>读取已提交记录、待投递和 Wait。送达未确认的先核对宿主，必要时按原投递标识补投。已经送达或取入、仍无正式处理结果的输入继续随当前任务装配。恢复点无法证明旧 Run 可继续时，复核责任后建立新 Run。</td>
+</tr>
+<tr>
+<td>Worker 改派</td>
+<td>原子更新当前 Assignment 代际，使旧分配失去提交和发起新动作的资格。新分配接手原 Task、未处理输入和 Wait。迟到的旧决定不得推进任务，原 Operation 的真实回执仍接回并核对。</td>
+</tr>
+</tbody>
+</table></div>
+<p>三种入口共用恢复流程。运行时先核对当前任务和控制状态，再按原 Operation / 作业 ID 核对外部执行与资源占用。已完成的工作引用正式结果，确定性步骤按规则继续，需要判断才重新装配上下文并唤醒 Agent。无法确认外部状态时，保留等待和资源限制，直到查明或提交待决事项。</p>
+<h3 id="deepseek-super-agent-源码核对">DeepSeek Super Agent 源码核对</h3>
+<p>核对基准为公开原型提交 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/commit/8c32a9dc5d72c033816c6a8110b37f40cf94fba4"><code>8c32a9dc</code></a>。下表将原型的实际行为与 ClusBot 架构图及 01、02、05、09 时序的设计决策对应起来。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>图中环节</th>
+<th>原型实际实现</th>
+<th>ClusBot 的取舍</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>① 接收与归属</td>
+<td><code>Engine.receive</code> 在事务内调用 Intake，保存并按 Trigger ID 去重，沿 Thread 订阅生成 Ticket Input。无人承接的触发进入 Eval。主会话候选通过 assessment effect 投递，送达后才调用 <code>candidateDelivered</code>。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/intake.ts#L19-L61">Intake</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/assessment.ts#L93-L104">Router 候选投递</a></td>
+<td>采用先登记、后匹配和分派。主会话默认交 Router，每项可执行意图只有一个责任方，是 ClusBot 的约束。DeepSeek 的 <code>followupOwners</code> 可以返回多个 Ticket。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/model.ts#L68-L87">跟进归属</a></td>
+</tr>
+<tr>
+<td>② 已送达</td>
+<td>Worker Input 使用稳定 ID，经 <code>Sessions.prompt</code> 投递。 <code>AgentDelivery</code> 检查持久历史和两个待处理 inbox，按模式调用 <code>followup</code>、<code>steer</code> 或 <code>inject</code>，并 flush 会话持久化。Worker 的投递返回后，Executor 调用 <code>inputsDelivered</code>，从待投递列表移除并记录分配。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/delivery.ts#L40-L84">去重与送达</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/executor/dsh.ts#L286-L343">Worker 投递</a></td>
+<td>采用稳定投递身份、宿主送达与消费分开记录。图 02 中宿主与运行时之间的确认是 ClusBot 的逻辑接口，对应原型中的调用返回和 Engine 状态登记。</td>
+</tr>
+<tr>
+<td>③ 已纳入上下文</td>
+<td>Worker 的 <code>session/event</code> 监听器捕捉由 Super Agent 写入历史的 <code>user/message</code>，按消息 ID 找到 Trigger Input，调用 <code>inputsRead</code> 保存 <code>readAt</code>。Router 候选对应的是 <code>candidateDelivered</code>，本仓库没有对称的逐条已取入记录。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/executor/dsh.ts#L488-L503">Worker 事件监听</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/assignments.ts#L44-L65">送达及取入写入</a></td>
+<td>Router 与 Worker 统一记录本轮采用的输入引用与版本、ContextManifest 和检查点，是 ClusBot 的扩展。原型的 Worker 信号能证明消息进入会话历史，具体模型请求包含的内容仍由 Harness 的上下文机制决定。</td>
+</tr>
+<tr>
+<td>④ 正式提交与同步</td>
+<td>Engine 在事务中写入决定或报告。普通进展留在 Ticket，有用户问题、结果等情形时转发；已绑定的人类跟进也可通过 relay 通知主会话。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/engine.ts#L230-L246">报告写入</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/notices.ts#L76-L129">通知与报告转发</a></td>
+<td>采用正式状态与通知分开的方式。按当前 Task 修订和 Assignment 代际提交、输入处理结果与后续投递一并落库，以及集群操作和验收的正式记录，属于 ClusBot。</td>
+</tr>
+<tr>
+<td>重启、改派与暂停</td>
+<td>启动恢复扫描打开的 Ticket。未稳定结束的运行分配换新 Assignment，加恢复说明；已稳定报告且之后没有新投递的分配保留。已投递但尚未取入的 Trigger 会重新排队。Executor 复用每 Ticket 的 Worker Session，处理遗留 inbox 副本。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/executor/dsh.ts#L519-L536">启动恢复</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/assignments.ts#L78-L91">分配恢复规则</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/core/tickets.ts#L317-L336">未取入重新排队</a> · <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/executor/dsh.ts#L439-L469">会话复用</a></td>
+<td>ClusBot 把恢复责任保留到正式处理结果提交。已取入但未正式处理的输入也随当前版本和检查点恢复。单 Task 的暂停控制、旧决定拦截、原 Operation 对账和占用核对是运维扩展。</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="operation-提交与效果确认">Operation 提交与效果确认</h3>
+<p>每个有副作用的能力调用形成 Operation，至少关联所属 Task 或 Step、发起来源、稳定标识、目标对象集合、提交参数及版本、授权依据、前置条件、占用要求，以及查询、重试、取消和验证方式。执行时仍检查当前授权，历史授权快照只用于解释当时依据。</p>
+<p>运行时先持久保存操作意图，再安排外部执行。状态变更与待执行动作登记通过事务或等效的可恢复机制衔接，避免状态已推进而动作丢失。执行网关核对操作资格和条件后调用适配器，将外部作业标识、回执与错误关联回原操作。结果与外发消息也保留可恢复的投递记录。</p>
+<p>网关完成准入核验后，向运行时请求登记本次派发开始。运行时在同一 Task 的控制事务序列内复核版本和当前资格，登记本次尝试后才允许网关调用外部。暂停先提交时，拒绝尚未开始的尝试。派发开始先提交时，暂停保留该次在途或结果待核对的尝试，回执区分已拦截与仍待核对的范围。外部调用在本地事务之外，开始登记后若进程中断且实际结果不明，沿原 Operation 查询和对账。后续新尝试仍须通过当前资格与安全重投条件。</p>
+<p>正式交付后的结果通知另有待发送记录，保存稳定通知 ID、已核验的接收对象、正式结果引用与渠道回执。临时失败时按原通知重试，目标不可达或重试耗尽时转待决，保留正式验收和交接结果。交付契约要求的业务接收仍由 DeliveryRecord 核实。 <a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/8c32a9dc5d72c033816c6a8110b37f40cf94fba4/src/app/outbox.ts#L25-L50">DeepSeek Outbox 实现</a></p>
+<p>同一操作的重复投递与恢复复用身份，不因此产生新的工作意图。目标或参数实质变化时保存新的 Operation 并关联前序，不能追改已经提交的请求。重试是否安全取决于外部能力的实际契约；持久队列本身不保证外部系统恰好执行一次。</p>
+<p>响应丢失时，外部操作可能尚未开始、正在执行或已经完成。恢复者先查询或重连原作业，只有确认未执行或具备安全幂等条件才重新提交。无法确认时保留待核对状态及相关资源限制。外部执行结束后还需按要求验证效果，完成回执不自动等于 Task 验收通过。</p>
+<h3 id="等待-恢复与资源占用">等待 恢复与资源占用</h3>
+<p>等待记录说明正在等哪个对象或结果、如何确认、何时恢复、何时复查、超时如何处理，以及依赖的检查点。运行时保存事件位置并回查已发生结果，避免先到的完成事件被遗漏；同一等待只触发一次有效推进，重复事件用于补充或合并证据。</p>
+<p>恢复首先检查任务是否仍有效、是否暂停或取消、当前授权与执行资格是否成立，再核对未确认操作和资源占用。资源或验收要求变化时先判断影响。能够确定性推进的部分直接继续；需要 Agent 判断时，装配当前上下文并建立新的 Run。</p>
+<p>占用记录属于持久 Task 或 Operation，包含实际资源、使用方式、持有者、有效期、续期与释放条件。运行时提出申请并记录关联，资源协调能力决定是否授予和释放。Agent 执行槽与节点、设备或外部作业的占用分别管理，等待释放推理容量时不自动释放正在使用的实际资源。</p>
+<p>执行者失联或租约过期不能证明外部操作已经停止。重新分配后需要核对占用与外部执行，再续接、释放或保持阻塞。任务取消仍保留必要的结果核对和释放责任；只解除该工作持有的限制，其他有效占用和人工限制保持各自归属。</p>
+<p>恢复以已存在的 Operation、外部作业引用和 Wait 为入口。只读核对仍可在 Task 暂停或取消后继续，新的业务推进则必须服从当前控制意图。Task 有效而旧 Assignment 失效时，运行时在对账后改派并更新代际；需要新判断才建立新 Run。同意图安全重投只新增原 Operation 的投递尝试，重新核验当前资格和占用，不重复创建意图或授予 Claim。</p>
+<h3 id="修订-暂停与执行者更换">修订 暂停与执行者更换</h3>
+<p>用户补充事实时，由范围内任务负责人判断其影响；目标、范围或跨任务优先级变化由 Router 协调，经运行时形成修订。修订记录受影响的任务、计划、验收与权限版本。尚未发出的旧动作可以撤销，正在执行的动作按能力契约处理，迟到结果只有仍满足当前要求时才能用于完成判定。</p>
+<p>改派时使旧 Assignment 失去控制当前 Task 和发起新动作的资格。旧结果保留为历史证据，是否复用由当前负责人判断。执行权标识只能约束实际检查它的入口；外部设备或系统不支持此机制时，需要幂等、状态核对或动作串行化防止冲突。</p>
+<p>暂停阻止新推进，正在发生的动作按能力支持程度停止或运行到可中断点。取消不能承诺撤回已经发生的外部效果。取消一个周期的 Task 与停止持续 Goal 分别处理；停止 Goal 关闭其后续触发和所属未完成工作，并核对在途效果，不影响其他目标通过引用使用的成果或仍有效的责任。</p>
+<h3 id="监督-预算与异常处理">监督 预算与异常处理</h3>
+<p>任务调度根据优先级、依赖和容量推进，并避免低优先级工作无限等待。子任务、验证、重试与经验整理都计入所属预算，拆分不能重置额度。调整优先级不等于可以中断不可中断的外部动作。</p>
+<p>运行时监督处理无心跳、超时、等待过期、重复触发、重试耗尽和预算异常。需要判断目标偏离或方案质量时，安排有边界的审查 Task，由 Worker 返回结论，再进入原工作修订流程。审查角色不建立另一条指挥链。</p>
+<p>异常处置区分可在当前授权内修正的问题、需要新证据的未知状态和需要用户决定的取舍。系统保存已完成部分与未解决事项，向用户给出具体影响和可选处理方式。持续优化具有成功条件、复查条件和停止条件，不能因仍有改进空间而无限生成工作。</p>
+<p>模型暂时不可用时，事件接收、状态记录、结果匹配和既有确定性步骤仍可在原授权与条件成立时运行。需要新判断的部分等待恢复或人工处理。该边界保证长期工作不依赖一次不间断的模型会话。</p>
+<h2 id="6-持久上下文与长期知识">6 持久上下文与长期知识</h2>
+<h3 id="信息的职责分工">信息的职责分工</h3>
+<p>ClusBot 将正在做的工作、已经观察到的事实和从经历中形成的知识联系起来，同时保留各自权威来源。Task 和 Operation 说明工作进行到哪里；资源与观测说明当前及历史环境；Evidence 支持结论；Memory 保存值得复用的经历、知识和偏好；Session 保存对话连续性。</p>
+<p>上下文是面向本次 Run 装配的工作视图。它从上述记录读取所需信息，标明来源、版本、适用范围和未确定部分。Session 可以压缩或重建，任务的继续依据仍然存在；记忆可以更新，资源当前状态和工作进度仍由原管理方维护。</p>
+<p>持久上下文以 ContextManifest 记录采用的对象、任务、模型和方法版本、历史执行快照、当前查询结果、未知操作、占用及证据缺口。结构化 Incident/Hypothesis、支持和反驳关系及诊断状态由 Worker 提交工作运行时保存；会话中的推理草稿与检查点保存在上下文中，并引用正式记录。上下文压缩或重建不能丢失故障调查的权威状态。</p>
+<p>ContextManifest 的统一维护入口位于信息与上下文模块。会话记录器随用户消息、模型响应和工具结果追加 Session，清单在重要进展、等待、暂停、交接、压缩及恢复时形成新修订，记录消息覆盖位置与需核对的事实。每次 LLM 请求可复用已装配材料并加入后续消息，资源查询按调查需要、依赖变化和新鲜度执行。暂停先由运行时保存控制意图并生效，恢复时核对原操作与当前环境，清单装配完成后由运行时再次复核并启动 Worker。字段、维护责任、更新表和完整示例见<a href="Research/ClusBot-统一资源模型设计方案.md#102-contextmanifest">统一资源模型设计第 10.2 节</a>，对应<a href="Research/ClusBot-统一资源模型图示/11-ContextManifest维护与装配.svg">维护与装配图</a>和<a href="Research/ClusBot-统一资源模型图示/12-Worker执行暂停与恢复.svg">执行、暂停与恢复图</a>。</p>
+<p>知识机制采用经历、可修订知识与派生主题视图的统一组织方式，结合时间有效性、来源追踪与渐进披露。不同信息表示各司其职，共用对象与证据引用，不按参考产品分别建立几套记忆系统。</p>
+<h3 id="上下文装配与恢复">上下文装配与恢复</h3>
+<p>运行时向持久上下文发出装配请求；上下文读取权威记录并返回 ContextManifest。运行时在装配完成后再次核对当前工作修订、控制意图和执行资格，再启动或唤醒 Router / Worker，交付事件、工作身份及 ContextManifest。持久上下文负责材料组织与会话保存，不承担 Agent 调度。Agent 后续可按权限展开材料并保存检查点。</p>
+<p>Router 常驻上下文包含用户当前表达、有效约束、目标与任务总览及需要协调的变化。Worker 上下文围绕具体 Task 展开：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>依据</th>
+<th>装配内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工作依据</td>
+<td>当前 Goal、Task、计划、验收条件、授权、预算、负责人关系和所用 Skill 版本</td>
+</tr>
+<tr>
+<td>资源依据</td>
+<td>实际对象集合、相关属性与关系版本、新鲜度、占用及外部业务状态</td>
+</tr>
+<tr>
+<td>执行依据</td>
+<td>已完成和未完成的 Step、Operation、外部作业标识、未知结果、等待、事件位置与未释放占用</td>
+</tr>
+<tr>
+<td>判断依据</td>
+<td>已确认进展、重要决定、待验证假设、支持与反驳证据、已排除原因和未解决问题</td>
+</tr>
+<tr>
+<td>交流与经验依据</td>
+<td>相关对话、用户待决事项、成果、适用案例与知识引用</td>
+</tr>
+</tbody>
+</table></div>
+<p>恢复使用当前任务和授权重新核对操作、资源与证据，再形成新的上下文。旧快照用于解释过去为什么这样做，新事实用于判断现在能否继续。重要变化到达活跃 Run 后，应在下一判断或动作边界处理并记录采用的版本。</p>
+<p>例如测试等待期间驱动版本变化，系统仍保留测试启动时的配置，但恢复者需要看到当前配置及变化影响，决定该结果能否用于现在的验收。只保存“测试已启动，等待结果”不足以恢复这项判断。</p>
+<h3 id="本轮输入与恢复清单">本轮输入与恢复清单</h3>
+<p>Manifest 除工作、资源与方法引用外，保存实际输入事件、材料和工具回执修订、记忆路由/条目/策略版本、压缩来源、预算及省略原因。每轮复用仍有效的静态材料并补入新输入；权限撤回、记忆删除、Task 修订或关键事实变化时重核适用性。原清单不改写，恢复者根据正式记录建立新清单。</p>
+<p>当前要求、授权约束、未知副作用、未解决问题和成对工具调用/回执不得静默丢弃。可选历史按相关性、时效和成本裁剪；必需内容超限则拆解或请求更小材料。Manifest 说明使用了什么，Checkpoint 说明执行恢复位置，Task/Operation 说明真实工作状态，三者不能相互替代，也不要求持久化模型隐藏思维。</p>
+<p>内部任务、路由、记忆更新和控制决定使用结构化数据，用户报告继续支持 Markdown。结构验证之后仍检查身份、权限、引用存在性、当前修订、预算和业务含义；可解析 JSON 不等于事实正确或获得执行资格。</p>
+<h3 id="经历-知识与主题视图">经历 知识与主题视图</h3>
+<p>经历记录一项工作的条件、主要动作、结果、反馈和原始证据引用，保留成功、失败及未确定结果的区别。完整日志和大文件作为证据材料保存，经历只组织必要信息，避免将所有原始数据重复写入记忆。</p>
+<p>知识记录表达有来源、时间范围和适用条件的事实、关系、偏好及整合经验。事实生效时间与系统获知时间分别记录，以支持当前与历史查询。对象的权威事实变化时更新引用或派生知识，不能由一段记忆摘要覆盖资源来源。</p>
+<p>主题视图围绕常见问题维护精简内容，例如某集群的主要风险、某类故障的已知证据或用户的有效偏好。它由知识与证据派生，注明覆盖范围与新鲜度。来源变化后重新整理或标记陈旧，刷新未完成时补查来源。</p>
+<p>有新证据或达到整理条件时，由有预算的 Worker Task 提取候选经历与知识，检查重复、冲突、适用条件和反例，再按记忆更新规则发布。多条材料源于同一信息时不能当成独立证据累加；相关性不能自动升级为根因。复杂推断由当前任务负责人判断，记忆维护不改变目标或执行权限。</p>
+<p>工作上下文、经历、知识、方法经验、用户与角色信息、未来意图可以作为检索分类。未来承诺的真实状态仍在 Goal 与 Task，已发布方法的版本仍由 Skill 治理维护，分类不产生额外状态系统。</p>
+<h3 id="检索-共享与维护">检索 共享与维护</h3>
+<p>检索先按用户、工作空间或项目、任务和角色私有范围检查权限，再结合对象、时间、关键词、语义及必要的关系寻找材料。结果提供摘要、适用条件和来源路径，Worker 可以从主题概览展开到具体证据，也可以直接读取用户指定的原文。</p>
+<p>常驻上下文保留当前目标、明确约束和必要状态，详细日志与历史按需展开。预算紧张时优先减少重复、陈旧和低相关内容；关键权限、未完成动作、重要错误及等待条件从结构化记录恢复，不只依赖压缩摘要。目录、标题和引用同样遵守访问边界。</p>
+<p>用户纠正形成带来源的新版本；Agent 推断保留推断性质，按影响程度决定是否进一步核验。冲突知识先比较对象、时间、方法与证据，允许不同时期的事实并存。共享更新检查基准版本，避免最后写入覆盖所有先前结论。</p>
+<p>纠正、删除或作用域变化需要同步处理索引、缓存和派生视图，避免旧摘要重新出现。历史任务证据按独立的保留与访问规则处理，活跃任务依赖的必要材料在处理引用关系前不能盲目清理。原始证据不可用时，查询结果明确说明这一限制。</p>
+<h3 id="信息与上下文内部的状态归属">信息与上下文内部的状态归属</h3>
+<p>V2 的信息与上下文大框内部按事实、经验和装配分工。资源服务拥有身份、观测、关系和证据；记忆管理维护偏好、情景、知识、簇和策略版本；上下文装配保存 Manifest 与检查点并读取前两者。运行时继续拥有尚未完成的工作。各入口可在同一 Go 进程、同一 SQLite 中实现，图上的逻辑分工不要求新增数据库或独立服务。</p>
+<p>Memory Router 是该模块内部的经验选择机制，与面向用户/工作的 Router 不同。需要模型辅助时使用有界调用或已有 Worker 角色；不引入新的管理 Agent 层级。已发布 Skill 属于能力治理，记忆只保存方法候选、来源及使用关联。</p>
+<h3 id="经验路由与簇状态">经验路由与簇状态</h3>
+<p>采用 Routed CL 的“选择经验共享边界与表示机制”思想，但首批只实现可审阅的情景检索和知识条目两种表示。HR/HDE/PES 数值系统仅在出现稳定字段、单位、反馈和对应评测时作为插件试验。记忆簇是经验分组，不能与物理 Cluster 混名。</p>
+<p>Memory Router 输入任务语义、环境/工具版本、输出契约及可读簇摘要，返回 reuse/create/no_memory 提案；程序校验访问范围和受支持机制。先用规则确定明显领域，只有模糊情况调用模型。没有足够证据时允许不用经验；不能只按 Markdown/JSON 输出形式分簇，也不能每次轻微变化都建新簇。</p>
+<p>选中簇后先按权限、适用环境、时间、状态和来源过滤，再做关键词/语义检索与排序；检索失败降级为当前事实与工具调查。一次工作修订中的主簇和更新策略固定；跨领域子任务单独路由。更改路由必须留新决定，旧轨迹不能因晚到结果写进新的簇。</p>
+<p>更新由 Memory Manager 负责。来源事件/尝试族作为幂等键，按簇修订做原子提交；并发冲突重读后合并提案。LLM 可提出新增、合并、冲突或归档建议，不能自行把失败标成已验证成功。原始轨迹留在运行时/成果归属中，记忆存必要引用和允许保留的摘要。</p>
+<h3 id="记忆生命周期与效果评测">记忆生命周期与效果评测</h3>
+<p>个人明确记忆按当前用户操作生效；自动抽取的新偏好先作为可确认候选。经验条目经历候选、可用、存疑、失效或归档。来源权限变化和删除要沿派生依赖传播到摘要、索引与 Skill 候选；已记录使用可以保留必要的审计引用，但不能把被删除正文重新送入模型。</p>
+<p>保留、失效、降权与删除分别处理：事实已经不成立是有效性问题；条目不值得主动检索是效用问题；用户删除则是数据生命周期请求。合并不抹去反例，摘要不能成为自己的证据。个人“喜欢快速执行”不能改写操作审批、参数或日志规则。</p>
+<p>内循环更新经验内容，外循环改进记忆管理策略。外循环先记录问题，再提出候选检索/写入/巩固规则，在隔离记忆分支上重放相同任务流，固定模型、工具环境和预算，对比无记忆、旧策略、新策略。考察任务成功、证据正确性、错误复用、保持/适应/迁移、成本与时延；记录“被检索、被纳入、被引用、经验证有效”的不同信号。仅有引用或模型自评分不能证明因果收益。</p>
+<p>策略发布使用不可变版本和回滚；先离线评测、后有限范围使用。权限与准入是硬约束，不进入可优化奖励权重。初期不做在线权重训练，也不让模型自主替换生产记忆架构。以上是 ClusBot 对 <a href="https://arxiv.org/html/2610.29357">MCCL</a>、<a href="https://arxiv.org/html/2610.38796">Routed CL</a> 等研究的工程取舍，具体对照见本文附录。</p>
+<h2 id="7-能力执行-skills-与授权">7 能力执行 Skills 与授权</h2>
+<h3 id="能力目录与执行入口">能力目录与执行入口</h3>
+<p>工具和 MCP 提供能力调用接口，Skill 提供适用条件、方法与验证要求，Workflow 负责本次工作中步骤与状态的推进。三者可以共同服务一个 Task，各自版本和职责保持清楚，不因工具数量增加而创建同等数量的 Agent。</p>
+<p>能力目录记录用途、输入输出、运行环境、访问要求、副作用、同步或异步方式、状态查询、幂等、重试、取消和效果验证能力。Worker 根据当前任务需要及权限查看目录，运行时与执行网关在实际调用时再次校验。支持 MCP 只说明接口形式，具体执行语义仍需能力契约说明。</p>
+<p>只读查询执行器校验服务端登记的 QueryPlan、当前读取权限、来源连接、必需过滤、有效期与预算，再落实后端读取，返回带来源、时间、覆盖和对象标识的数据；不能将查询计划当成已取得的数据。读取也遵守实际通道和资源兼容约束。有副作用的调用通过 Operation 执行，涉及资源使用时核对占用。外部报告和消息发送同时检查接收对象与允许披露的范围，读取资料的权限不自动授予对外发送权限。</p>
+<p>ConnectorBinding 固定采集来源、共享适配器与映射版本、责任范围和凭据引用。工作运行时的触发调度管理周期和工作事件订阅，共享适配服务管理外部来源连接、协议调用和接收。资源接入服务按 SyncBatch 校验并提交观测及质量信息，确认后推进水位。采集失败与设备异常分别表达。来源连接和凭据由执行侧管理，模型与上下文只暴露授权后的元数据。</p>
+<p>来源账号通过明确绑定对应用户身份，不能依据名称相似度建立信任。外部网页、日志、工单和工具返回中的文本按数据使用，不能修改执行权限。并行任务的文件、会话、凭据和副作用边界需要隔离，具体执行环境后续选型。</p>
+<h3 id="skill-使用与版本">Skill 使用与版本</h3>
+<p>Skill 目录区分候选、已发布与历史版本。新任务按条件选择允许使用的方法，记录其版本；在途任务不因新版本发布而静默切换。实际动作仍受当前任务授权约束，方法可用不意味着其中每个动作在当前环境都获准执行。</p>
+<p>任务结果关联使用的 Skill 版本和证据，以便比较适用性与效果。发现方法失效或执行条件不成立时，当前 Task 可以停止或等待处理；Skill 的全局启停、修订和回退仍走明确的变更确认流程。回退方法版本不承诺撤销已经发生的外部效果。</p>
+<h3 id="skill-增长与变更治理">Skill 增长与变更治理</h3>
+<p>经验默认先进入经历、案例或方法证据。相同方法的不同参数通过参数或引用材料表达，重复案例不持续扩张 Skill 正文。存在稳定复用价值时优先修订已有方法，只有现有能力不能覆盖且具有独立价值时才提出新增。</p>
+<p>比较 Skill 时检查目标、适用条件、输入输出、所需能力、依赖和反例。名称或语义相似度用于找候选，不能决定自动合并。互斥方法需要明确边界和处理方案，不能以最新版本或相似度最高者直接替代其他方法。</p>
+<p><strong>所有 Skill 变更必须主动通知用户，展示具体方案并取得明确确认后执行。</strong> 确认前，候选方法不进入可加载的 Skill 目录，也不改变已有启用状态。此要求适用于新增、修订、合并、替换、启用、停用、回退、删除，以及影响行为的适用条件和优先级调整：</p>
+<ol>
+<li>形成具体提案，说明目标 Skill、基准版本、差异、理由与证据、适用范围、冲突、依赖影响和验证方式。</li>
+<li>主动通知用户并等待明确确认。仅列入内部清单、已读、未回复或超时都不构成同意。</li>
+<li>将确认绑定具体提案。执行前核对基准版本，内容或影响改变时更新提案并重新确认。</li>
+<li>按确认范围执行和验证，再记录发布状态与结果；验证失败保持已有发布状态，后续调整按确认范围处理。</li>
+<li>向用户反馈执行结果，保留历史版本及其任务引用。</li>
+</ol>
+<p>结构化确认必须绑定可信身份、提案 ID、候选版本和具体范围，可由运行时与治理确定性处理。自然语言回复由 Router 解释作用范围，含糊时继续澄清；模型解释本身不能充当授权。候选内容、基准或影响变化时生成新提案版本，旧确认失效，新版本重新经过运行时、Router 和工作台主动通知用户。等待与澄清保留持久状态，不以重复通知或超时推进发布；验证通过后仍须在发布边界复核基准与确认适用性。</p>
+<p>普通记忆写入、流程模板或其他工具路径不能绕过上述规则。使用已有有效 Skill 与修改 Skill 分别处理；能力治理入口负责检查确认，不能只依赖 Agent 自觉遵守。</p>
+<h3 id="反馈与行为变化">反馈与行为变化</h3>
+<p>用户事实补充与评价可以按规则进入上下文和记忆；目标修订进入工作运行时；方法变更进入 Skill 提案；影响自主行为的运行策略按其变更规则与有效授权处理。不同变化保留各自依据与版本，不能将新的操作规程改称记忆来规避确认。</p>
+<p>优化以任务质量、返工、故障处置效果、成本和用户打扰程度衡量。记忆条目、Skill 和 Task 的数量不代表进步。模型权重训练不属于本阶段设计。</p>
+<h2 id="8-集群交付与运维设计">8 集群交付与运维设计</h2>
+<h3 id="领域定义与通用机制">领域定义与通用机制</h3>
+<p>集群运维将前述工作、资源、证据和能力模型具体化。用户交代交付或维护责任后，ClusBot 使用同一套 Router、Worker 和工作运行时推进，领域规则提供判断与执行所需的专业含义。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>通用机制</th>
+<th>运维领域定义</th>
+<th>作用位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Resource 与关系</td>
+<td>集群、节点、部件、拓扑、资源池、作业及其映射</td>
+<td>资源目录与领域数据提供方</td>
+</tr>
+<tr>
+<td>目标、观测、判定与执行条件</td>
+<td>配置目标、健康与验证状态、业务占用、可交付或可维修条件</td>
+<td>信息模型与领域判定规则</td>
+</tr>
+<tr>
+<td>Task、Workflow、Step 与验收</td>
+<td>部署配置、测试验收、故障处置和报告等工作的模板与交付要求</td>
+<td>工作运行时及负责工作的 Worker</td>
+</tr>
+<tr>
+<td>Operation 与资源占用</td>
+<td>BMC、部署、测试、监控、工单和调度器操作，节点组选择与维护预留</td>
+<td>能力执行及领域资源协调能力</td>
+</tr>
+<tr>
+<td>Evidence、Memory 与知识关系</td>
+<td>配置快照、测试结果、故障假设、处置案例和适用性经验</td>
+<td>证据管理、上下文与知识维护</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些定义构成 ClusBot 的运维能力。既有工具、流程和业务系统提供实际执行或数据，ClusBot 负责将它们组织成可持续承担的工作，并对结果保持核验与反馈责任。</p>
+<h3 id="资产与节点状态">资产与节点状态</h3>
+<p>资产发现将来自 BMC、带内系统、网络和部署系统的线索归并到稳定资源身份。节点、BMC、加速卡、网卡、交换机端口、资源池与业务作业保持各自类型，通过组成、连接、归属和占用关系联系。发现信息不足或身份冲突时形成核对工作，不能按 IP 或相似名称自动认定同一设备。</p>
+<p>配置与拓扑需要同时支持当前查询和历史重现。一次验收使用的 OS、驱动、网络和连接关系随证据保存引用，后续换线、换卡或配置更新不能切断过去结果与当时环境的关系。</p>
+<p>节点的生命周期、健康、验证、维护和分配分开表达。已交付属于生命周期事实，故障属于健康变化，业务占用属于分配事实，它们可以同时存在。BMC 电源状态、OS 可达性、链路和业务作业状态属于观测，不能全部压成一个综合节点状态。</p>
+<p>领域规则根据观测形成 OS 就绪、硬件健康、配置符合、验证通过、调度状态一致等判定，采用 True、False、Unknown，并关联证据、目标版本和新鲜度。可部署、可测试、可交付、可分配或可维修是当前条件的计算结果，不再人工维护一套脱离依据的布尔状态。具体名称、状态枚举与阈值在详细设计中确定。</p>
+<p>持续配置责任比较有效目标与实际状态，偏差出现时关联或产生已有规则允许的工作。重复观测不重复提交同一操作，过期观测先补查，冲突目标先解决归属与优先关系。一次性测试和调查按有界 Task 执行，不强制形成持续收敛目标。</p>
+<h3 id="节点交付与验收">节点交付与验收</h3>
+<p>交付工作以资源范围、目标配置、验收要求和授权为契约。运行时采用适用的版本化流程组织发现、部署、配置、单机测试、联机测试、验收和交接。批次、参数和流程已明确时可直接启动；范围或方案待确定时，交付 Worker 依据发现结果完成本次规划。哪些阶段拆为子 Task，由独立责任、并行与恢复需要决定。</p>
+<p>运行时把观测或回执关联到原 Task、Step 或 Operation，再按当前计划和证据处理：</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>条件</th>
+<th>下一步</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>规则已确定下一步</td>
+<td>运行时直接推进，例如条件通过后开放后继，或按已授权规则补采、补测。</td>
+</tr>
+<tr>
+<td>到达计划委派的取舍点，或异常需要新的判断</td>
+<td>运行时携带当前上下文唤醒交付 Worker。Worker 在授权内直接决定选组、分批顺序、诊断或局部复验，提交决定和依据。运行时复核后登记并执行。正常通过与异常均可进入该分支。</td>
+</tr>
+<tr>
+<td>需要改变用户已确认的交付范围、时限、验收承诺或追加授权</td>
+<td>运行时记录待决与受影响的步骤，由 Router 协调并在需要时请用户决定。有效修订生效后继续原 Task。</td>
+</tr>
+</tbody>
+</table></div>
+<p>例如两组节点均通过联机测试，已规定先交哪组时运行时直接推进。若契约允许 Worker 根据实时占用、拓扑和接收优先级决定先交哪组，则两组证据就绪后唤醒 Worker。选组结果进入正式工作记录，交付仍需通过验收、资源协调和外部接收核对。</p>
+<p>部署与配置工具通过 Operation 执行，异步作业保留外部标识和等待条件。资源不能同时用于冲突业务或维护工作；执行条件与占用在实际操作前检查。局部失败保留已完成部分，相关依赖等待或按允许范围重排，父任务继续维护整体交付标准。</p>
+<p>联机测试针对实际节点组及其环境。测试证据关联参与集合、硬件与配置、拓扑、测试方案、判定规则、基线、时间和原始结果。资源集合或关键配置变化后，依据影响规则决定复用或重验，单节点全部通过不能替代联机要求。</p>
+<p>整体验收检查所需资源的覆盖、配置符合、测试结果及证据有效性；交付涉及业务调度器时还需核对外部系统中的实际可用状态。验收结论、交付成果和发送结果分别保存。交付 Task 成功后，历史结论固定；有效的持续维护 Goal 继续负责后续健康与变化。</p>
+<h3 id="资源分派与业务调度协同">资源分派与业务调度协同</h3>
+<p>任务调度负责何时启动 Agent 或推进流程，领域资源协调负责选择和预留实际资源，业务调度器负责业务作业的分配事实。运行时拥有可用执行槽，并不说明设备可用；本地记录了维护意图，也不证明业务作业已经排空。</p>
+<p>资源申请包含目标类型、实际集合或选择约束、影响范围、使用方式与释放条件。占用可以覆盖节点、部件或节点组，兼容规则按操作实际影响定义。长期测试或维修等待时继续保留必要占用，不能因为 Run 结束而重新分派节点。</p>
+<p>维护请求先登记意图并协调冲突工作。影响业务的维修只有在外部调度器阻止新分配、现有负载满足维护要求及其他前置条件成立后才能推进。修复验证完成后，只解除本流程持有的限制；其他故障、任务或人工隔离仍有效时保留。恢复分配还要核对外部调度器状态。</p>
+<p>交接前先确认维修动作停止，将自身 Claim 转入 releasing 并撤销维修执行资格，随后以当前交接资格执行解除自身限制或恢复分配的 Operation。外部确认自身交接后才完成 released；不确定时保留交接和核对责任。修复、占用交接与约定业务指标分别核验，各 Task 按自己的契约完成并将剩余责任反馈 Router。</p>
+<p>整个协同过程允许存在已提出维护、等待排空、修复完成但尚未恢复分配等中间情况。状态不确定或回执丢失时查询实际事实并保持必要限制，不盲目重试或宣布可用。具体排空、预留、资源选择、恢复与失败分支后续按实际调度器能力细化。</p>
+<h3 id="监控-故障与自愈">监控 故障与自愈</h3>
+<p>持续健康责任定义关注资源、监测条件、有效期、处置范围与通知方式。监控、NHC 和资产数据由共享适配器取得，经网关核验来源后送资源接入服务，在信息模块内完成去重、身份解析、质量与覆盖校验及观测水位登记。采集与入库由确定性程序完成。资源模型按规则生成变化事件，运行时匹配有效维护责任和现有 Task，需要诊断或选择处置方式时才唤醒 Worker。外部作业或工单回执按已登记的外部标识接回原工作。</p>
+<p>Incident 保存症状、影响资源、故障假设、证据和恢复情况。处置 Task 保存诊断、修复与验证工作，可按责任边界拆分。一个故障可以关联多个资源、Task 和工单，工单关闭后仍按恢复条件核验效果。</p>
+<p>工单用于把需要人工或外部团队处理的问题交给有责任的一方，例如硬件更换、现场核查或跨团队确认。运维工作流定义升级条件、等待条件和回执后的继续步骤，工作运行时持有原 Task、工单关联与 Wait。写入动作按受控 Operation 经过共享的能力执行与治理底座，核对授权、接收对象和可披露范围，由工单适配器创建或更新工单。适配器通过查询或可信回调同步状态和人工反馈，按来源及外部工单 ID 匹配原工作。外部工单系统负责工单的受理、分派、状态和协作记录，ClusBot 依据现有责任与验证规则推进 Task 和 Incident。</p>
+<p>已知且适用的方法可以在有效授权及执行条件成立时用于处置；未知问题由 Worker 收集证据、提出并检验假设。修复操作通过统一执行入口，必要时先满足维护与业务调度条件。效果验证通过后再更新恢复结论和相关分配资格，失败或不确定时保留问题与限制并继续处置或升级。</p>
+<p>故障上下文贯穿假设、支持与反驳证据、已排除原因、采取的措施和验证结果。知识关系组织可复用事实，故障关系表达症状、可能原因、措施与验证，资源关系描述实际组成与连接；三者共用资源身份与证据引用。相似案例可以提供诊断方向，修复后恢复正常也可形成案例，但根因是否确定仍取决于证据。</p>
+<h3 id="策略改进-报告与主页">策略改进 报告与主页</h3>
+<p>任务与故障结果进入经历和知识维护，支持按硬件、配置、拓扑与方法版本比较效果。测试增减和监控频率调整由有界优化 Task 评估，提出适用范围、证据、版本、覆盖要求、评估指标和恢复条件，依照有效授权与变更规则实施。</p>
+<p>强制验收、最低检测覆盖以及配置变化或故障恢复后的复验要求由领域规则约束。优化结合故障发现、误报与漏检、恢复情况、资源成本和覆盖率判断，不能因历史故障少就持续减少检测。涉及 Skill 变更时仍必须主动通知并取得用户明确确认。</p>
+<p>周期报告由持续 Goal 的触发规则产生 Task；按需报告使用同一工作机制。报告记录查询时间、数据范围、指标口径、来源和成果版本，投递按接收对象与披露权限执行。生成完成但渠道失败时只恢复投递，发送结果未知时先核对。</p>
+<p>工作台查询资源、目标、任务、故障、证据、成果和待决事项。用户可以要求生成适合当前问题的主页，系统保存视图定义及受控查询引用，按当前权限持续展示数据。页面发起执行请求时回到统一任务与操作入口，页面本身不维护另一份进度或资源真相。</p>
+<h3 id="交付与长期维护的协作闭环">交付与长期维护的协作闭环</h3>
+<p>以“完成一批节点交付，并持续维护其健康”为例，Router 将一次交付结果与持续维护责任分别记录，明确资源范围、验收标准、处置授权和通知要求。运行时安排交付负责人，信息与上下文提供资产、当前状态和相关经验。</p>
+<p>运行时采用适用的交付计划并组织依赖与资源条件，执行能力完成实际部署和测试。计划待确定或到达已委派的选组、分批等决策点时，由交付 Worker 在授权内决定，运行时复核并登记。外部工作跨等待继续，结果回到原操作和步骤；配置或目标变化时，相关证据经过适用性复查再计入验收。整体条件满足后形成交付结果，Router 告知用户，工作台展示同一事实。</p>
+<p>此后维护责任继续接收监控与配置变化。故障事件关联资源和 Incident，运行时形成或恢复处置工作，Worker 使用当前事实、交付证据和历史经验诊断。修复操作在资源与业务条件允许时执行，经验证和调度状态核对后记录恢复；处置经验进入知识，必要的方法改进形成待确认提案。</p>
+<p>用户在任意阶段都可以追问、修订、暂停或停止相应责任。其输入作用于当前目标与任务版本，并在下一判断和执行边界生效。至此，用户要求、资源事实、执行效果、验证证据、经验和下一次工作在同一 Personal Agent 内相互衔接。</p>
+<h2 id="9-设计验证与后续细化">9 设计验证与后续细化</h2>
+<h3 id="关键场景与验收依据">关键场景与验收依据</h3>
+<p>本设计采用逻辑场景检查组件责任与状态衔接，以下条件是后续实现和验证需要满足的依据，不代表已经完成运行实测。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>场景</th>
+<th>应具备的行为与证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>多项任务并行，用户继续提出新要求</td>
+<td>Router 持续响应，各 Task 保留独立责任、上下文和进度；新要求明确归属</td>
+</tr>
+<tr>
+<td>两组节点均通过测试，计划将交付顺序委派给 Worker</td>
+<td>运行时关联证据并唤醒同一 Task 的负责人；保存范围内选择及依据，复核后执行交接。固定顺序按规则直接推进，改变交付承诺则登记待决并交 Router</td>
+</tr>
+<tr>
+<td>父任务部分失败或缺少成果</td>
+<td>区分必需与可选结果，执行约定的部分交付或失败处理，不能按结束数量宣布成功</td>
+</tr>
+<tr>
+<td>多任务订阅同一输入，完成事件重复或早于等待登记</td>
+<td>上下文可以共享，执行意图只有一个责任归属；事件可回查，等待只发生一次有效推进</td>
+</tr>
+<tr>
+<td>Worker 收到输入后、提交决定前中断或改派</td>
+<td>保留原 Event 和投递身份；恢复后装配仍未处理的输入；旧 Assignment 的提交失效，重复投递只产生一次有效决定</td>
+</tr>
+<tr>
+<td>Worker 正在规划时用户暂停，迟到的作业回执随后到达</td>
+<td>暂停提交后阻止新操作；回执继续关联原 Operation；工作台区分暂停状态、在途结果和待核对事项</td>
+</tr>
+<tr>
+<td>外部操作已发生但回执丢失，随后重启或改派</td>
+<td>保留原操作身份，查询实际结果；旧执行者失去控制资格，不能重复执行未知动作</td>
+</tr>
+<tr>
+<td>长期作业仍在执行，Run 结束或租约异常</td>
+<td>保留任务、步骤、作业和占用依据，核对实际状态后再继续或释放</td>
+</tr>
+<tr>
+<td>资源、配置、拓扑或要求变化</td>
+<td>保留历史依据，识别受影响任务和结论，复查当前证据适用性</td>
+</tr>
+<tr>
+<td>本地状态与外部业务调度器不一致</td>
+<td>保留可见的等待或未知状态，核对前不执行冲突操作或宣布资源可用</td>
+</tr>
+<tr>
+<td>用户暂停、取消、停止持续 Goal 或撤销授权</td>
+<td>后续唤醒和执行遵守当前控制意图，在途效果独立核对，所属触发停止</td>
+</tr>
+<tr>
+<td>成果完成但投递失败，或用户随后追加修改</td>
+<td>单独恢复投递；同一目标修订沿用 Task，独立目标另建关联 Task，历史交付与版本保持可追溯</td>
+</tr>
+<tr>
+<td>知识冲突、用户纠正或材料被删除</td>
+<td>按对象、时间与来源核对，更新派生视图和索引，权限与引用限制继续生效</td>
+</tr>
+<tr>
+<td>大量重复经验或 Skill 效果退化</td>
+<td>整理案例并形成必要提案，未经用户明确确认不改变 Skill 或启用状态</td>
+</tr>
+<tr>
+<td>任务持续拆分、反复尝试或模型暂不可用</td>
+<td>预算与监督限制无效工作，确定性部分在有效条件下继续，需要判断时等待或升级</td>
+</tr>
+</tbody>
+</table></div>
+<p>记忆效果后续使用相同材料和问题验证案例召回、事实时效、历史查询、纠正、溯源和权限隔离，同时观察读取量、延迟与整理成本。外部执行能力需按实际系统验证幂等、查询、取消与结果核验，不能以接口名称或公开方案说明代替测试。</p>
+<h3 id="后续详细设计范围">后续详细设计范围</h3>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>范围</th>
+<th>待确定内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>通用运行实现</td>
+<td>任务规模、并发和预算参数，等待与重试规则，模型组合，状态与事件持久化、索引及执行环境</td>
+</tr>
+<tr>
+<td>资源与领域规则</td>
+<td>实际资源字段与身份融合规则，状态枚举，新鲜度，资源兼容关系，变化对测试和验收的影响</td>
+</tr>
+<tr>
+<td>运维流程</td>
+<td>发现、部署、配置、测试、验收、交付、故障处置及调度协同的具体步骤、失败分支与补偿方式</td>
+</tr>
+<tr>
+<td>运维参数与授权</td>
+<td>测试组合、基线和阈值，监控周期、维护窗口、自动处置范围，策略效果和恢复条件</td>
+</tr>
+<tr>
+<td>接口与能力</td>
+<td>BMC、部署、监控、测试、调度器、工单和渠道的实际契约、外部身份映射与运行限制</td>
+</tr>
+<tr>
+<td>交互与知识验证</td>
+<td>工作台查询与操作方式，报告口径，检索排序、上下文预算及独立核验的具体条件</td>
+</tr>
+</tbody>
+</table></div>
+<p>通用能力与领域定义的责任边界按本设计保持一致。实际流程暴露结构缺口时，明确问题后修订对应模型；具体参数不反向成为另一套工作状态或控制体系。当前 Personal Agent 已选用 Go + React、SQLite 与本机工作区；后续领域能力复用现有基础，是否引入额外数据库、服务或框架须由实际缺口决定。</p>
+<h3 id="设计图与阅读依据">设计图与阅读依据</h3>
+<p>分区协作架构图展示 Personal Agent 的系统边界、Router 和 Worker 的位置，以及主交互、运行时、资源与上下文、运维工作流、外部感知和执行治理之间的连接。图中以不同颜色标出感知入库、受控查询、上下文与证据、执行与操作回执及工单协作。能力执行与治理是运维工作流经工作运行时调用的共享执行底座。</p>
+<p>技术方案图依据第三至第七章展示工作对象、权威记录、执行入口、上下文装配和结果反馈。每个组件保持唯一归属；控制请求、事实查询和执行回执按明确含义连接，状态存储与知识视图不重复充当权威来源。</p>
+<p>资源模型专图展开定义与实例、准入、证据变化、查询执行和模型发布。时序图依据第五章的运行过程及第八章的运维协作展开，参与者、消息与持久状态均回到正文中的职责定义。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>设计图</th>
+<th>阅读重点</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="Research/ClusBot-分区协作架构图-V2.svg">分区协作架构图</a></td>
+<td>两层 Agent、运行时的规则匹配、运维与外部系统的连接</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-工作运行时内部设计图-V2.svg">工作运行时内部设计图 V2</a></td>
+<td>执行宿主、Router、Worker 的交接，送达、取入、正式提交与三类续接</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-总体技术方案.svg">总体技术方案图</a></td>
+<td>工作执行闭环、对象查询、准入、上下文读写和模型发布的接口</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-统一资源模型设计方案.html">统一资源模型图示</a></td>
+<td>模型、实例、绑定、证据和各消费方之间的具体语义</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html">场景时序设计</a></td>
+<td>按不同场景展开消息顺序、持久提交、等待恢复与关键分支；附可编辑源文件</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="场景时序图">场景时序图</h3>
+<p>时序图沿用上述模块与权威边界。生命线表达逻辑职责，不预设进程或服务；绿色注记表示由该模块持久提交，实线表示请求或提交，虚线表示返回。<code>alt</code> 的分支互斥，<code>opt</code> 按条件执行，<code>loop</code> 遵守有效责任、依赖和预算。参见框解释对应机制，不表示重新执行整张图；当前图的发起消息、返回结果和条件决定实际推进。水平消息越过其他生命线不表示调用该参与者。</p>
+<p>各场景中的“启动 / 唤醒 Agent”均由运行时发出，携带按图 02 装配并在启动前复核的当前 ContextManifest；场景图省略重复的装配细节。图 03 的首次登记与原操作重投分开，图 05 从已有 Operation 开始对账。反馈给用户的场景显式连接运行时、Router 和工作台；图 08 的只读查询与图 12 的类型化模型发布按各自权限契约处理。</p>
+<p>建议先阅读 01—04，理解目标如何成为有依据的执行与交付；再用 05—10 核对等待、故障、数据变化和用户调整，最后检查 11—12 的知识及模型治理。<a href="Research/ClusBot-场景时序设计.html">阅读页</a>提供全部 SVG、PNG 与 Mermaid 源码，<a href="Research/ClusBot-场景时序图.drawio">draw.io 文件</a>按图分成 12 页。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>图</th>
+<th>说明的问题与关键分支</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-01">01 目标受理与两层 Agent 协作</a></td>
+<td>Router 受理主会话，运行时登记委派，Worker 返回常规进展或提交待决与交回</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-02">02 持久上下文装配与正式记录</a></td>
+<td>分开记录已接收、宿主送达、纳入本轮上下文和正式提交；中断保留未处理输入</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-03">03 受控操作与最终准入</a></td>
+<td>Claim、Operation 意图与最终执行资格分别核对；拒绝、未知或版本失效时不调用外部</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-04">04 节点批次交付与整体验收</a></td>
+<td>区分规则推进、Worker 授权内决策和 Router 协调；验收、占用交接、外部接收分别确认</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-05">05 异步等待与恢复对账</a></td>
+<td>重启或改派后按当前修订和检查点续接未处理输入；已有在途作业沿原 Operation 对账</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-06">06 故障维护与恢复业务分配</a></td>
+<td>排空后维修与复验；先撤销维修资格再交接，修复、业务恢复和用户反馈分别闭合</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-07">07 持续接入与有效责任触发</a></td>
+<td>批次去重、身份解析、事实与水位提交、依赖重算；变化按有效 Goal 关联有界工作</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-08">08 对象查询与后端只读执行</a></td>
+<td>区分模型发现、QueryPlan 与实际数据；必需约束缺失或当前权限失效时拒绝执行</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-09">09 用户修订暂停取消与恢复</a></td>
+<td>分别确认控制请求的接收和生效；拒绝旧决定、核对迟到回执并续接原工作</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-10">10 变化影响与局部复验</a></td>
+<td>换件、配置或要求变化后按依赖选择复验；保留历史验收和无关的有效成果</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-11">11 知识沉淀与 Skill 确认发布</a></td>
+<td>普通知识按规则整理；提案变化重新通知与确认，治理核验明确决定及最终发布基准</td>
+</tr>
+<tr>
+<td><a href="Research/ClusBot-场景时序设计.html#seq-12">12 模型变更发布与消费者生效</a></td>
+<td>草稿、验证、发布资格、基准 CAS 与完整包发布；跟踪消费者实际加载版本</td>
+</tr>
+</tbody>
+</table></div>
+<p>这些时序描述设计契约与逻辑提交边界。本地权威记录、引用和 Outbox 按可恢复协议衔接，外部设备和业务调度器不参与本地事务；消息名称也不等于已发布 API。字段与事务约定继续以统一资源模型及其详细设计为准。</p>
+<h2 id="附录-研究依据与设计决策">附录 研究依据与设计决策</h2>
+<p>主体研究以 DeepSeek Super Agent 为基础。ClusBot 确定采用两层 Agent、持久工作身份、事件关联和确定性运行时，并将个人目标管理、跨运行流程、资源与证据、长期知识和受控能力统一为本文的完整设计。研究对象提供机制依据，不对应需要组合部署的产品，也不构成代码复用决定。</p>
+<div class="table-scroll"><table>
+<thead>
+<tr>
+<th>研究主题</th>
+<th>依据与 ClusBot 的设计判断</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工作归属与运行主体</td>
+<td><a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/001-domain.md">DeepSeek 领域模型</a>、<a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/004-prompts.md">角色规则</a>、<a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/007-architecture.md">运行架构</a>。采用 Router 与 Worker 分工、工作与分配分离、事件关联和确定性状态维护。</td>
+</tr>
+<tr>
+<td>原型行为与本设计的边界</td>
+<td><a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/002-authorization.md">DeepSeek 授权规则</a>、<a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/003-execution.md">执行机制</a>、<a href="https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/README.md">原型说明</a>。ClusBot 按自己的需求确定已完成任务后续工作、长等待释放执行槽和当前授权检查；原型场景与默认参数不成为产品要求。</td>
+</tr>
+<tr>
+<td>长期知识的主体组织</td>
+<td><a href="https://hindsight.vectorize.io/developer/observations">Hindsight 知识整合</a>、<a href="https://hindsight.vectorize.io/developer/mental-models">主题视图</a>、<a href="https://hindsight.vectorize.io/developer/retrieval">检索机制</a>。形成经历、可修订知识与派生视图的统一模型，整合结论仍须保留证据与适用性。</td>
+</tr>
+<tr>
+<td>时间与渐进披露</td>
+<td><a href="https://github.com/getzep/graphiti">Graphiti</a>、<a href="https://github.com/volcengine/OpenViking/blob/main/docs/en/concepts/03-context-layers.md">OpenViking 上下文分层</a>、<a href="https://docs.letta.com/concepts/memfs">Letta MemFS</a>、<a href="https://docs.letta.com/concepts/shared-memory">共享记忆</a>。确定时间有效性、来源追踪、摘要到原始证据的读取路径及可查看的知识版本，不要求全量图存储或文件目录承载全部状态。</td>
+</tr>
+<tr>
+<td>持续交互与信息分域</td>
+<td><a href="https://learn.chatgpt.com/docs/dots/tasks-and-memory">Dots 任务与记忆</a>、<a href="https://docs.x.ai/grok-bot/how-grok-bot-works">Grok Bot</a>。用户持续与同一助手合作，独立任务可查看与纠偏，共享用户信息和任务、角色私有上下文保持边界；不据产品行为推断其内部实现。</td>
+</tr>
+<tr>
+<td>方法与角色治理</td>
+<td><a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/skills">Hermes Skills</a>、<a href="https://hermes-agent.nousresearch.com/docs/user-guide/features/memory">记忆更新</a>、<a href="https://docs.openclaw.ai/concepts/multi-agent">OpenClaw 多 Agent</a>、<a href="https://github.com/nanocoai/nanoclaw/blob/main/docs/isolation-model.md">NanoClaw 隔离</a>。采用按需方法目录、可配置角色与上下文隔离；全部 Skill 变更主动通知并经用户确认，是 ClusBot 的明确约束。</td>
+</tr>
+</tbody>
+</table></div>
+<p>需求来源为<a href="Research/多智能体架构设计分析.html">原始讨论存档</a>及随后确认的产品方向：集群交付与运维由完整 Personal Agent 承担，研究设计服务于 ClusBot 自身的工作模型与能力边界。</p>
+<h3 id="论文机制与本设计取舍">论文机制与本设计取舍</h3>
+<p>下列“机制”是原文概括，“采用”及“限制”是对 ClusBot 的工程判断。每项只借鉴适用机制，不承诺引入相应软件栈。</p>
+<h4 id="umodel">UModel</h4>
+<p><a href="https://arxiv.org/html/2606.04799">UModel: An Agent-Ready Observability Data Modeling Method at Scale</a>，重点读 III–IV 的对象、关系、查询和应用接口。</p>
+<p>**机制：**以对象语义关联异构可观测数据、关系和能力，提供统一查询和 Agent 接口。</p>
+<p>**采用：**延续已有领域模型目录、ObjectRef、两级数据绑定、统一查询信封与查询计划；把原始指标/日志留在后端，内部保存身份、关键事实和证据。</p>
+<p>**限制：**UModel 并非完整任务运行时或学习系统；ClusBot 的授权、Operation、Claim、验收和持续责任仍自主管理。不直接假定其源码与当前本机工程兼容，也不因论文有图查询就新增图数据库。</p>
+<h4 id="routed-continual-learning">Routed Continual Learning</h4>
+<p><a href="https://arxiv.org/html/2610.38796">Routed Continual Learning</a>，重点读 §3、§4 及 Adapter 验证附录。</p>
+<p>**机制：**任务开始时选择一个记忆簇及其固定库内机制，实例中选择保持不变，仅更新被选簇。Router 使用可见任务/输出格式与簇摘要，不能查看原始轨迹；实验没有学习其路由提示词。五种机制为 ICL、ReasoningBank、HR、HDE、PES。</p>
+<p>**采用：**Memory Router 独立于任务 Router；任务规范先由入口/模板确定。固定本次路由和策略版本，原子读写簇状态；先实现情景/知识检索，允许 no_memory 降级。</p>
+<p>**限制：**HR 的标量、HDE 的离散事件、PES 的实体测量各需匹配的数据与反馈，不是通用运维记忆的必选组件。按权限过滤、簇生命周期和删除传播是本项目补充；不声称论文验证了这些生产约束。</p>
+<h4 id="mccl">MCCL</h4>
+<p><a href="https://arxiv.org/html/2610.29357">Memory-Centric Continual Learning for AI Agents</a>，重点读 §2 三轴、§3 生命周期与 §4 评测。</p>
+<p>**机制：**分别讨论载体、资产和策略，区分记忆状态更新与管理策略演进，并从未来行为的保持、适应和迁移评价记忆作用。</p>
+<p>**采用：**外部可寻址存储为首选；Episode、Knowledge、Skill 分别治理。内循环处理内容，外循环产出候选策略并隔离评测，记录检索/注入/使用/结果，而不以条目数量衡量成功。</p>
+<p>**限制：**这是设计和评价框架，不是可直接部署的统一引擎。其规模分析不能当作本项目容量公式或可靠性保证；本期不做参数记忆、KV Cache 持久学习或无人监督的线上策略演化。</p>
+<h4 id="reasoningbank">ReasoningBank</h4>
+<p><a href="https://arxiv.org/html/2509.25140">ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory</a>，重点读 §3 的检索、经验抽取和巩固。</p>
+<p>**机制：**从成功和失败轨迹提炼可复用策略/教训，保存标题、说明和内容，并检索帮助后续任务；论文使用模型自评作为结果代理信号。</p>
+<p>**采用：**从已闭合轨迹生成带来源、适用条件和反例的知识候选；保存失败经验；将命令回执、任务验证、用户验收分开。</p>
+<p>**限制：**生产运维不把 LLM-as-Judge 当真实成功验证，不把经验条目插入系统权限指令。多次采样/探索只在预算和隔离环境允许时评估，不为学习重复操作真实设备。</p>
+<h4 id="zep-与-graphiti">Zep 与 Graphiti</h4>
+<p><a href="https://arxiv.org/html/2501.13956">Zep: A Temporal Knowledge Graph Architecture for Agent Memory</a>，重点读 §2 的 episode、语义实体与时间处理。</p>
+<p>**机制：**将原始情景、语义实体/关系及社区摘要关联，并区分事件时间和获知时间，支持历史关系与检索。</p>
+<p>**采用：**强化现有双时间事实、来源引用和历史修正；记忆中设备状态也必须带时间，当前准入回查资源事实。</p>
+<p>**限制：**不复制一个 Graphiti 图来争夺资源身份权威；关系表足以支撑的场景继续用 SQLite。自然语言抽取的事实要经过来源规则，不能直接覆盖监控或资产权威数据。</p>
+<h4 id="arigraph">AriGraph</h4>
+<p><a href="https://ijcai.org/proceedings/2025/2">AriGraph: Learning Knowledge Graph World Models with Episodic Memory for LLM Agents</a>，IJCAI 2025。</p>
+<p>**机制：**关联语义与情景记忆，随交互更新记忆图，论文主要在交互式文本游戏中验证规划与决策。</p>
+<p>**采用：**以 ObjectRef 连接资源、事件、操作、证据和经验，支持“这条结论来自哪次任务”的双向追溯。</p>
+<p>**限制：**逻辑关联不要求事实和经验共用写入器；文本游戏结果不能直接外推到集群故障修复。生产环境的实体身份、时间和验证由领域规则约束。</p>
+<h4 id="learning-by-doing">Learning by Doing</h4>
+<p><a href="https://arxiv.org/html/2611.01386">Learning by Doing: Autonomously Compiling and Curating Agent Skills from Verified Traces</a>，重点读 §4–5 的轨迹、验证与技能生命周期。</p>
+<p>**机制：**捕获轨迹、编译、整理、准入和提供 Skill；报告结果与验证分开，技能有不可变版本、适用条件和证据关联。</p>
+<p>**采用：**经验产生候选 Skill，经证据核验、测试、用户确认后发布；使用与结果回流。重复尝试按尝试族计算支持，摘要本身不充当证据。</p>
+<p>**限制：**论文允许的自动准入不能替代本项目已有 Skill 变更确认要求。导出的 Markdown 是阅读形式，权限、证据、版本和启用状态仍由治理记录决定。</p>
+<h4 id="memgate">MemGate</h4>
+<p><a href="https://arxiv.org/html/2606.06054">Beyond Similarity: Trustworthy Memory Search for Personal AI Agents</a>，重点读 §III 的失败类型和 §IV 的查询条件门控。</p>
+<p>**机制：**针对语义相似但不适用的记忆，学习查询条件下的门控和排序，处理记忆带来的错误影响。</p>
+<p>**采用：**在检索中显式检查工作范围、时效、环境、证据和冲突；尤其防止个人偏好改变运维工具参数/审批要求。</p>
+<p>**限制：**规则过滤是借鉴其问题意识，不是实现论文的训练门控。没有适合的偏好数据与对照集前，不声称获得相同防护效果；最终执行准入仍独立存在。</p>
+<h4 id="memgpt">MemGPT</h4>
+<p><a href="https://arxiv.org/html/2310.08560">MemGPT: Towards LLMs as Operating Systems</a>，重点读 §2 主上下文、队列与函数调用。</p>
+<p>**机制：**区分有限主上下文与外部存储，通过函数检索/搬入信息并管理历史摘要。</p>
+<p>**采用：**按引用展开材料和历史、分角色装配、可溯源压缩，保留不可裁剪工作约束及工具调用对。</p>
+<p>**限制：**上下文分页不能替代任务检查点；模型的记忆管理函数不能随意改写 Task、权限或事实。当前请求字节裁剪需要渐进升级，不宣称已经拥有完整分页引擎。</p>
+<h4 id="mem0">Mem0</h4>
+<p><a href="https://arxiv.org/html/2504.19413">Mem0: Building Production-Ready AI Agents with Scalable Long-Term Memory</a>，重点读 §2 的提取与更新。</p>
+<p>**机制：**从对话增量提取候选记忆，与已有记忆比较并选择新增、更新、删除或不变，也讨论图表示扩展。</p>
+<p>**采用：**在当前显式个人记忆上增加可确认候选、重复检测和冲突建议；保存来源与修订。</p>
+<p>**限制：**不直接让模型删除用户明确保存的偏好；聊天记忆与经过验证的设备事实分开。无需为采用生命周期引入第二套会话存储。</p>
+<h4 id="g-memory">G-Memory</h4>
+<p><a href="https://arxiv.org/html/2506.07398">G-Memory: Tracing Hierarchical Memory for Multi-Agent Systems</a>，重点读 §3–4 的 interaction/query/insight 图和检索更新。</p>
+<p>**机制：**以交互、任务查询和高层见解组织多智能体经验，连接协作细节与跨任务知识。</p>
+<p>**采用：**保留分配、交回、冲突解决和验证的关联；按 Worker 角色提供相关经验，避免只存最终答案。</p>
+<p>**限制：**先用现有正式事件和引用表达，不新增三套图数据库；团队经验共享必须符合权限和适用域。角色数量不作为协作质量指标。</p>
+<h4 id="memevolve">MemEvolve</h4>
+<p><a href="https://arxiv.org/html/2512.18746">MemEvolve: Meta-Evolution of Agent Memory Systems</a>，重点读 §3–4 的 encode/store/retrieve/manage 设计空间和双重演化。</p>
+<p>**机制：**不只更新经验，也搜索/调整记忆系统的组织机制，并用模块化设计空间比较候选架构。</p>
+<p>**采用：**把检索、抽取、合并策略做成固定接口与版本配置，允许离线评测不同组合。</p>
+<p>**限制：**暂缓线上自主改写记忆代码、存储架构和权限机制。结构变更属于工程迁移，不能作为一次模型工具调用直接上线。</p>
+<h4 id="reflexion">Reflexion</h4>
+<p><a href="https://arxiv.org/html/2303.11366">Reflexion: Language Agents with Verbal Reinforcement Learning</a>，重点读 §3 的反馈、自反思和情景缓冲。</p>
+<p>**机制：**利用任务反馈形成语言反思供后续尝试使用，不依赖模型权重更新。</p>
+<p>**采用：**将失败原因、反证和下一次应检查的前提形成有来源的经验候选。</p>
+<p>**限制：**反思仍是提案。真实工具效果未核实、同一失败被重新措辞时，不能累加“成功经验”或继续无限重试。</p>
+<p>讨论中仅泛称“ProcMEM 类方法”，没有唯一论文标识，本次不据此指定算法或引入依赖。可落地的程序性记忆设计以已核对的 Learning by Doing 和现有 Skill 治理为依据。</p>
+<h3 id="本次对齐依据">本次对齐依据</h3>
+<p><a href="https://chatgpt.com/c/6af501a8-0790-83ec-8dd8-4ed16e14c888">论文讨论</a>的 UModel/Routed CL 分工、MCCL 记忆策略、经验转为 Skill 和隔离配对评测已纳入第 6、7 章。指定会话<a href="codex://threads/01a1c44c-1edb-77a0-9855-1fa9df25fc0c">重绘 ClusBot 技术方案图</a>以最后的 V2 完整图为准，包括 NHC 主动检查、共享连接、请求与执行分开以及运行时四种确认。具体研究机制的组合属于本文设计判断，不等于任何单篇论文已经验证了 ClusBot 的完整系统。</p>
+</main></body></html>
