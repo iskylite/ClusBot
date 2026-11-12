@@ -23,10 +23,11 @@ import (
 //go:embed schema.sql
 var schema string
 
-const databaseSchemaVersion = 46
+const databaseSchemaVersion = 47
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
+const contextManifestRevisionsMigrationFrom = 46
 
 var (
 	ErrConflict        = errors.New("请求标识已用于其他内容")
@@ -205,6 +206,15 @@ func initializeDatabase(db *sql.DB) error {
 	}
 	if version == lastInputTokensMigrationFrom {
 		if _, err = tx.Exec(`ALTER TABLE runs ADD COLUMN last_input_tokens INTEGER`); err != nil {
+			return err
+		}
+		version = contextManifestRevisionsMigrationFrom
+	}
+	if version == contextManifestRevisionsMigrationFrom {
+		if _, err = tx.Exec(`ALTER TABLE context_manifests ADD COLUMN previous_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`ALTER TABLE context_manifests ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	} else {

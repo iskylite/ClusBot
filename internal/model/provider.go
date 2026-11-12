@@ -77,6 +77,7 @@ type reasoningOptions struct {
 
 type responseRequest struct {
 	excerpted       []int64
+	noRetry         bool               // classification/one-shot calls must not retry
 	Reasoning       *reasoningOptions  `json:"reasoning,omitempty"`
 	Model           string             `json:"model"`
 	Input           []any              `json:"input"`
@@ -257,19 +258,13 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 	if err != nil {
 		return responseData{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return responseData{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	if p.key != "" {
-		req.Header.Set("Authorization", "Bearer "+p.key)
-	}
+	// Record the manifest once per logical request, before any attempt. Retries
+	// below re-send the same bytes, so a manifest per attempt would duplicate the
+	// audit record and break the single-write-entry contract of context_manifests.
 	if err := recordModelManifest(ctx, p, request, originalInput, body); err != nil {
 		return responseData{}, err
 	}
-	res, err := p.client.Do(req)
+	res, err := p.sendWithRetry(ctx, body, request.noRetry)
 	if err != nil {
 		return responseData{}, err
 	}
@@ -288,6 +283,66 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 		return readChatStream(res.Body, emit)
 	}
 	return readResponsesStream(res.Body, len(request.Tools) > 0, emit)
+}
+
+// Retry attempts and backoff bound transient model-provider failures. Only
+// connection errors and retryable HTTP statuses are retried, and only before a
+// response stream is handed back to a caller, so no text/tool output is ever
+// emitted twice. Non-retryable statuses and context cancellation surface at once.
+const (
+	maxSendAttempts = 3
+)
+
+// initialRetryDelay is the first backoff interval; it doubles each attempt. It
+// is a var so tests can shrink it without waiting on real backoff.
+var initialRetryDelay = 500 * time.Millisecond
+
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// sendWithRetry posts body and returns the response, retrying transient
+// failures (connection errors and retryable statuses) with exponential backoff.
+// The body is re-read from the in-memory slice each attempt. On success it
+// returns status 200; when retries are exhausted it returns the last response
+// (with its body open) so the caller classifies the non-OK status. A done
+// context is terminal and never retried.
+func (p *Provider) sendWithRetry(ctx context.Context, body []byte, noRetry bool) (*http.Response, error) {
+	delay := initialRetryDelay
+	for attempt := 1; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", p.endpoint, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		if p.key != "" {
+			req.Header.Set("Authorization", "Bearer "+p.key)
+		}
+		res, err := p.client.Do(req)
+		if err == nil {
+			if noRetry || res.StatusCode == http.StatusOK || !retryableStatus(res.StatusCode) || attempt >= maxSendAttempts {
+				return res, nil
+			}
+			res.Body.Close()
+		} else if noRetry || ctx.Err() != nil || attempt >= maxSendAttempts {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+		delay *= 2
+	}
 }
 
 func readResponsesStream(body io.Reader, hasTools bool, emit func(string) error) (responseData, error) {
@@ -382,10 +437,6 @@ func (p *Provider) requestByteLimit() int {
 		return p.maxRequestBytes
 	}
 	return DefaultMaxRequestBytes
-}
-
-func boundedRequestBody(request *responseRequest, limit int, encode func(any) ([]byte, error)) ([]byte, error) {
-	return boundedModelRequest(request, limit, nil, encode)
 }
 
 func boundedModelRequest(request *responseRequest, limit int, contextTokens *int, encode func(any) ([]byte, error)) ([]byte, error) {

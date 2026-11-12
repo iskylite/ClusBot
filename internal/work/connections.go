@@ -299,8 +299,6 @@ func (s *Store) CallConnectionTool(ctx context.Context, key, name string, revisi
 }
 
 func (s *Store) callConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int) (ConnectionResult, error) {
-	if runID != "" {
-	}
 	c, err := s.Connection(ctx, key)
 	if err != nil {
 		return ConnectionResult{}, err

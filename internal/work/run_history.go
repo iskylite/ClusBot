@@ -39,6 +39,8 @@ type RunContext struct {
 	AssignmentGeneration *int            `json:"assignment_generation,omitempty"`
 	WorkerRole           string          `json:"worker_role,omitempty"`
 	RecordedAt           int64           `json:"recorded_at"`
+	PreviousRevision     int64           `json:"previous_revision"`
+	ControlRevision      int             `json:"control_revision"`
 	Manifest             json.RawMessage `json:"manifest"`
 }
 
@@ -124,13 +126,14 @@ ORDER BY seq DESC LIMIT 1`, record.ConversationID, record.ConversationID, runID)
 		return RunRecord{}, err
 	}
 	record.Contexts, err = scanRunRecords(ctx, tx, `SELECT m.generation,b.task_revision,b.assignment_generation,
-coalesce(a.worker_role,''),m.assembled_at,m.manifest
+coalesce(a.worker_role,''),m.assembled_at,m.previous_revision,m.control_revision,m.manifest
 FROM context_manifests m JOIN run_bindings b ON b.run_id=m.run_id AND b.generation=m.generation
 LEFT JOIN assignments a ON a.task_id=b.task_id AND a.generation=b.assignment_generation
 WHERE m.run_id=? ORDER BY m.id DESC LIMIT 32`, runID, func(row scanner) (RunContext, error) {
 		var entry RunContext
 		var payload string
-		err := row.Scan(&entry.Generation, &entry.TaskRevision, &entry.AssignmentGeneration, &entry.WorkerRole, &entry.RecordedAt, &payload)
+		err := row.Scan(&entry.Generation, &entry.TaskRevision, &entry.AssignmentGeneration, &entry.WorkerRole,
+			&entry.RecordedAt, &entry.PreviousRevision, &entry.ControlRevision, &payload)
 		entry.Manifest = json.RawMessage(payload)
 		return entry, err
 	})

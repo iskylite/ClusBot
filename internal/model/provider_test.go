@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"clusbot/internal/work"
 )
@@ -284,5 +285,71 @@ func TestMaxOutputCapAppliesToRequest(t *testing.T) {
 	}
 	if sent != 500 {
 		t.Fatalf("max_output_tokens sent = %d, want clamped to 500", sent)
+	}
+}
+
+func TestRequestStreamRetriesTransientFailures(t *testing.T) {
+	defer func(old time.Duration) { initialRetryDelay = old }(initialRetryDelay)
+	initialRetryDelay = time.Millisecond
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		io.WriteString(w, "data: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer server.Close()
+	p, err := NewResponses(server.URL+"/v1", "fixture", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stream(t.Context(), []work.Message{{Role: "user", Text: "hi"}}, false, 512, nil); err != nil {
+		t.Fatalf("stream after transient 503 should succeed, got %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("attempts = %d, want 2 (one retry after 503)", got)
+	}
+}
+
+func TestRequestStreamDoesNotRetryClientErrors(t *testing.T) {
+	defer func(old time.Duration) { initialRetryDelay = old }(initialRetryDelay)
+	initialRetryDelay = time.Millisecond
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	p, err := NewResponses(server.URL+"/v1", "fixture", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stream(t.Context(), []work.Message{{Role: "user", Text: "hi"}}, false, 512, nil); err == nil {
+		t.Fatal("401 must surface as an error")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (401 is not retryable)", got)
+	}
+}
+
+func TestRequestStreamExhaustsRetriesOnPersistentServerError(t *testing.T) {
+	defer func(old time.Duration) { initialRetryDelay = old }(initialRetryDelay)
+	initialRetryDelay = time.Millisecond
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	p, err := NewResponses(server.URL+"/v1", "fixture", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Stream(t.Context(), []work.Message{{Role: "user", Text: "hi"}}, false, 512, nil); err == nil {
+		t.Fatal("persistent 502 must surface as an error")
+	}
+	if got := atomic.LoadInt32(&calls); got != maxSendAttempts {
+		t.Fatalf("attempts = %d, want %d", got, maxSendAttempts)
 	}
 }

@@ -137,8 +137,17 @@ JOIN conversations c ON c.id=t.conversation_id WHERE a.id=? AND a.sha256=? AND c
 				return ErrReadCheckpoint
 			}
 		}
-		result, err := tx.ExecContext(ctx, `INSERT INTO context_manifests(run_id,generation,assembled_at,manifest)
-SELECT b.run_id,b.generation,?,? FROM run_bindings b JOIN runs r ON r.id=b.run_id
+		// previous_revision links this manifest to the immediately prior one for the
+		// same run+generation (0 if first): the manifest is never rewritten, a new
+		// row chains to its predecessor. control_revision records the task revision
+		// this manifest was assembled under (0 for non-task runs); pause/stop/revise
+		// all bump tasks.revision, so recovery can tell a manifest assembled under a
+		// stale control intent (e.g. pause committed after assembly began) from a
+		// current one.
+		result, err := tx.ExecContext(ctx, `INSERT INTO context_manifests(run_id,generation,assembled_at,previous_revision,control_revision,manifest)
+SELECT b.run_id,b.generation,?,
+(SELECT COALESCE(max(p.id),0) FROM context_manifests p WHERE p.run_id=b.run_id AND p.generation=b.generation),
+COALESCE(t.revision,0),? FROM run_bindings b JOIN runs r ON r.id=b.run_id
 LEFT JOIN tasks t ON t.id=b.task_id
 WHERE r.id=? AND b.generation=? AND r.execution_generation=b.generation AND r.status='running' AND r.control=''
 AND (t.id IS NULL OR (t.revision=b.task_revision AND b.assignment_generation=(SELECT max(generation) FROM assignments WHERE task_id=t.id)))`,

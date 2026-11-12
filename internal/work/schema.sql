@@ -311,6 +311,8 @@ CREATE TABLE context_manifests (
   run_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
   assembled_at INTEGER NOT NULL,
+  previous_revision INTEGER NOT NULL DEFAULT 0,
+  control_revision INTEGER NOT NULL DEFAULT 0,
   manifest TEXT NOT NULL,
   FOREIGN KEY (run_id,generation) REFERENCES run_bindings(run_id,generation) ON DELETE CASCADE
 );

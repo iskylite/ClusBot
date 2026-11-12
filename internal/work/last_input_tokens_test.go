@@ -50,7 +50,7 @@ func TestLastInputTokensRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r, err := scanRun(store.db.QueryRow("SELECT " + runColumns + " FROM runs WHERE id=?", run))
+	r, err := scanRun(store.db.QueryRow("SELECT "+runColumns+" FROM runs WHERE id=?", run))
 	if err != nil {
 		t.Fatal(err)
 	}

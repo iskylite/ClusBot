@@ -35,6 +35,13 @@ func TestMigrateFrom45AddsLastInputTokens(t *testing.T) {
 		revision INTEGER NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
+	// Real v45 databases carry context_manifests (it predates v45); the 46->47
+	// migration ALTERs it, so the fixture must include the pre-46 shape.
+	if _, err := old.Exec(`CREATE TABLE context_manifests(
+		id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, generation INTEGER NOT NULL,
+		assembled_at INTEGER NOT NULL, manifest TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := old.Exec("PRAGMA user_version=45"); err != nil {
 		t.Fatal(err)
 	}
@@ -57,5 +64,9 @@ func TestMigrateFrom45AddsLastInputTokens(t *testing.T) {
 	// The new column exists and is writable.
 	if _, err := store.db.Exec("UPDATE runs SET last_input_tokens=5 WHERE id='x'"); err != nil {
 		t.Fatalf("last_input_tokens column missing after migration: %v", err)
+	}
+	// The 46->47 context_manifests columns exist after migration.
+	if _, err := store.db.Exec("UPDATE context_manifests SET previous_revision=1, control_revision=1 WHERE id=-1"); err != nil {
+		t.Fatalf("context_manifests revision columns missing after migration: %v", err)
 	}
 }

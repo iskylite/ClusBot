@@ -79,6 +79,7 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 		}
 		var intent strings.Builder
 		response, err := provider.requestStream(ctx, responseRequest{
+			noRetry:         true, // classification is single-shot per submission (idempotent, budget-counted once)
 			Input:           []any{responseMessage{Type: "message", Role: "user", Content: string(payload)}},
 			Instructions:    instructions,
 			MaxOutputTokens: limit,

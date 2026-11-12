@@ -210,3 +210,64 @@ func TestRoutedFollowupIsDeliveredAfterDecision(t *testing.T) {
 		t.Fatalf("retry did not find dispatched run: %+v", dispatched)
 	}
 }
+
+func TestContextManifestRecordsRevisions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "work.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	created, err := s.Submit(t.Context(), "manifest-rev", "整理这周资料", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.claim(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input int64
+	if err = s.db.QueryRow("SELECT message_seq FROM input_deliveries WHERE run_id=?", run.ID).Scan(&input); err != nil {
+		t.Fatal(err)
+	}
+	recorder := s.withManifestRecorder(t.Context(), run)
+	for i := 0; i < 2; i++ {
+		if err = RecordModelManifest(recorder, ManifestRequest{Messages: []int64{input}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.db.Query(`SELECT id,previous_revision,control_revision FROM context_manifests WHERE run_id=? ORDER BY id`, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var ids []int64
+	var prevs, ctrls []int64
+	for rows.Next() {
+		var id, prev, ctrl int64
+		if err := rows.Scan(&id, &prev, &ctrl); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		prevs = append(prevs, prev)
+		ctrls = append(ctrls, ctrl)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("manifests = %d, want 2", len(ids))
+	}
+	// First manifest chains to nothing; second chains to the first. Neither is
+	// rewritten: the pair of rows is the append-only history the design requires.
+	if prevs[0] != 0 {
+		t.Fatalf("first manifest previous_revision = %d, want 0", prevs[0])
+	}
+	if prevs[1] != ids[0] {
+		t.Fatalf("second manifest previous_revision = %d, want %d", prevs[1], ids[0])
+	}
+	// control_revision equals the task revision at assembly (>=1 once submitted).
+	for i, ctrl := range ctrls {
+		if ctrl < 1 {
+			t.Fatalf("manifest %d control_revision = %d, want >=1", i, ctrl)
+		}
+	}
+	_ = created
+}
