@@ -28,6 +28,8 @@
 /.oil-ui/
 .DS_Store
 
-# Local browser review logs and Python caches in research tooling
-/docs/Research/**/review*-browser.log
+# Local research archives, review evidence, and Python caches
+/docs/Research/多智能体架构设计分析.html
+/docs/Research/多智能体架构设计分析_files/
+/docs/Research/历史/*/证据/
 /docs/Research/**/__pycache__/
