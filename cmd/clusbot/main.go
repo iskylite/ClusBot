@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,7 +31,13 @@ type config struct {
 	Server        struct{ Listen string } `yaml:"server"`
 	DataDir       string                  `yaml:"data_dir"`
 	WorkspaceRoot string                  `yaml:"workspace_root"`
-	Model         struct {
+	Tickets       struct {
+		BaseURL             string `yaml:"base_url"`
+		HealthURL           string `yaml:"health_url"`
+		CredentialEnv       string `yaml:"credential_env"`
+		HealthCredentialEnv string `yaml:"health_credential_env"`
+	} `yaml:"tickets"`
+	Model struct {
 		Provider string `yaml:"provider"`
 		BaseURL  string `yaml:"base_url"`
 		ID       string `yaml:"model_id"`
@@ -60,6 +67,8 @@ func run() error {
 			return runBackup(args[1:])
 		case "restore":
 			return runRestore(args[1:])
+		case "import-domain-assets":
+			return runImportDomainAssets(args[1:])
 		case "evaluate-experience":
 			return runExperienceEvaluation(args[1:])
 		}
@@ -196,6 +205,16 @@ func run() error {
 	if err = db.Recover(); err != nil {
 		return err
 	}
+	// V3 运行时恢复（扫描持久工作/未决操作/等待）。
+	if _, err = db.RecoverV3(context.Background(), time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("V3 恢复失败：%w", err)
+	}
+	// 本地演示模式注入领域台账样例（幂等，仅 -demo 启用）。
+	if *demo {
+		if err = db.SeedDomainDemo(context.Background()); err != nil {
+			return fmt.Errorf("注入领域演示数据失败：%w", err)
+		}
+	}
 	if err = db.ExpireApprovals(context.Background()); err != nil {
 		return err
 	}
@@ -212,11 +231,39 @@ func run() error {
 	port := fmt.Sprint(tcp.Port)
 	address := net.JoinHostPort(tcp.IP.String(), port)
 	hosts := []string{address, net.JoinHostPort(host, port), net.JoinHostPort("localhost", port)}
+	var ticketProvider *work.TicketProvider
+	var ticketChecker work.EffectChecker
+	if cfg.Tickets.BaseURL != "" {
+		ticketProvider, err = work.NewTicketProvider(cfg.Tickets.BaseURL, "tickets", os.Getenv(cfg.Tickets.CredentialEnv))
+		if err != nil {
+			return err
+		}
+	}
+	if cfg.Tickets.HealthURL != "" {
+		if ticketProvider == nil {
+			return errors.New("配置工单健康验证前需要 tickets.base_url")
+		}
+		ticketChecker, err = work.NewTicketEffectChecker(ticketProvider, cfg.Tickets.HealthURL, os.Getenv(cfg.Tickets.HealthCredentialEnv))
+		if err != nil {
+			return err
+		}
+	}
 	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath,
+		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	// V3 运行时循环（推进 Timer/Schedule/未决核对/确定性工作；模型不可用时确定性工作独立存活）。
+	modelAvailable := func() bool { return api.ModelAvailable(ctx) }
+	runtimeLoop := work.NewRuntimeLoop(db, modelAvailable)
+	var background sync.WaitGroup
+	// A2+A3：注册资产验收状态查询处理器并启动本地嵌入执行器（消费确定性 work_unit）。
+	executor, err := db.EnableAssetAcceptanceQuery(ctx)
+	if err != nil {
+		return fmt.Errorf("启动领域查询执行器失败：%w", err)
+	}
+	background.Go(func() { runtimeLoop.Run(ctx, 250*time.Millisecond, 0) })
+	background.Go(func() { executor.Run(ctx, 100*time.Millisecond) })
 	server := &http.Server{Handler: api.Handler(assets), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
 	var serveErr error
 	done := make(chan error, 1)
@@ -227,6 +274,10 @@ func run() error {
 		OutputTokens: cfg.Runtime.MaxOutputTokens,
 	})
 	approvalWorker := db.StartApprovalWorker(ctx)
+	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })
+	if ticketProvider != nil {
+		background.Go(func() { db.RunTicketOperations(ctx, ticketProvider, ticketChecker) })
+	}
 	tokenPath, _ = filepath.Abs(tokenPath)
 	slog.Info("ClusBot 已启动", "url", "http://"+address, "token_file", tokenPath, "model_mode", initial.Mode)
 	if *printURL {
@@ -244,6 +295,7 @@ func run() error {
 	}
 	workers.Wait()
 	approvalWorker.Wait()
+	background.Wait()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		return nil
 	}

@@ -137,6 +137,30 @@ func ensureNoPublication(tx *sql.Tx, taskID string) error {
 	return err
 }
 
+// PendingPublication 是写入审批队列中的一条发布记录。
+type PendingPublication struct {
+	Publication
+	TaskRevision int `json:"task_revision"`
+}
+
+// PendingPublications 返回尚未决定的文件发布（写入审批队列）。
+func (s *Store) PendingPublications(ctx context.Context) ([]PendingPublication, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+publicationColumns+" FROM publications WHERE status='pending' ORDER BY expires_at ASC, id ASC")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PendingPublication{}
+	for rows.Next() {
+		p, err := scanPublication(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, PendingPublication{Publication: p, TaskRevision: p.taskRevision})
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) RequestPublication(ctx context.Context, taskID, artifactID, filename, key string, revision int) (Publication, error) {
 	if !validFilename(filename) {
 		return Publication{}, ErrFilename

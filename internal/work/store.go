@@ -23,11 +23,174 @@ import (
 //go:embed schema.sql
 var schema string
 
-const databaseSchemaVersion = 47
+//go:embed runtime_records.sql
+var runtimeRecordsSchema string
+
+//go:embed runtime_inbox.sql
+var runtimeInboxSchema string
+
+//go:embed runtime_outbox.sql
+var runtimeOutboxSchema string
+
+//go:embed runtime_waits.sql
+var runtimeWaitsSchema string
+
+//go:embed runtime_timers.sql
+var runtimeTimersSchema string
+
+//go:embed runtime_schedules.sql
+var runtimeSchedulesSchema string
+
+//go:embed runtime_workers.sql
+var runtimeWorkersSchema string
+
+//go:embed runtime_leases.sql
+var runtimeLeasesSchema string
+
+//go:embed runtime_worker_reports.sql
+var runtimeWorkerReportsSchema string
+
+//go:embed runtime_quotas.sql
+var runtimeQuotasSchema string
+
+//go:embed runtime_scheduler.sql
+var runtimeSchedulerSchema string
+
+//go:embed runtime_authorization.sql
+var runtimeAuthorizationSchema string
+
+//go:embed runtime_assets.sql
+var runtimeAssetsSchema string
+
+//go:embed runtime_approvals.sql
+var runtimeApprovalsSchema string
+
+//go:embed runtime_capabilities.sql
+var runtimeCapabilitiesSchema string
+
+//go:embed runtime_capability_snapshots.sql
+var runtimeCapabilitySnapshotsSchema string
+
+//go:embed runtime_evidence.sql
+var runtimeEvidenceSchema string
+
+//go:embed runtime_operations.sql
+var runtimeOperationsSchema string
+
+//go:embed runtime_operation_jobs.sql
+var runtimeOperationJobsSchema string
+
+//go:embed runtime_delegation.sql
+var runtimeDelegationSchema string
+
+//go:embed runtime_service_events.sql
+var runtimeServiceEventsSchema string
+
+//go:embed runtime_domain_definitions.sql
+var runtimeDomainDefinitionsSchema string
+
+//go:embed runtime_identity.sql
+var runtimeIdentitySchema string
+
+//go:embed runtime_facts.sql
+var runtimeFactsSchema string
+
+//go:embed runtime_asset_transitions.sql
+var runtimeAssetTransitionsSchema string
+
+//go:embed runtime_validation.sql
+var runtimeValidationSchema string
+
+//go:embed runtime_workflows.sql
+var runtimeWorkflowsSchema string
+
+//go:embed runtime_image_builds.sql
+var runtimeImageBuildsSchema string
+
+//go:embed runtime_observation.sql
+var runtimeObservationSchema string
+
+//go:embed runtime_incidents.sql
+var runtimeIncidentsSchema string
+
+//go:embed runtime_self_heal.sql
+var runtimeSelfHealSchema string
+
+//go:embed runtime_tickets.sql
+var runtimeTicketsSchema string
+
+//go:embed runtime_loans.sql
+var runtimeLoansSchema string
+
+//go:embed runtime_material_index.sql
+var runtimeMaterialIndexSchema string
+
+//go:embed runtime_context_assembly.sql
+var runtimeContextAssemblySchema string
+
+//go:embed runtime_provenance.sql
+var runtimeProvenanceSchema string
+
+//go:embed runtime_cleanup.sql
+var runtimeCleanupSchema string
+
+//go:embed runtime_cases.sql
+var runtimeCasesSchema string
+
+//go:embed runtime_skills.sql
+var runtimeSkillsSchema string
+
+//go:embed runtime_retention.sql
+var runtimeRetentionSchema string
+
+//go:embed runtime_domain_query.sql
+var runtimeDomainQuerySchema string
+
+const databaseSchemaVersion = 90
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
 const contextManifestRevisionsMigrationFrom = 46
+const runtimeRecordsMigrationFrom = 47
+const runtimeInboxMigrationFrom = 48
+const runtimeOutboxMigrationFrom = 49
+const runtimeWaitsMigrationFrom = 50
+const runtimeTimersMigrationFrom = 51
+const runtimeSchedulesMigrationFrom = 52
+const runtimeWorkersMigrationFrom = 53
+const runtimeLeasesMigrationFrom = 54
+const runtimeWorkerReportsMigrationFrom = 55
+const runtimeQuotasMigrationFrom = 56
+const runtimeSchedulerMigrationFrom = 57
+const runtimeAuthorizationMigrationFrom = 58
+const runtimeAssetsMigrationFrom = 59
+const runtimeApprovalsMigrationFrom = 60
+const runtimeCapabilitiesMigrationFrom = 61
+const runtimeCapabilitySnapshotsMigrationFrom = 62
+const runtimeEvidenceMigrationFrom = 63
+const runtimeOperationsMigrationFrom = 64
+const runtimeOperationJobsMigrationFrom = 65
+const runtimeDelegationMigrationFrom = 66
+const runtimeServiceEventsMigrationFrom = 67
+const runtimeDomainDefinitionsMigrationFrom = 68
+const runtimeIdentityMigrationFrom = 69
+const runtimeFactsMigrationFrom = 70
+const runtimeAssetTransitionsMigrationFrom = 71
+const runtimeValidationMigrationFrom = 72
+const runtimeWorkflowsMigrationFrom = 73
+const runtimeImageBuildsMigrationFrom = 74
+const runtimeObservationMigrationFrom = 75
+const runtimeIncidentsMigrationFrom = 76
+const runtimeSelfHealMigrationFrom = 77
+const runtimeTicketsMigrationFrom = 78
+const runtimeLoansMigrationFrom = 79
+const runtimeMaterialIndexMigrationFrom = 80
+const runtimeContextAssemblyMigrationFrom = 81
+const runtimeProvenanceMigrationFrom = 82
+const runtimeCleanupMigrationFrom = 83
+const runtimeCasesMigrationFrom = 84
+const runtimeSkillsMigrationFrom = 85
+const runtimeRetentionMigrationFrom = 86
 
 var (
 	ErrConflict        = errors.New("请求标识已用于其他内容")
@@ -38,7 +201,9 @@ var (
 )
 
 type Store struct {
-	db               *sql.DB
+	db               *sql.DB // 写连接（单写职责），由 writer 持有
+	writer           *writerDB
+	readPool         *readPool
 	workspace        *workspace
 	materials        *workspace
 	uploads          *os.Root
@@ -93,6 +258,7 @@ type Run struct {
 type Message struct {
 	ID               int64          `json:"id,omitempty"`
 	RunID            string         `json:"run_id,omitempty"`
+	AssetQueryTaskID string         `json:"asset_query_task_id,omitempty"`
 	Role             string         `json:"role"`
 	Text             string         `json:"text"`
 	Materials        []Material     `json:"materials,omitempty"`
@@ -163,25 +329,28 @@ type Acceptance struct {
 }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	writer, err := openWriter(path)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	if _, err = db.Exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;"); err != nil {
-		db.Close()
-		return nil, err
+	// 只读连接池：短只读查询并发，不持有写连接（P1-01）。
+	// 打开失败不阻止服务（只读池是优化，写路径仍是权威）。
+	readPool, poolErr := openReadPool(path, 4)
+	if poolErr != nil {
+		readPool = nil
 	}
-	if err = initializeDatabase(db); err == nil {
-		_, err = db.Exec("PRAGMA journal_mode=WAL")
-	}
-	if err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &Store{db: db, connectionKey: randBytes()}, nil
+	return &Store{db: writer.db, writer: writer, readPool: readPool, connectionKey: randBytes()}, nil
 }
 
+// initializeDatabase 校验并按需迁移数据库到当前 schema 版本。
+//
+// 迁移设计（P0-05）：每一步通过"目标列/结构是否已存在"判定是否需要执行，
+// 因此对同一库重复运行是幂等的；迁移在单个可回滚事务内完成，失败不产生
+// 半套被当作有效的结构。user_version 是唯一的迁移进度标记：任何一步失败
+// 都随事务回滚，库保持原版本，可诊断、可重试，不出现"部分迁移已提交"。
+//
+// 启动顺序的约束由 cmd/clusbot/main.go 保证：LockDataDir → Open(校验/迁移)
+// → Recover* → 启动调度；本函数失败时 Open 失败，调度不会启动。
 func initializeDatabase(db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
@@ -192,59 +361,448 @@ func initializeDatabase(db *sql.DB) error {
 	if err := tx.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return err
 	}
-	if version == modelProtocolMigrationFrom {
-		if _, err = tx.Exec(`ALTER TABLE model_settings ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses' CHECK (protocol IN ('responses', 'chat_completions'))`); err != nil {
-			return err
-		}
-		version = modelKeyMigrationFrom
+	// 每个迁移步骤：from 是触发它的前一版本，apply 在目标结构缺失时执行。
+	// 幂等性来自结构存在性检查，而非盲目 ALTER（P0-03 发现的缺口）。
+	type migration struct {
+		from  int
+		apply func(*sql.Tx) error
 	}
-	if version == modelKeyMigrationFrom {
-		if _, err = tx.Exec(`ALTER TABLE model_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-		version = lastInputTokensMigrationFrom
-	}
-	if version == lastInputTokensMigrationFrom {
-		if _, err = tx.Exec(`ALTER TABLE runs ADD COLUMN last_input_tokens INTEGER`); err != nil {
-			return err
-		}
-		version = contextManifestRevisionsMigrationFrom
-	}
-	if version == contextManifestRevisionsMigrationFrom {
-		if _, err = tx.Exec(`ALTER TABLE context_manifests ADD COLUMN previous_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-		if _, err = tx.Exec(`ALTER TABLE context_manifests ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-	} else {
-		if version == databaseSchemaVersion {
-			if _, err := tx.Exec(modelAttributesSchema); err != nil {
+	steps := []migration{
+		{modelProtocolMigrationFrom, func(tx *sql.Tx) error {
+			return addColumnIfMissing(tx, "model_settings", "protocol",
+				`ALTER TABLE model_settings ADD COLUMN protocol TEXT NOT NULL DEFAULT 'responses' CHECK (protocol IN ('responses', 'chat_completions'))`)
+		}},
+		{modelKeyMigrationFrom, func(tx *sql.Tx) error {
+			return addColumnIfMissing(tx, "model_settings", "api_key",
+				`ALTER TABLE model_settings ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`)
+		}},
+		{lastInputTokensMigrationFrom, func(tx *sql.Tx) error {
+			return addColumnIfMissing(tx, "runs", "last_input_tokens",
+				`ALTER TABLE runs ADD COLUMN last_input_tokens INTEGER`)
+		}},
+		{contextManifestRevisionsMigrationFrom, func(tx *sql.Tx) error {
+			if err := addColumnIfMissing(tx, "context_manifests", "previous_revision",
+				`ALTER TABLE context_manifests ADD COLUMN previous_revision INTEGER NOT NULL DEFAULT 0`); err != nil {
 				return err
 			}
-			return tx.Commit()
-		}
-		if version != 0 {
-			return requireDatabaseVersion(version)
-		}
-		var empty bool
-		if err := tx.QueryRow("SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&empty); err != nil {
+			return addColumnIfMissing(tx, "context_manifests", "control_revision",
+				`ALTER TABLE context_manifests ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0`)
+		}},
+		// P1-02：新增 Task/Step/work_unit/控制记录/结果引用/审计结构。
+		// 整组结构用 CREATE TABLE IF NOT EXISTS，幂等可重入。
+		{runtimeRecordsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeRecordsSchema)
 			return err
-		}
-		if !empty {
-			return requireDatabaseVersion(version)
-		}
-		if _, err := tx.Exec(schema); err != nil {
+		}},
+		// P1-05：新增 Inbox 结构（通用持久输入）。
+		{runtimeInboxMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeInboxSchema)
 			return err
+		}},
+		// P1-06：新增 Outbox 结构（持久待发送命令）。
+		{runtimeOutboxMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeOutboxSchema)
+			return err
+		}},
+		// P1-07：新增 Wait 结构（版本化等待）。
+		{runtimeWaitsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeWaitsSchema)
+			return err
+		}},
+		// P1-08：新增 Timer 结构（持久计时器与逾期扫描）。
+		{runtimeTimersMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeTimersSchema)
+			return err
+		}},
+		// P1-09：新增 Schedule 结构（周期/定点触发）。
+		{runtimeSchedulesMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeSchedulesSchema)
+			return err
+		}},
+		// P2-01：新增 Worker 实例与令牌结构。
+		{runtimeWorkersMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeWorkersSchema)
+			return err
+		}},
+		// P2-02：新增租约结构（原子领取/续租/回收）。
+		{runtimeLeasesMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeLeasesSchema)
+			return err
+		}},
+		// P2-03：新增 Worker 回报与流式片段结构。
+		{runtimeWorkerReportsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeWorkerReportsSchema)
+			return err
+		}},
+		// P2-04：新增配额预留与占用结构。
+		{runtimeQuotasMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeQuotasSchema)
+			return err
+		}},
+		// P2-05：新增公平调度与背压结构。
+		{runtimeSchedulerMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeSchedulerSchema)
+			return err
+		}},
+		// P3-01：新增授权与主体结构。
+		{runtimeAuthorizationMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeAuthorizationSchema)
+			return err
+		}},
+		// P3-02：新增资产身份与领域准入结构。
+		{runtimeAssetsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeAssetsSchema)
+			return err
+		}},
+		// P3-03：新增确认与人工接管结构。
+		{runtimeApprovalsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeApprovalsSchema)
+			return err
+		}},
+		// P3-04：新增能力/提供者/连接结构。
+		{runtimeCapabilitiesMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeCapabilitiesSchema)
+			return err
+		}},
+		// P3-05：新增能力快照与 Schema 发现结构。
+		{runtimeCapabilitySnapshotsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeCapabilitySnapshotsSchema)
+			return err
+		}},
+		// P3-06：新增证据引用与读取结构。
+		{runtimeEvidenceMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeEvidenceSchema)
+			return err
+		}},
+		// P3-07：新增 Operation 与尝试结构。
+		{runtimeOperationsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeOperationsSchema)
+			return err
+		}},
+		// P3-09：新增异步 Job 与回执结构。
+		{runtimeOperationJobsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeOperationJobsSchema)
+			return err
+		}},
+		// P3-16：新增外部工作流委托结构。
+		{runtimeDelegationMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeDelegationSchema)
+			return err
+		}},
+		// P3-17：新增服务实例与事件结构。
+		{runtimeServiceEventsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeServiceEventsSchema)
+			return err
+		}},
+		// P4-01：新增领域定义结构。
+		{runtimeDomainDefinitionsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeDomainDefinitionsSchema)
+			return err
+		}},
+		// P4-02：新增身份与部件结构。
+		{runtimeIdentityMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeIdentitySchema)
+			return err
+		}},
+		// P4-03：新增双时间事实与关系结构。
+		{runtimeFactsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeFactsSchema)
+			return err
+		}},
+		// P4-05：新增资产九态迁移结构。
+		{runtimeAssetTransitionsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeAssetTransitionsSchema)
+			return err
+		}},
+		// P4-06：新增配置规范与验证结构。
+		{runtimeValidationMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeValidationSchema)
+			return err
+		}},
+		// P4-07：新增流程模板与绑定结构。
+		{runtimeWorkflowsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeWorkflowsSchema)
+			return err
+		}},
+		// P4-09：新增母盘构建与核验结构。
+		{runtimeImageBuildsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeImageBuildsSchema)
+			return err
+		}},
+		// P4-15：新增观测接入结构。
+		{runtimeObservationMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeObservationSchema)
+			return err
+		}},
+		// P4-16：新增故障调查结构。
+		{runtimeIncidentsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeIncidentsSchema)
+			return err
+		}},
+		// P4-17：新增自愈策略结构。
+		{runtimeSelfHealMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeSelfHealSchema)
+			return err
+		}},
+		// P4-18：新增工单结构。
+		{runtimeTicketsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeTicketsSchema)
+			return err
+		}},
+		// P4-19：新增借出与交接结构。
+		{runtimeLoansMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeLoansSchema)
+			return err
+		}},
+		// P5-01：新增材料索引结构。
+		{runtimeMaterialIndexMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeMaterialIndexSchema)
+			return err
+		}},
+		// P5-03：新增上下文装配结构。
+		{runtimeContextAssemblyMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeContextAssemblySchema)
+			return err
+		}},
+		// P5-04：新增来源依赖与撤销结构。
+		{runtimeProvenanceMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeProvenanceSchema)
+			return err
+		}},
+		// P5-05：新增异步清理结构。
+		{runtimeCleanupMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeCleanupSchema)
+			return err
+		}},
+		// P5-06：新增案例结构。
+		{runtimeCasesMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeCasesSchema)
+			return err
+		}},
+		// P5-07：新增 Skill 结构。
+		{runtimeSkillsMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeSkillsSchema)
+			return err
+		}},
+		// P5-10：新增保留与归档结构。
+		{runtimeRetentionMigrationFrom, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeRetentionSchema)
+			return err
+		}},
+		// A2+A3：新增只读领域查询任务结构。
+		{87, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeDomainQuerySchema)
+			return err
+		}},
+		// B 步：新增维护接管任务结构（同 schema 文件，幂等）。
+		{88, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeDomainQuerySchema)
+			return err
+		}},
+		{89, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeDomainQuerySchema)
+			return err
+		}},
+	}
+	for _, step := range steps {
+		if version == step.from {
+			if err := step.apply(tx); err != nil {
+				return err
+			}
+			version++
 		}
 	}
+	if version == databaseSchemaVersion {
+		if _, err := tx.Exec(modelAttributesSchema); err != nil {
+			return err
+		}
+		// 版本号可能已经是 databaseSchemaVersion（同版本幂等），或刚被推进。
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	if version != 0 {
+		return requireDatabaseVersion(version)
+	}
+	var empty bool
+	if err := tx.QueryRow("SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema)").Scan(&empty); err != nil {
+		return err
+	}
+	if !empty {
+		return requireDatabaseVersion(version)
+	}
+	if _, err := tx.Exec(schema); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(modelAttributesSchema); err != nil {
+		return err
+	}
+	// 新建库必须包含全部当前结构：基础 schema + 各增量模块（P1-02、P1-05 等）。
+	// 与增量迁移保持同一来源，禁止只改一边（P0-05.2）。
+	if _, err := tx.Exec(runtimeRecordsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeInboxSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeOutboxSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeWaitsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeTimersSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeSchedulesSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeWorkersSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeLeasesSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeWorkerReportsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeQuotasSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeSchedulerSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeAuthorizationSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeAssetsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeApprovalsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeCapabilitiesSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeCapabilitySnapshotsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeEvidenceSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeOperationsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeOperationJobsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeDelegationSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeServiceEventsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeDomainDefinitionsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeIdentitySchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeFactsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeAssetTransitionsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeValidationSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeWorkflowsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeImageBuildsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeObservationSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeIncidentsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeSelfHealSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeTicketsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeLoansSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeMaterialIndexSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeContextAssemblySchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeProvenanceSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeCleanupSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeCasesSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeSkillsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeRetentionSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeDomainQuerySchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// addColumnIfMissing 在目标列不存在时执行 ALTER；已存在则跳过（幂等）。
+// 这使迁移可安全重复：首次失败后重试不会以 duplicate column 失败。
+func addColumnIfMissing(tx *sql.Tx, table, column, alter string) error {
+	exists, err := columnExists(tx, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = tx.Exec(alter)
+	return err
+}
+
+// columnExists 报告指定表是否已包含目标列。
+func columnExists(tx *sql.Tx, table, column string) (bool, error) {
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
 }
 
 func requireDatabaseVersion(version int) error {
@@ -264,6 +822,9 @@ func (s *Store) Close() error {
 	}
 	if s.uploads != nil {
 		err = errors.Join(err, s.uploads.Close())
+	}
+	if s.readPool != nil {
+		err = errors.Join(err, s.readPool.db.Close())
 	}
 	return errors.Join(err, s.db.Close())
 }
@@ -378,17 +939,9 @@ func submissionFingerprint(text, scope, conversationID string, task bool) string
 	return digest(fmt.Sprintf("%q %q %q %t", text, scope, conversationID, task))
 }
 
-func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope, conversationID string, task bool, delivery Delivery, classify DelegationClassifier, materialIDs []string) (Run, error) {
-	if len(delivery.Reads) > MaxTaskReads || (delivery.Read != nil && len(delivery.Reads) > 0) {
-		return Run{}, ErrReadSelection
-	}
-	if delivery.Filename != nil && *delivery.Filename != "" && !validFilename(*delivery.Filename) {
-		return Run{}, ErrFilename
-	}
-	if delivery.ReplaceMaterials && conversationID == "" {
-		return Run{}, ErrState
-	}
-	// Preserve the request's original identity when a chat submission creates a Task.
+// fullSubmissionFingerprint 计算一次提交的完整指纹（含材料与交付要求）。
+// HTTP 层与持久受理层共用同一算法：同键同请求返回原回执，同键异请求冲突。
+func fullSubmissionFingerprint(text, scope, conversationID string, task bool, delivery Delivery, materialIDs []string) (string, error) {
 	fingerprint := submissionFingerprint(text, scope, conversationID, task)
 	if len(materialIDs) > 0 {
 		fingerprint = digest(fmt.Sprintf("%s %q", fingerprint, materialIDs))
@@ -405,23 +958,44 @@ func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope,
 	if delivery.Read != nil {
 		payload, err := json.Marshal(delivery.Read)
 		if err != nil {
-			return Run{}, err
+			return "", err
 		}
 		fingerprint = digest(fingerprint + " read " + string(payload))
 	}
 	if len(delivery.Reads) > 0 {
 		payload, err := json.Marshal(delivery.Reads)
 		if err != nil {
-			return Run{}, err
+			return "", err
 		}
 		fingerprint = digest(fingerprint + " reads " + string(payload))
+	}
+	return fingerprint, nil
+}
+
+func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope, conversationID string, task bool, delivery Delivery, classify DelegationClassifier, materialIDs []string) (Run, error) {
+	if len(delivery.Reads) > MaxTaskReads || (delivery.Read != nil && len(delivery.Reads) > 0) {
+		return Run{}, ErrReadSelection
+	}
+	if delivery.Filename != nil && *delivery.Filename != "" && !validFilename(*delivery.Filename) {
+		return Run{}, ErrFilename
+	}
+	if delivery.ReplaceMaterials && conversationID == "" {
+		return Run{}, ErrState
+	}
+	// Preserve the request's original identity when a chat submission creates a Task.
+	fingerprint, err := fullSubmissionFingerprint(text, scope, conversationID, task, delivery, materialIDs)
+	if err != nil {
+		return Run{}, err
 	}
 	changesDelivery := delivery.Criteria != nil || delivery.Filename != nil
 	var classification *submissionClassification
 	if classify != nil && !changesDelivery && delivery.Read == nil && len(delivery.Reads) == 0 && !delivery.ReplaceMaterials {
 		previous, history, err := s.chatSubmissionContext(ctx, requestKey, fingerprint, conversationID)
-		if err != nil || previous.ID != "" {
+		if err != nil {
 			return previous, err
+		}
+		if previous.ID != "" {
+			return previous, s.linkExistingAdmission(ctx, requestKey, previous)
 		}
 		if history != nil {
 			decision, err := s.classifySubmission(ctx, requestKey, fingerprint, conversationID, text, history, classify)
@@ -437,8 +1011,14 @@ func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope,
 	}
 	defer tx.Rollback()
 	previous, err := previousSubmission(tx, requestKey, fingerprint)
-	if err != nil || previous.ID != "" {
+	if err != nil {
 		return previous, err
+	}
+	if previous.ID != "" {
+		if err := linkAdmissionToRun(tx, requestKey, previous.ID, previous.TaskID, now()); err != nil {
+			return Run{}, err
+		}
+		return previous, tx.Commit()
 	}
 
 	if classification != nil && classification.Route != nil &&
@@ -448,10 +1028,18 @@ func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope,
 		if err != nil {
 			return Run{}, err
 		}
+		// 关联受理回执（A1：分类/任务已提交时重试只返回原结果）。
+		if err := linkAdmissionToRun(tx, requestKey, run.ID, run.TaskID, now()); err != nil {
+			return Run{}, err
+		}
 		return run, tx.Commit()
 	}
 	run, err := submitWorkTx(ctx, tx, requestKey, fingerprint, text, scope, conversationID, task, delivery, classification, materialIDs)
 	if err != nil {
+		return Run{}, err
+	}
+	// 关联受理回执（A1：分类/任务已提交时重试只返回原结果）。
+	if err := linkAdmissionToRun(tx, requestKey, run.ID, run.TaskID, now()); err != nil {
 		return Run{}, err
 	}
 	return run, tx.Commit()
@@ -738,8 +1326,11 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 		FROM (SELECT material_id FROM message_materials WHERE message_seq=msg.seq ORDER BY ordinal) AS refs
 		JOIN materials AS material ON material.id=refs.material_id LEFT JOIN uploads AS upload ON upload.id=material.upload_id),
 		CASE WHEN ? AND msg.role='assistant' THEN (`+memoryRefsJSON+`msg.run_id) ELSE '[]' END,
-		msg.role='assistant' AND length(msg.text)>0 AND EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND (r.control='stop' OR r.error_code IN ('stop','stopped')))
-		FROM (`+selection+`) AS msg ORDER BY msg.seq`, append([]any{withMemoryRefs}, args...)...)
+		CASE WHEN ? AND msg.role='user' THEN coalesce((SELECT e.task_id FROM inbox_events e
+        JOIN domain_query_tasks q ON q.task_id=e.task_id WHERE e.source='chat' AND e.event_id=(
+            SELECT request_key FROM submissions WHERE run_id=msg.run_id LIMIT 1) LIMIT 1),'') ELSE '' END,
+        msg.role='assistant' AND length(msg.text)>0 AND EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND (r.control='stop' OR r.error_code IN ('stop','stopped')))
+		FROM (`+selection+`) AS msg ORDER BY msg.seq`, append([]any{withMemoryRefs, withMemoryRefs}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -748,7 +1339,7 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 	for rows.Next() {
 		var item Message
 		var refs, memories, runID string
-		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.Incomplete); err != nil {
+		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.AssetQueryTaskID, &item.Incomplete); err != nil {
 			return nil, err
 		}
 		if err = json.Unmarshal([]byte(refs), &item.Materials); err != nil {

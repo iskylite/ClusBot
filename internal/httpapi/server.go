@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"database/sql"
@@ -24,11 +25,12 @@ import (
 )
 
 type Server struct {
-	Store         *work.Store
-	Token         string
-	Hosts         []string
-	Settings      *model.Settings
-	WorkspacePath string
+	Store          *work.Store
+	Token          string
+	Hosts          []string
+	Settings       *model.Settings
+	WorkspacePath  string
+	TicketProvider *work.TicketProvider
 }
 
 type submission struct {
@@ -79,6 +81,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("PATCH /api/v1/connections/{id}", s.saveConnection)
 	api.HandleFunc("POST /api/v1/connections/{id}/test", s.testConnection)
 	api.HandleFunc("POST /api/v1/connections/{id}/permission", s.toolPermission)
+	api.HandleFunc("GET /api/v1/connections/{id}/calls", s.connectionCalls)
 	api.HandleFunc("POST /api/v1/connections/{id}/call", s.callConnectionTool)
 	api.HandleFunc("GET /api/v1/tool-results/{id}/content", s.connectionEvidence)
 	api.HandleFunc("GET /api/v1/task-tools", s.taskTools)
@@ -96,10 +99,27 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/goals/{id}/stop", s.stopGoal)
 	api.HandleFunc("POST /api/v1/workflows", s.createWorkflow)
 	api.HandleFunc("GET /api/v1/tasks/{id}/workflow", s.workflow)
+	api.HandleFunc("GET /api/v1/admissions", s.pendingAdmissions)
+	api.HandleFunc("GET /api/v1/admissions/{key}", s.admission)
+	api.HandleFunc("GET /api/v1/decisions", s.listDecisions)
+	api.HandleFunc("GET /api/v1/approvals", s.listDecisions)
+	api.HandleFunc("POST /api/v1/approvals/{id}/decision", s.decideApproval)
+	api.HandleFunc("GET /api/v1/domain/snapshot", s.domainSnapshot)
+	api.HandleFunc("POST /api/v1/domain/asset-acceptance", s.submitAssetAcceptance)
+	api.HandleFunc("GET /api/v1/domain/asset-acceptance/{task_id}", s.assetAcceptanceProgress)
+	api.HandleFunc("POST /api/v1/domain/tickets", s.submitDomainTicket)
+	api.HandleFunc("GET /api/v1/domain/ticket-operations/{id}", s.domainTicketProgress)
+	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
+	api.HandleFunc("POST /api/v1/loans", s.lendAsset)
+	api.HandleFunc("POST /api/v1/loans/return", s.returnAsset)
 	api.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	api.HandleFunc("POST /api/v1/tasks", s.submit(true))
 	api.HandleFunc("GET /api/v1/tasks/{id}", s.detail(true))
 	api.HandleFunc("GET /api/v1/tasks/{id}/runs", s.taskRuns)
+	api.HandleFunc("GET /api/v1/tasks/{id}/manifest", s.taskManifest)
+	api.HandleFunc("POST /api/v1/runtime/reclaim", s.reclaimLeases)
+	api.HandleFunc("POST /api/v1/authorizations/{id}/revoke", s.revokeAuthorization)
+	api.HandleFunc("POST /api/v1/retention-policies", s.saveRetentionPolicy)
 	api.HandleFunc("GET /api/v1/tasks/{id}/runs/{run_id}", s.runRecord(true))
 	api.HandleFunc("PATCH /api/v1/tasks/{id}", s.editTask)
 	api.HandleFunc("POST /api/v1/tasks/{id}/acceptance", s.accept)
@@ -324,9 +344,6 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
-		if !s.modelReady(w, r) {
-			return
-		}
 		if len(in.Reads) > work.MaxTaskReads || (in.Read != nil && len(in.Reads) > 0) {
 			writeError(w, work.ErrReadSelection)
 			return
@@ -342,19 +359,79 @@ func (s Server) submit(task bool) http.HandlerFunc {
 			}
 		}
 		delivery := work.Delivery{Criteria: in.Criteria, Filename: in.Filename, Revision: in.Revision, Read: in.Read, Reads: in.Reads, ReplaceMaterials: in.ReplaceMaterials}
+		if !task && delivery.Criteria == nil && delivery.Filename == nil && delivery.Read == nil &&
+			len(delivery.Reads) == 0 && !delivery.ReplaceMaterials && len(in.AttachmentIDs) == 0 {
+			if ref := work.AssetAcceptanceQueryRef(in.Text); ref != "" {
+				run, err := s.Store.SubmitChatAssetAcceptance(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, ref)
+				if err != nil {
+					writeError(w, err)
+					return
+				}
+				writeSubmission(w, run)
+				return
+			}
+		}
+		// A1 持久受理：在可信主体与请求校验之后、模型分类之前提交 Inbox。
+		// 同键同请求返回原回执，同键异请求返回冲突；可经 GET /api/v1/admissions/{key} 查询。
+		modelAvailable := s.ModelAvailable(r.Context())
+		admission, err := s.Store.AdmitChat(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, task, delivery, in.AttachmentIDs, modelAvailable)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if admission.Receipt.RunID != "" {
+			receipt := admission.Receipt
+			if !modelAvailable {
+				jsonResponse(w, 202, map[string]string{"receipt_id": receipt.ReceiptID, "task_id": receipt.TaskID, "run_id": receipt.RunID, "conversation_id": receipt.ConversationID})
+				return
+			}
+		}
+		// 模型不可用：输入已受理但等待分类，返回带原因回执（不提前 503）。
+		if admission.ModelPending {
+			jsonResponse(w, 202, map[string]any{
+				"receipt_id":    admission.Receipt.ReceiptID,
+				"request_key":   admission.Receipt.RequestKey,
+				"state":         admission.Receipt.State,
+				"duplicate":     admission.Receipt.Duplicate,
+				"model_pending": true,
+				"reason":        "模型未配置或不可用，输入已受理，待模型可用后分类",
+			})
+			return
+		}
 		var run work.Run
-		var err error
 		if task {
 			run, err = s.Store.SubmitWithDelivery(r.Context(), key, in.Text, in.Scope, r.PathValue("id"), true, delivery, in.AttachmentIDs...)
 		} else {
 			run, err = s.Store.SubmitRoutedChat(r.Context(), key, in.Text, in.Scope, r.PathValue("id"), delivery, s.Settings.RouteSubmission, in.AttachmentIDs...)
 		}
 		if err != nil {
+			if r.Context().Err() == nil && !errors.Is(err, work.ErrActive) {
+				if recordErr := s.Store.FailChatAdmission(r.Context(), key, err.Error()); recordErr != nil {
+					slog.Error("记录 Chat 受理失败", "error", recordErr)
+				}
+			}
 			writeError(w, err)
 			return
 		}
 		writeSubmission(w, run)
 	}
+}
+
+// principal 返回可信主体（来自会话认证，不由请求方自证）。
+func (s Server) principal(r *http.Request) string {
+	if s.authenticated(r) {
+		return "user:session"
+	}
+	return "user:anonymous"
+}
+
+// modelAvailable 报告模型是否可用（不失败，仅用于受理时的挂起判断）。
+func (s Server) ModelAvailable(ctx context.Context) bool {
+	if s.Settings == nil {
+		return false
+	}
+	value, err := s.Settings.View(ctx)
+	return err == nil && value.Mode != "unconfigured"
 }
 
 func writeSubmission(w http.ResponseWriter, run work.Run) {
@@ -366,6 +443,132 @@ func writeSubmission(w http.ResponseWriter, run work.Run) {
 		response["followup_queued"] = true
 	}
 	jsonResponse(w, 202, response)
+}
+
+func (s Server) pendingAdmissions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.Store.PendingChatAdmissions(r.Context(), s.principal(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 200, items)
+}
+
+// admission 查询一个持久受理回执（A1：可查询回执，含等待原因与后续 Task 关联）。
+func (s Server) admission(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if len(key) < 8 || len(key) > 128 {
+		fail(w, 400, "invalid_admission_key", "受理标识无效")
+		return
+	}
+	receipt, err := s.Store.ReadAdmission(r.Context(), key)
+	if err != nil {
+		fail(w, 404, "admission_not_found", err.Error())
+		return
+	}
+	jsonResponse(w, 200, map[string]any{
+		"receipt_id":  receipt.ReceiptID,
+		"request_key": receipt.RequestKey,
+		"state":       receipt.State,
+		"task_id":     receipt.TaskID,
+		"reason":      receipt.Reason,
+	})
+}
+
+// submitAssetAcceptance 受理一个资产验收状态只读查询（A2：Chat 明确意图 → V3 Task/Step）。
+// 支持两种输入：JSON object_ref 直接指定，或 text 中的明确"查询某资产验收状态"意图。
+func (s Server) submitAssetAcceptance(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		RequestID string `json:"client_request_id"`
+		ObjectRef string `json:"object_ref"`
+		Text      string `json:"text"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	objectRef := strings.TrimSpace(in.ObjectRef)
+	if objectRef == "" {
+		objectRef = work.AssetAcceptanceQueryRef(in.Text)
+	}
+	if objectRef == "" {
+		fail(w, 400, "invalid_asset_query", "请提供资产标识（object_ref）或明确的验收状态查询意图")
+		return
+	}
+	if len(in.RequestID) < 8 || len(in.RequestID) > 128 {
+		fail(w, 400, "invalid_submission", "需要有效的请求标识")
+		return
+	}
+	task, err := s.Store.SubmitAssetAcceptanceQuery(r.Context(), in.RequestID, objectRef, s.principal(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 202, map[string]any{
+		"task_id": task.TaskID, "object_ref": task.ObjectRef, "duplicate": task.Duplicate,
+	})
+}
+
+// assetAcceptanceProgress 查询资产验收状态查询任务的进度与结果（A3）。
+// 任务完成必须有持久结果；回执和进度能追溯到同一任务。
+func (s Server) assetAcceptanceProgress(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("task_id")
+	if !validID(taskID) {
+		fail(w, 400, "invalid_task", "任务标识无效")
+		return
+	}
+	progress, err := s.Store.ReadAssetAcceptanceQuery(r.Context(), taskID, s.principal(r))
+	if errors.Is(err, sql.ErrNoRows) {
+		fail(w, 404, "query_not_found", "任务不存在或无权访问")
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 200, progress)
+}
+
+func (s Server) submitDomainTicket(w http.ResponseWriter, r *http.Request) {
+	if s.TicketProvider == nil {
+		fail(w, 503, "ticket_provider_unavailable", work.ErrTicketProviderUnavailable.Error())
+		return
+	}
+	var in struct {
+		Key       string `json:"client_request_id"`
+		ObjectRef string `json:"object_ref"`
+		Evidence  string `json:"fault_evidence"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	in.ObjectRef = strings.TrimSpace(in.ObjectRef)
+	in.Evidence = strings.TrimSpace(in.Evidence)
+	if len(in.Key) < 8 || len(in.Key) > 128 || in.ObjectRef == "" || len(in.ObjectRef) > 256 || in.Evidence == "" || len(in.Evidence) > 8000 {
+		fail(w, 400, "invalid_ticket", "请输入资产标识、故障证据和有效请求标识")
+		return
+	}
+	result, err := s.Store.QueueTicketCreate(r.Context(), work.TicketCreateRequest{
+		RequestKey: in.Key, ObjectRef: in.ObjectRef, FaultEvidence: in.Evidence, Subject: s.principal(r),
+	}, s.TicketProvider)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 202, result)
+}
+
+func (s Server) domainTicketProgress(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("id")
+	if !validID(key) {
+		fail(w, 400, "invalid_operation", "操作标识无效")
+		return
+	}
+	result, err := s.Store.ReadTicketOperation(r.Context(), key, s.principal(r))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 200, result)
 }
 
 func (s Server) detail(task bool) http.HandlerFunc {
@@ -655,6 +858,8 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 409, "publication_conflict", err.Error())
 	case errors.Is(err, work.ErrDeliveryPending), errors.Is(err, work.ErrDeliveryChanged), errors.Is(err, work.ErrWorkflowEvidence):
 		fail(w, 409, "delivery_incomplete", err.Error())
+	case errors.Is(err, work.ErrAuthorizationDenied):
+		fail(w, 403, "forbidden", err.Error())
 	case errors.Is(err, work.ErrConflict), errors.Is(err, work.ErrState), errors.Is(err, work.ErrReadCheckpoint):
 		fail(w, 409, "conflict", err.Error())
 	default:
