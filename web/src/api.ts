@@ -106,7 +106,10 @@ export type Settings = ModelSettings & {
   effective_context_tokens?: number
   workspace_path: string
 }
-export type Receipt = { task_id: string; conversation_id: string; run_id: string }
+export type Receipt = {
+  task_id?: string; conversation_id?: string; run_id?: string
+  model_pending?: boolean; state?: string; reason?: string
+}
 
 export class APIError extends Error {
   constructor(message:string,readonly code?:string) {super(message);this.name='APIError'}

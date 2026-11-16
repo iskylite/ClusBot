@@ -3,7 +3,7 @@ import {useCallback,useSyncExternalStore} from 'react'
 import type {DeliveryUpdate,Material} from './api'
 import type {ReadDraft} from './TaskRead'
 
-type Request = {key:string;scope:string;delivery:DeliveryUpdate}
+type Request = {key:string;scope:string;delivery:DeliveryUpdate;awaitingAdmission?:boolean}
 type Draft = {
   text:string
   scope?:string
@@ -74,6 +74,11 @@ export function beginDraftRequest(key:string,scope:string,delivery:DeliveryUpdat
 
 export function finishDraftRequest(key:string,requestID:string) {
   if(read(key).request?.key===requestID)write(key,empty)
+}
+
+export function awaitDraftAdmission(key:string,requestID:string) {
+  const draft=read(key)
+  if(draft.request?.key===requestID)write(key,{...draft,request:{...draft.request,awaitingAdmission:true}})
 }
 
 export function releaseDraftRequest(key:string,requestID?:string) {

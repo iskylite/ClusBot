@@ -121,6 +121,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .response-text { font: inherit; background: white; border: 1px solid var(--line); border-radius: 10px; padding: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow: auto; margin: 12px 0; }
 .composer { margin-top: auto; padding: 15px 16px 12px; border-radius: 16px; border: 1px solid var(--line); box-shadow: var(--shadow); background: white; }
 .composer textarea { width: 100%; border: 0; padding: 3px; min-height: 53px; max-height: 240px; resize: none; line-height: 1.55; color: var(--ink); }
+.composer > [role="status"]:empty { position: absolute; }
 .composer-retry { min-height: 44px; }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 9px; margin-top: 6px; font-size: 13px; }
 .composer-tools { display: grid; grid-template-columns: max-content max-content minmax(0,1fr); align-items: center; column-gap: 18px; }

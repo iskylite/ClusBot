@@ -59,6 +59,7 @@ export function MemoryPage({selected,sourceId,navigate}:{selected?:string;source
     <main className={'main memory-list '+(selected?'memory-list-hidden':'')}>
       <header className="page-heading"><h1>个人记忆</h1><div className="task-actions">
         <button className="outline" onClick={()=>select('/memory/candidates')}>经验候选</button>
+        <button className="outline" onClick={()=>select('/memory/skill-proposals')}>Skill 提案</button>
         <button className="primary" onClick={()=>select('/memory/new')}><Plus size={17}/>新增记忆</button>
       </div></header>
       <div className="memory-toolbar">

@@ -186,4 +186,17 @@ func TestA1AdmissionSurvivesRestart(t *testing.T) {
 	if receipt["state"] != "received" {
 		t.Errorf("restart state=%v, want received (重启后待分类输入恢复)", receipt["state"])
 	}
+	if receipt["conversation_id"] != "" {
+		t.Fatalf("pending admission returned a conversation: %v", receipt)
+	}
+
+	demo := &model.Settings{Store: a.store, Demo: true}
+	if err := a.store.ProcessChatAdmissions(context.Background(), demo.RouteSubmission); err != nil {
+		t.Fatal(err)
+	}
+	code, receipt = a.getAdmission("a1-restart")
+	conversationID, _ := receipt["conversation_id"].(string)
+	if code != 200 || receipt["state"] != "applied" || !validID(conversationID) {
+		t.Fatalf("resolved admission did not identify the conversation: code=%d receipt=%v", code, receipt)
+	}
 }

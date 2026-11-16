@@ -467,11 +467,12 @@ func (s Server) admission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, map[string]any{
-		"receipt_id":  receipt.ReceiptID,
-		"request_key": receipt.RequestKey,
-		"state":       receipt.State,
-		"task_id":     receipt.TaskID,
-		"reason":      receipt.Reason,
+		"receipt_id":      receipt.ReceiptID,
+		"request_key":     receipt.RequestKey,
+		"state":           receipt.State,
+		"task_id":         receipt.TaskID,
+		"conversation_id": receipt.ConversationID,
+		"reason":          receipt.Reason,
 	})
 }
 

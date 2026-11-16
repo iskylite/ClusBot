@@ -1,4 +1,4 @@
-import { createContext, useContext, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { createContext, useContext, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   ArrowDownToLine, ArrowLeft, ArrowUp, Check, ChevronLeft, ChevronRight, CircleAlert, CirclePause, Clock3, FileOutput, FileText,
@@ -20,7 +20,7 @@ import {clearMemoryDrafts} from './memoryDrafts'
 import { ConnectionsPage } from './ConnectionsPage'
 import { SettingsPage } from './SettingsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
-import { beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft } from './composerDrafts'
+import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft } from './composerDrafts'
 import './styles.css'
 
 if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
@@ -231,15 +231,16 @@ function Workspace({logout}: {logout: () => void}) {
       setDetailOpen(true)
     }
   }
-  function onTask(receipt: Receipt) {
-    justCreatedTask.current=receipt.task_id
+  function onTask(path:string) {
+    const taskID=path.slice('/tasks/'.length)
+    justCreatedTask.current=taskID
     setNewWork(false)
-    setSelected(receipt.task_id)
-    navigate('/tasks/'+receipt.task_id)
+    setSelected(taskID)
+    navigate(path)
     void refresh()
   }
-  async function submitTask(text:string,key:string,scopeLabel:string,attachments:string[],delivery:DeliveryUpdate) {
-    onTask(await api('/tasks',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery}))
+  function submitTask(text:string,key:string,scopeLabel:string,attachments:string[],delivery:DeliveryUpdate) {
+    return api<Receipt>('/tasks',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
   }
   function openNewWork(trigger:HTMLButtonElement) {
     newWorkTrigger.current=trigger
@@ -297,8 +298,6 @@ function Workspace({logout}: {logout: () => void}) {
         {isHistory&&<select className="task-status-filter" aria-label="事项状态" value={historyStatus} onChange={event=>openRoute(taskHistoryRoute('/tasks',scope,search,event.target.value))}>
           <option value="">全部状态</option><option value="active">正在处理</option><option value="waiting_user">等待中</option><option value="interrupted">已中断</option><option value="completed">已完成</option><option value="cancelled">已停止</option>
         </select>}
-        {!isHistory && !!currentOverview?.data.pending_skill_proposals && <button type="button" className="outline"
-          onClick={()=>navigate('/memory/skill-proposals')}>待审阅 Skill 提案 · {currentOverview.data.pending_skill_proposals}</button>}
         {settings?.mode==='demo' && <div className="mode-note">本地演示</div>}
         {(isHistory?historyError:error) && <p className="error" role="alert">{isHistory?historyError:error}</p>}
         {isHistory?<div className="task-list">
@@ -317,7 +316,7 @@ function Workspace({logout}: {logout: () => void}) {
               pagination={{previous,next:next?()=>changeOverviewPage(group,next):undefined,pending:pagePending}}/>
           })}
         </div>}
-        {!isHistory&&<Composer draftKey="new:overview" inputRef={compose} placeholder="接下来，需要我帮你做什么？" label="交给助手" initialScope={scope} assign onSend={submitTask}/>}
+        {!isHistory&&<Composer draftKey="new:overview" inputRef={compose} placeholder="接下来，需要我帮你做什么？" label="交给助手" initialScope={scope} assign onSend={submitTask} onReceipt={onTask}/>}
       </main>
       {focused && <aside className="detail-pane overview-detail" aria-label="工作详情">
         <TaskDetail key={focused.id} taskID={focused.id} compact onChange={()=>{void refresh();if(isHistory)void loadHistory()}} navigate={navigateFromOverview} contextWindow={settings?.effective_context_tokens}/>
@@ -336,11 +335,11 @@ function Workspace({logout}: {logout: () => void}) {
     {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage selected={id} sourceId={source} navigate={navigate}/>)}
     {section==='connections' && <ConnectionsPage selected={id} navigate={navigate}/>}
     {section==='settings' && <SettingsPage onSaved={setSettings}/>}
-    {newWork&&<NewWorkDialog scope={scope} send={submitTask} onDismiss={dismissNewWork}/>}
+    {newWork&&<NewWorkDialog scope={scope} send={submitTask} onReceipt={onTask} onDismiss={dismissNewWork}/>}
   </div></VisionContext.Provider>
 }
 
-function NewWorkDialog({scope,send,onDismiss}:{scope:string;send:Parameters<typeof Composer>[0]['onSend'];onDismiss:()=>void}) {
+function NewWorkDialog({scope,send,onReceipt,onDismiss}:{scope:string;send:ComposerProps['onSend'];onReceipt:ComposerProps['onReceipt'];onDismiss:()=>void}) {
   const dialog=useRef<HTMLDialogElement>(null)
   const input=useRef<HTMLTextAreaElement>(null)
   useLayoutEffect(()=>{
@@ -362,7 +361,7 @@ function NewWorkDialog({scope,send,onDismiss}:{scope:string;send:Parameters<type
       if(event.clientX<left||event.clientX>right||event.clientY<top||event.clientY>bottom)dismiss()
     }}>
     <header><h2 id="new-work-title">交代一件事</h2><button type="button" className="icon-button" aria-label="关闭" onClick={dismiss}><X size={20} aria-hidden="true"/></button></header>
-    <Composer draftKey="new:dialog" inputRef={input} placeholder="描述你想完成的事" label="交给助手" assign initialScope={scope} onSend={send}/>
+    <Composer draftKey="new:dialog" inputRef={input} placeholder="描述你想完成的事" label="交给助手" assign initialScope={scope} onSend={send} onReceipt={onReceipt}/>
   </dialog>
 }
 
@@ -412,11 +411,20 @@ function TaskGroup({title,tasks,count,selected,choose,waitingAt,pagination}:{
   })}</section>
 }
 
-function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef}:{
+function receiptPath(receipt:Receipt,assign:boolean) {
+  const validID=(id?:string)=>Boolean(id && /^[a-f\d]{32}$/.test(id))
+  if(validID(receipt.task_id))return '/tasks/'+receipt.task_id
+  if(!assign && validID(receipt.conversation_id))return '/chat/'+receipt.conversation_id
+}
+
+type ComposerProps = {
   draftKey:string
-  placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<void>
+  placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<Receipt>
+  onReceipt:(path:string)=>void|Promise<void>
   disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>
-}) {
+}
+
+function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef}:ComposerProps) {
   const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
@@ -430,8 +438,56 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
   const locked=useRef(false)
   const captureLock=useRef(false)
   const [capturing,setCapturing]=useState(false)
+  const admissionKey=draft.request?.awaitingAdmission ? draft.request.key : undefined
+  const submitting=pending || Boolean(admissionKey)
+  const mounted=useRef(false)
+  useLayoutEffect(()=>{
+    mounted.current=true
+    return()=>{mounted.current=false}
+  },[])
+  const completeAdmission=useEffectEvent((path:string)=>onReceipt(path))
+  useEffect(()=>{
+    if(!admissionKey)return
+    const requestKey=admissionKey
+    let disposed=false
+    let timer:number
+    function fail(message:string) {
+      setError(message)
+      releaseDraftRequest(draftKey,requestKey)
+    }
+    async function check() {
+      if(!document.hidden) {
+        let receipt:Receipt|undefined
+        try {
+          receipt=await api<Receipt>('/admissions/'+encodeURIComponent(requestKey))
+        } catch(e) {
+          if(!disposed && e instanceof APIError && e.code==='admission_not_found') {
+            fail(errorMessage(e))
+            return
+          }
+        }
+        if(disposed)return
+        if(receipt) {
+          const path=receiptPath(receipt,assign)
+          if(path) {
+            finishDraftRequest(draftKey,requestKey)
+            try {await completeAdmission(path)}
+            catch(e) {if(!disposed)setError(errorMessage(e))}
+            return
+          }
+          if(receipt.state==='failed'||receipt.state==='quarantined'||receipt.state==='applied') {
+            fail(receipt.state==='applied'?'已处理，但未找到对应的事项或对话':receipt.reason||'处理失败，请重试')
+            return
+          }
+        }
+      }
+      timer=window.setTimeout(check,2000)
+    }
+    void check()
+    return()=>{disposed=true;clearTimeout(timer)}
+  },[admissionKey,assign,draftKey])
   async function capture(load:()=>Promise<Material>) {
-    if (captureLock.current || locked.current || disabled) return
+    if (captureLock.current || locked.current || disabled || admissionKey) return
     captureLock.current=true
     setCapturing(true);setError('')
     const generation=draftGeneration()
@@ -447,7 +503,7 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
   }
   async function submit(event?: FormEvent,reclassify=false) {
     event?.preventDefault()
-    if (locked.current || captureLock.current || disabled || !value.trim()) return
+    if (locked.current || captureLock.current || disabled || admissionKey || !value.trim()) return
     if(reclassify&&!unconfirmed)return
     locked.current=true
     setPending(true);setError('');setUnconfirmed(false)
@@ -473,8 +529,15 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
       }
       const request=beginDraftRequest(draftKey,scope,delivery)
       requestID=request.key
-      await onSend(value,request.key,request.scope,materials.map(item=>item.id),request.delivery)
+      const receipt=await onSend(value,request.key,request.scope,materials.map(item=>item.id),request.delivery)
+      const path=receiptPath(receipt,assign)
+      if(!path && receipt.model_pending) {
+        awaitDraftAdmission(draftKey,request.key)
+        return
+      }
+      if(!path)throw new Error('未收到有效回执。草稿已保留，可以重试。')
       finishDraftRequest(draftKey,request.key)
+      if(mounted.current)await onReceipt(path)
     }
     catch(e){
       if(e instanceof APIError&&e.code==='classification_failed'&&requestID)releaseDraftRequest(draftKey,requestID)
@@ -485,10 +548,10 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
   }
   return <form className="composer" onSubmit={submit}>
     <textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={inputRef} rows={2} maxLength={16000}
-      onChange={e=>edit({text:e.target.value})} readOnly={pending}
+      onChange={e=>edit({text:e.target.value})} readOnly={submitting}
       onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>
     <div className="composer-tools">
-      <MaterialPicker allowImages={allowImages} selected={materials} disabled={pending||capturing||disabled}
+      <MaterialPicker allowImages={allowImages} selected={materials} disabled={submitting||capturing||disabled}
         replacement={task?{enabled:Boolean(draft.replaceMaterials),change:enabled=>edit({replaceMaterials:enabled})}:undefined}
         choose={path=>capture(()=>api<Material>('/attachments/workspace',{path}))}
         upload={file=>capture(()=>{
@@ -499,7 +562,7 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
         })}
         choosePart={(id,part)=>capture(()=>api<Material>('/attachments/uploads/'+id+'/part',{part}))}
         remove={id=>edit({materials:materials.filter(item=>item.id!==id)})}/>
-      {(assign || task) && <button type="button" className="text-button criteria-toggle" aria-expanded={Boolean(criteriaDraft)} disabled={pending||disabled}
+      {(assign || task) && <button type="button" className="text-button criteria-toggle" aria-expanded={Boolean(criteriaDraft)} disabled={submitting||disabled}
         onClick={()=>{
           if(criteriaDraft){
             setFocusCriteria(false)
@@ -512,19 +575,20 @@ function Composer({draftKey,placeholder,label,onSend,disabled=false,disabledReas
             edit({criteria:{text,filename,baseText:text,baseFilename:filename,revision:task?.revision}})
           }
         }}><ListChecks size={16}/>{criteriaDraft?'取消编辑':task?.acceptance_criteria||task?.required_filename?'修改验收条件':'添加验收条件'}</button>}
-      {(assign || task) && <TaskReadPicker drafts={readDrafts} disabled={pending||disabled} change={reads=>edit({read:undefined,reads})}/>}
+      {(assign || task) && <TaskReadPicker drafts={readDrafts} disabled={submitting||disabled} change={reads=>edit({read:undefined,reads})}/>}
     </div>
     {capturing && <p className="material-progress muted" role="status"><LoaderCircle size={15} className="spin"/>正在准备材料…</p>}
     {criteriaDraft && <div className="criteria-editor">
-      <label>验收条件<textarea aria-label="验收条件" autoFocus={focusCriteria} maxLength={1000} rows={2} placeholder="例如：列出每项决策的负责人和截止日期" value={criteriaDraft.text} readOnly={pending}
+      <label>验收条件<textarea aria-label="验收条件" autoFocus={focusCriteria} maxLength={1000} rows={2} placeholder="例如：列出每项决策的负责人和截止日期" value={criteriaDraft.text} readOnly={submitting}
         onChange={event=>edit({criteria:{...criteriaDraft,text:event.target.value}})}/></label>
-      <label>交付文件（可选）<span className="filename-input"><span>outputs/</span><input aria-label="交付文件名" maxLength={100} placeholder="会议纪要.md" value={criteriaDraft.filename} readOnly={pending}
+      <label>交付文件（可选）<span className="filename-input"><span>outputs/</span><input aria-label="交付文件名" maxLength={100} placeholder="会议纪要.md" value={criteriaDraft.filename} readOnly={submitting}
         onChange={event=>edit({criteria:{...criteriaDraft,filename:event.target.value}})}/></span></label>
     </div>}
-    {error && <div><p className="error" role="alert">{error}</p>{unconfirmed&&<button type="button" className="text-button composer-retry" disabled={disabled||pending||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button>}</div>}
+    <div role="status">{admissionKey&&<p className="material-progress muted">已接收，等待模型可用</p>}</div>
+    {error && <div><p className="error" role="alert">{error}</p>{unconfirmed&&<button type="button" className="text-button composer-retry" disabled={disabled||submitting||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button>}</div>}
     <div className="composer-bar">
-      {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={pending} onChange={e=>edit({scope:e.target.value})}/></label> : <span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>}
-      <button className={assign?'primary':'send'} aria-label={label} disabled={disabled||pending||capturing||!value.trim()}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>
+      {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={submitting} onChange={e=>edit({scope:e.target.value})}/></label> : <span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>}
+      <button className={assign?'primary':'send'} aria-label={label} disabled={disabled||submitting||capturing||!value.trim()}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>
     </div>
   </form>
 }
@@ -732,7 +796,8 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
       {(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
       <Composer draftKey={'task:'+task.id} placeholder={question?'补充助手需要的信息…':'补充这项工作的要求…'} label={question?'发送补充信息':'发送补充要求'} task={task} inputRef={followUp} disabled={composerBlocked}
         disabledReason={archived?'恢复交流后可发送':readUnconfirmed?'请先确认读取结果':writing?'写入待处理，草稿可继续编辑':busy?'本轮处理中，草稿可继续编辑':'事项已停止'}
-        onSend={async (text,key,_scope,attachments,delivery)=>{await api('/conversations/'+task.conversation_id+'/messages',{text,client_message_id:key,attachment_ids:attachments,...delivery});setAcceptanceError('');await reload();onChange()}}/>
+        onSend={(text,key,_scope,attachments,delivery)=>api('/conversations/'+task.conversation_id+'/messages',{text,client_message_id:key,attachment_ids:attachments,...delivery})}
+        onReceipt={async()=>{setAcceptanceError('');await reload();onChange()}}/>
     </main>
     <aside className="detail-pane full-outcome"><div className="detail-content"><div className="status-line"><span className={'status-dot '+task.status}/>{status}</div><h2>工作成果</h2>{output}{!artifact&&!busy&&<p className="muted">{requestedInput?'本轮暂无成果。':task.status==='interrupted'||task.status==='cancelled'?'本轮未生成可验收的成果。':'成果将在执行结束后显示。'}</p>}{action}{history}</div></aside>
   </>
@@ -858,16 +923,14 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {canResume && <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>}
       </div>}
       {id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
-      <Composer key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={async(text,key,scopeLabel,attachments,delivery)=>{
+      <Composer key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
         if (promote && id) {
-          const receipt=await api<Receipt>('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
-          navigate('/tasks/'+receipt.task_id)
-          return
+          return api('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
         }
-        const receipt=await api<Receipt>(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments})
-        if (receipt.task_id) navigate('/tasks/'+receipt.task_id)
-        else if (id) await reload()
-        else navigate('/chat/'+receipt.conversation_id)
+        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments})
+      }} onReceipt={async path=>{
+        if (id && path==='/chat/'+id) await reload()
+        else navigate(path)
       }}/>
     </main>
     <aside className="detail-pane chat-history"><div className="detail-content">
