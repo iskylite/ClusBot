@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -285,5 +286,204 @@ func TestBenchmarkMultiStoreSameSnapshotDoesNotDoubleDispatch(t *testing.T) {
 	}
 	if fixture.started != 0 || fixture.looked != 0 || fixture.read != 0 {
 		t.Fatal("the test must not run provider actions")
+	}
+}
+
+// A fake durable across Store restarts. It rejects a second Start for the
+// same key or an overlapping live target, even if Go would accept the reply.
+type benchmarkRestartLoadFake struct {
+	benchFixtureProvider
+	byKey     map[string]string
+	live      map[string]string
+	finished  map[string]bool
+	lostKey   string
+	delay     bool
+	starts    int
+	lookups   int
+	reads     int
+	violation string
+}
+
+func (p *benchmarkRestartLoadFake) Start(_ context.Context, r BenchmarkJobRequest) (string, error) {
+	if p.byKey[r.IdempotencyKey] != "" {
+		p.violation = "duplicate Start: " + r.IdempotencyKey
+		return "", errors.New(p.violation)
+	}
+	for _, target := range r.Targets {
+		if p.live[target] != "" {
+			p.violation = "overlapping remote work on " + target
+			return "", errors.New(p.violation)
+		}
+	}
+	p.starts++
+	job := fmt.Sprintf("load-job-%d", p.starts)
+	p.byKey[r.IdempotencyKey] = job
+	for _, target := range r.Targets {
+		p.live[target] = r.IdempotencyKey
+	}
+	if p.lostKey == "" {
+		p.lostKey = r.IdempotencyKey
+		return "", errors.New("fixture lost reply after durable remote admission")
+	}
+	return job, nil
+}
+
+func (p *benchmarkRestartLoadFake) Lookup(_ context.Context, r BenchmarkJobRequest) (string, error) {
+	p.lookups++
+	if job := p.byKey[r.IdempotencyKey]; job != "" {
+		return job, nil
+	}
+	return "", errors.New("lookup did not reuse the original key")
+}
+
+func (p *benchmarkRestartLoadFake) Get(_ context.Context, r BenchmarkJobRequest, job string) (BenchmarkJobResult, error) {
+	p.reads++
+	if job == "" || p.byKey[r.IdempotencyKey] != job {
+		return BenchmarkJobResult{}, errors.New("query did not use the original external identity")
+	}
+	if r.IdempotencyKey == p.lostKey && p.delay {
+		return BenchmarkJobResult{JobID: job, State: "running"}, nil
+	}
+	var measurements []BenchmarkMeasurement
+	for _, target := range r.Targets {
+		if p.live[target] != r.IdempotencyKey {
+			return BenchmarkJobResult{}, errors.New("query for a job that no longer owns its target")
+		}
+		delete(p.live, target)
+		measurements = append(measurements, BenchmarkMeasurement{Target: target, Outcome: "measured",
+			Metrics: map[string]BenchmarkMeasuredMetric{"rate": {Value: 100, Unit: "GB/s"}}})
+	}
+	p.finished[r.IdempotencyKey] = true
+	return BenchmarkJobResult{JobID: job, State: "completed", Measurements: measurements}, nil
+}
+
+func TestBenchmarkProductionTicksDrainSaturatedBatchesAfterRestart(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "benchmark-drain.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { s.Close() }()
+	p := &benchmarkRestartLoadFake{byKey: map[string]string{}, live: map[string]string{}, finished: map[string]bool{}, delay: true}
+	stamp := now()
+	const actor = "user:session"
+	const shared, independent = "test-shared", "test-independent"
+	bind := BenchmarkBinding{Connection: "bench-test", Tool: "test", Revision: 1, Validator: benchmarkValidatorV1}
+	grant := DomainBenchmarkGrant{Revision: bind.Revision, Connection: bind.Connection, Tool: bind.Tool, ExpiresAt: stamp + 900000}
+	for _, ref := range []string{shared, independent} {
+		if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: ref, Kind: "node", Identity: ref,
+			Benchmark: []DomainBenchmarkGrant{grant}}}); err != nil {
+			t.Fatal(err)
+		}
+		c := BenchmarkCase{Key: "initial", Binding: bind, Targets: []string{ref}, RequiredMetrics: map[string]string{"rate": "GB/s"}}
+		c2 := c
+		c2.Key, c2.DependsOn = "after-initial", []string{c.Key}
+		if err := s.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: ref, Version: 1, Cases: []BenchmarkCase{c, c2}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	enqueue := func(key, ref string) {
+		t.Helper()
+		if _, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{key, ref, 1}, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tick := func() bool {
+		t.Helper()
+		worked, err := s.runBenchmarkOnce(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return worked
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	count := func(sql string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := s.db.QueryRow(sql, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	enqueue("first-in-flight", shared)
+	if !tick() || p.starts != 1 || p.live[shared] != p.lostKey {
+		t.Fatal("first request was not accepted by the fake with a lost reply")
+	}
+	const sharedBacklog, independentTasks = 6, 3
+	for i := 0; i < sharedBacklog; i++ {
+		enqueue(fmt.Sprintf("shared-queue-%d", i), shared)
+	}
+	for i := 0; i < independentTasks; i++ {
+		enqueue(fmt.Sprintf("independent-queue-%d", i), independent)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RecoverV3(ctx, now()); err != nil {
+		t.Fatal(err)
+	}
+	firstStep := p.lostKey[len("benchmark:"):]
+	// Trigger the in-flight retry at its logical due point without sleeping.
+	exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp-1, firstStep)
+	if !tick() || p.lookups != 1 || p.starts != 1 {
+		t.Fatalf("restart did not only reconcile the original job: starts=%d lookups=%d", p.starts, p.lookups)
+	}
+	exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp-1, firstStep)
+	if !tick() || p.reads != 1 || p.finished[p.lostKey] {
+		t.Fatal("fake's nonterminal observation did not keep the original job pending")
+	}
+	exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", now()+60000, firstStep)
+	// Distinguish due timestamps of the older overlap backlog even if
+	// sequential admission happened within the same millisecond.
+	exec(`UPDATE benchmark_cases SET next_at=? WHERE phase='queued' AND case_key='initial'
+ AND task_id IN (SELECT task_id FROM benchmark_runs WHERE profile_key=?)`, stamp-1, shared)
+
+	if !tick() {
+		t.Fatal("overlapping backpressure must still leave work progressed")
+	}
+	if n := count(`SELECT count(*) FROM benchmark_cases c JOIN benchmark_runs r ON r.task_id=c.task_id
+WHERE r.profile_key=? AND c.phase='queued' AND c.next_at>?`, shared, stamp); n != sharedBacklog {
+		t.Fatalf("expected %d overlapping cases deferred, got %d", sharedBacklog, n)
+	}
+	if p.live[independent] == "" || count("SELECT count(*) FROM benchmark_target_holds") != 2 ||
+		count("SELECT count(*) FROM benchmark_target_holds WHERE step_id=? AND target_ref=?", firstStep, shared) != 1 {
+		t.Fatal("independent work stalled or shared hold released before terminal proof")
+	}
+	// Process terminal data from both scopes, then keep advancing only
+	// persisted retry deadlines until the finite queue has drained.
+	p.delay = false
+	total := 2 * (1 + sharedBacklog + independentTasks)
+	const maxTicks = 100
+	var ticks int
+	for ; ticks < maxTicks && len(p.finished) < total; ticks++ {
+		exec("UPDATE benchmark_cases SET next_at=? WHERE next_at>? AND phase IN ('queued','following','submitting')", now(), now())
+		tick()
+	}
+	if len(p.finished) != total || p.starts != total || p.lookups != 1 || len(p.live) != 0 {
+		t.Fatalf("finite queue failed to drain in %d ticks: starts=%d lookups=%d completed=%d live=%v", ticks, p.starts, p.lookups, len(p.finished), p.live)
+	}
+	if p.violation != "" {
+		t.Fatal(p.violation)
+	}
+	if holds := count("SELECT count(*) FROM benchmark_target_holds"); holds != 0 {
+		t.Fatalf("terminal cleanup leaked %d holds", holds)
+	}
+	if n := count("SELECT count(*) FROM benchmark_cases WHERE phase='verified'"); n != total ||
+		count("SELECT count(*) FROM operations WHERE state='succeeded' AND attempt_count=1") != total ||
+		count("SELECT count(*) FROM task_states WHERE state='succeeded'") != total/2 {
+		t.Fatalf("durable task/case/attempt results inconsistent: verified=%d expected=%d", n, total)
+	}
+	if tick() {
+		t.Fatal("empty queue must not dispatch again")
 	}
 }
