@@ -44,6 +44,12 @@ type config struct {
 		Tools         []string `yaml:"tools"`
 		CredentialEnv string   `yaml:"credential_env"`
 	} `yaml:"benchmark"`
+	Discovery struct {
+		BaseURL       string   `yaml:"base_url"`
+		Source        string   `yaml:"source"`
+		Scopes        []string `yaml:"scopes"`
+		CredentialEnv string   `yaml:"credential_env"`
+	} `yaml:"discovery"`
 	Model struct {
 		Provider string `yaml:"provider"`
 		BaseURL  string `yaml:"base_url"`
@@ -268,8 +274,20 @@ func run() error {
 		benchmarkProvider = p
 	}
 
+	var discoverySource work.DiscoveryScanSource
+	if cfg.Discovery.BaseURL != "" {
+		p, err := work.NewHTTPDiscoverySource(cfg.Discovery.BaseURL, cfg.Discovery.Source, cfg.Discovery.Scopes, os.Getenv(cfg.Discovery.CredentialEnv))
+		if err != nil {
+			return err
+		}
+		if err = db.InstallDiscoverySource(context.Background(), p); err != nil {
+			return err
+		}
+		discoverySource = p
+	}
+
 	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider,
+		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider, DiscoverySource: discoverySource,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -297,6 +315,10 @@ func run() error {
 	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })
 	if benchmarkProvider != nil {
 		background.Go(func() { db.RunBenchmarks(ctx, benchmarkProvider) })
+	}
+
+	if discoverySource != nil {
+		background.Go(func() { db.RunDiscovery(ctx, discoverySource) })
 	}
 
 	if ticketProvider != nil {

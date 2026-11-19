@@ -130,6 +130,9 @@ func registerAssetAcceptanceHandler(s *Store) {
 		if err := tx.QueryRow(`SELECT principal FROM domain_query_tasks WHERE task_id=?`, input.TaskID).Scan(&principal); err != nil {
 			return DeterministicResult{}, err
 		}
+		if err := guardDiscoveryAdmissionCheck(tx, input.TaskID, principal, now()); err != nil {
+			return DeterministicResult{}, err
+		}
 		decision, err := decideAuthorization(tx, principal, "read", objectRef, "", now(), false)
 		if err != nil {
 			return DeterministicResult{}, err

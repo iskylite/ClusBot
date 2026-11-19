@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 93
+const databaseSchemaVersion = 94
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -609,6 +609,7 @@ func initializeDatabase(db *sql.DB) error {
 		}},
 		{91, migrateOperationReceiptKeys},
 		{92, migrateV31Benchmark},
+		{93, migrateV31Discovery},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -773,6 +774,9 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if err := migrateV31Benchmark(tx); err != nil {
+		return err
+	}
+	if err := migrateV31Discovery(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {

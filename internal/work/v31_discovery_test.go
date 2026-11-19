@@ -1,0 +1,130 @@
+package work
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"testing"
+)
+
+type discoveryFixture struct{}
+
+func (discoveryFixture) AllowsDiscovery(source, scope string) bool {
+	return source == "inventory-1" && scope == "POD7"
+}
+func (discoveryFixture) ScanDiscovery(context.Context, string, string) ([]DiscoveryObservation, error) {
+	panic("drive the boundaries explicitly")
+}
+
+func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "discovery.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { s.Close() }()
+	source := discoveryFixture{}
+	actor := "user:session"
+	auth, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: now() + 600000, AllowAdmissionCheck: true}, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := now() + 2000
+	if err = s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "daily", Source: "inventory-1", Scope: "POD7", PeriodSeconds: 60, FirstAt: due, CheckAfterAdmit: true}, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.claimDiscovery(ctx, source, due-1); ok || err != nil {
+		t.Fatalf("ran before due: %v %v", ok, err)
+	}
+	first, ok, err := s.claimDiscovery(ctx, source, due)
+	if err != nil || !ok || first.task == "" {
+		t.Fatalf("did not create finite discovery task %+v %v", first, err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, ok, err := s.claimDiscovery(ctx, source, due+30001)
+	if err != nil || !ok || replay.task != first.task || replay.generation <= first.generation {
+		t.Fatalf("recovery lost or recreated task %+v %v", replay, err)
+	}
+	observations := []DiscoveryObservation{{"SN-1", "192.0.2.1"}, {"SN-2", "192.0.2.1"}, {"", "192.0.2.2"}}
+	if err = s.settleDiscovery(ctx, first, observations, nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err := s.ListDiscoveryCandidates(ctx, actor)
+	if err != nil || len(candidates) != 0 {
+		t.Fatalf("old generation wrote observations: %+v %v", candidates, err)
+	}
+	if err = s.settleDiscovery(ctx, replay, observations, nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err = s.ListDiscoveryCandidates(ctx, actor)
+	if err != nil || len(candidates) != 3 {
+		t.Fatalf("IP-based false merge %+v %v", candidates, err)
+	}
+	var node, ipOnly DiscoveryCandidate
+	for _, c := range candidates {
+		if c.Serial == "SN-1" {
+			node = c
+		}
+		if c.Serial == "" {
+			ipOnly = c
+		}
+	}
+	req := DiscoveryAdmission{Candidate: ipOnly.ID, ConfirmedSerial: "invented", ExpectedSeenAt: ipOnly.SeenAt, Owner: "ops", Location: "rack7", Role: "compute"}
+	if _, err = s.AdmitDiscoveryCandidate(ctx, actor, req); !errors.Is(err, ErrConflict) {
+		t.Fatalf("IP alone admitted: %v", err)
+	}
+	req.Candidate, req.ConfirmedSerial, req.ExpectedSeenAt = node.ID, node.Serial, node.SeenAt
+	admitted, err := s.AdmitDiscoveryCandidate(ctx, actor, req)
+	if err != nil || admitted.Asset == "" || admitted.CheckTask == "" {
+		t.Fatalf("admission did not enqueue check: %+v %v", admitted, err)
+	}
+	again, err := s.AdmitDiscoveryCandidate(ctx, actor, req)
+	if err != nil || again.Asset != admitted.Asset || again.CheckTask != admitted.CheckTask {
+		t.Fatalf("repeat admission created new records: %+v %v", again, err)
+	}
+	var assets int
+	if err = s.db.QueryRow("SELECT count(*) FROM ops_assets").Scan(&assets); err != nil || assets != 1 {
+		t.Fatalf("wrong asset count %d %v", assets, err)
+	}
+	next, ok, err := s.claimDiscovery(ctx, source, due+60000)
+	if err != nil || !ok || next.task == first.task {
+		t.Fatalf("next tick %+v %v", next, err)
+	}
+	if err = s.settleDiscovery(ctx, next, []DiscoveryObservation{{"SN-1", "192.0.2.3"}}, nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	candidates, err = s.ListDiscoveryCandidates(ctx, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range candidates {
+		if c.Serial == "SN-1" && (c.ID != node.ID || c.Asset != admitted.Asset || c.Address != "192.0.2.3") {
+			t.Fatalf("address move changed identity %+v", c)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = revokeAuthorization(tx, auth, actor, now()); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = guardDiscoveryAdmissionCheck(tx, admitted.CheckTask, "policy:discovery-check:"+node.ID, now()); !errors.Is(err, ErrAuthorizationDenied) {
+		tx.Rollback()
+		t.Fatalf("revoked policy still able to read: %v", err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err = s.claimDiscovery(ctx, source, due+120000); err != nil || ok {
+		t.Fatalf("revoked grant made a new task: %v %v", ok, err)
+	}
+}
