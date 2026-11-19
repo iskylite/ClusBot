@@ -143,6 +143,18 @@ func (s *Store) PublishBenchmarkProfile(ctx context.Context, actor string, p Ben
 	if actor == "" {
 		return ErrAuthorizationDenied
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := publishBenchmarkProfileTx(ctx, tx, actor, p, now()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func publishBenchmarkProfileTx(ctx context.Context, tx *sql.Tx, actor string, p BenchmarkProfile, stamp int64) error {
 	if err := validateBenchmarkProfile(p); err != nil {
 		return err
 	}
@@ -151,11 +163,6 @@ func (s *Store) PublishBenchmarkProfile(ctx context.Context, actor string, p Ben
 		return err
 	}
 	d := digest(string(raw))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	var existing string
 	err = tx.QueryRowContext(ctx, `SELECT digest FROM benchmark_profiles WHERE profile_key=? AND version=?`, p.Key, p.Version).Scan(&existing)
 	switch {
@@ -163,18 +170,14 @@ func (s *Store) PublishBenchmarkProfile(ctx context.Context, actor string, p Ben
 		if existing != d {
 			return fmt.Errorf("%w：已发布的方案版本不可覆盖", ErrConflict)
 		}
-		return tx.Commit()
+		return nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return err
 	}
-	stamp := now()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_profiles VALUES(?,?,?,?,?,?)`, p.Key, p.Version, string(raw), d, actor, stamp); err != nil {
 		return err
 	}
-	if err := recordAudit(tx, AuditEvent{Event: "benchmark_profile_published", Actor: actor, Summary: fmt.Sprintf("%s@%d", p.Key, p.Version), OccurredAt: stamp}); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return recordAudit(tx, AuditEvent{Event: "benchmark_profile_published", Actor: actor, Summary: fmt.Sprintf("%s@%d", p.Key, p.Version), OccurredAt: stamp})
 }
 
 func readBenchmarkProfile(q recordsQuerier, key string, version int) (BenchmarkProfile, error) {
