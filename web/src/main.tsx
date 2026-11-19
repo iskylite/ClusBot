@@ -25,6 +25,7 @@ import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearCompo
 import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './BenchmarkExecution'
 import {useConversationTasks,type TaskLink} from './ConversationTasks'
 import {BenchmarkConversation} from './BenchmarkConversation'
+import {ConversationConfiguration} from './ConversationConfiguration'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import './styles.css'
 
@@ -339,7 +340,7 @@ function Workspace({logout}: {logout: () => void}) {
     {section==='artifacts' && <Artifacts key={JSON.stringify([id,scope,artifactTask])} selected={id} scope={scope} taskID={artifactTask} navigate={navigate}/>}
     {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage selected={id} sourceId={source} navigate={navigate}/>)}
     {section==='connections' && <ConnectionsPage selected={id} navigate={navigate}/>}
-    {section==='settings' && <SettingsPage onSaved={setSettings}/>}
+    {section==='settings' && <SettingsPage onSaved={setSettings} openConnections={()=>navigate('/connections')}/>}
     {newWork&&<NewWorkDialog scope={scope} send={submitTask} onReceipt={onTask} onDismiss={dismissNewWork}/>}
   </div></VisionContext.Provider>
 }
@@ -842,6 +843,10 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const [saving,setSaving]=useState(false)
   const [actionError,setActionError]=useState('')
   const [stopping,setStopping]=useState<string>()
+  const [configOpen,setConfigOpen]=useState(false)
+  const configTrigger=useRef<HTMLButtonElement>(null)
+  const configID='conversation-configuration'
+  const closeConfig=()=>{setConfigOpen(false);configTrigger.current?.focus()}
   const [selectedTask,setSelectedTask]=useState<string>()
   const ordinaryDraftKey='chat:'+(id||'new')
   const {taskReference}=useComposerDraft(ordinaryDraftKey)
@@ -947,6 +952,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   return <>
     <main className="main work-detail"><header className="page-heading"><h1>{conversation?.title||'对话'}</h1>
       <div className="chat-actions">
+        {conversation&&<button type="button" className="text-button" ref={configTrigger} aria-expanded={configOpen} aria-controls={configID}
+          onClick={()=>configOpen?closeConfig():setConfigOpen(true)}>本会话配置</button>}
         {conversation && <details className="chat-menu"><summary className="icon-button" aria-label="对话操作"><Ellipsis size={19}/></summary><div className="chat-menu-panel">
           <button type="button" disabled={saving} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');setName(conversation.title)}}><Pencil size={16}/>重命名</button>
           <button type="button" disabled={saving||(!conversation.archived&&busy)} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');void changeConversation({archived:!conversation.archived})}}>
@@ -956,6 +963,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         </div></details>}
         <button className="outline" onClick={()=>navigate('/chat')}><Plus size={16}/>新对话</button>
       </div></header>
+      {conversation&&<ConversationConfiguration key={conversation.id} id={conversation.id} panelID={configID}
+        open={configOpen} disabled={busy||saving||Boolean(conversation.archived)} archived={Boolean(conversation.archived)} onClose={closeConfig}/>}
       {name!==undefined && <form className="chat-rename" onSubmit={event=>{event.preventDefault();void changeConversation({title:name})}}>
         <input aria-label="对话名称" autoFocus maxLength={60} value={name} readOnly={saving} onChange={event=>setName(event.target.value)}/>
         <button type="button" className="text-button" disabled={saving} onClick={()=>setName(undefined)}>取消</button>

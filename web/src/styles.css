@@ -608,3 +608,10 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .model-role-fields { margin-top: 14px; padding-top: 12px; }
 .model-egress { display: flex; gap: 8px; align-items: flex-start; }
 .model-egress input { flex: none; }
+
+.conversation-config { padding: 14px 16px; margin: 0 0 12px; border-radius: 12px; background: var(--panel); }
+.conversation-config[hidden] { display: none; }
+.conversation-config h2 { font-size: 16px; }
+.conversation-config h3 { font-size: 14px; }
+.conversation-config-fields { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,230px),1fr)); gap: 16px; margin-top: 14px; }
+.conversation-config-fields form { min-width: 0; }

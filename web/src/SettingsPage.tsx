@@ -6,7 +6,7 @@ import {ModelRolesSettings} from './ModelRolesSettings'
 
 const message = (error: unknown) => error instanceof Error ? error.message : '请求未完成，请重试'
 
-export function SettingsPage({ onSaved }: { onSaved: (value: Settings) => void }) {
+export function SettingsPage({ onSaved,openConnections }: { onSaved: (value: Settings) => void; openConnections:()=>void }) {
   const [settings, setSettings] = useState<Settings>()
   const [error, setError] = useState('')
 
@@ -30,6 +30,11 @@ export function SettingsPage({ onSaved }: { onSaved: (value: Settings) => void }
       <p className="error" role="alert">{error}</p> :
       <p className="muted" role="status">正在加载设置…</p>}
     <ModelRolesSettings/>
+    <section className="settings-card" aria-labelledby="settings-connections-title">
+      <h2 id="settings-connections-title">MCP 工具与连接</h2>
+      <p className="muted">管理连接、试连和工具授权。保存连接不试连；会话选择在对话内单独设置。</p>
+      <button type="button" className="outline" onClick={openConnections}>打开工具与连接</button>
+    </section>
   </main>
 }
 
