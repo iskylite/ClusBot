@@ -74,7 +74,7 @@ func (s Server) benchmarkRevisionChat(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	if !validID(r.PathValue("id")) || !validID(input.TaskID) {
+	if !validID(r.PathValue("id")) || input.SourceRunID == "" && !validID(input.TaskID) || input.SourceRunID != "" && !validID(input.SourceRunID) {
 		benchmarkError(w, work.ErrBenchmarkInput)
 		return
 	}

@@ -13,15 +13,17 @@ const benchmarkRevisionChatEvent = "benchmark.revision_preview"
 
 type BenchmarkRevisionChatInput struct {
 	BenchmarkRevisionAIInput
-	Action    string `json:"action"`
-	TaskID    string `json:"task_id"`
-	RequestID string `json:"client_request_id"`
+	SourceRunID string `json:"source_run_id,omitempty"`
+	Action      string `json:"action"`
+	TaskID      string `json:"task_id"`
+	RequestID   string `json:"client_request_id"`
 }
 
 type BenchmarkRevisionChatReceipt struct {
 	RunID          string                    `json:"run_id"`
 	ConversationID string                    `json:"conversation_id"`
 	TaskID         string                    `json:"task_id"`
+	SourceRunID    string                    `json:"source_run_id,omitempty"`
 	Proposal       BenchmarkRevisionProposal `json:"proposal"`
 }
 
@@ -43,9 +45,20 @@ WHERE r.conversation_id=? AND r.id=? AND e.kind=?`, actor, conversation, run, be
 // the selected benchmark remains unchanged and is never dispatched here.
 func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversation string, input BenchmarkRevisionChatInput,
 	provider BenchmarkProvider, interpret BenchmarkRevisionModel) (BenchmarkRevisionChatReceipt, error) {
-	if input.Action != "preview_benchmark_revision" || input.TaskID == "" || conversation == "" ||
-		len(input.RequestID) < 8 || len(input.RequestID) > 128 || input.ExpectedRevision < 1 ||
-		strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
+	if input.Action != "preview_benchmark_revision" || conversation == "" || len(input.RequestID) < 8 || len(input.RequestID) > 128 {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
+	}
+	if input.SourceRunID != "" {
+		if input.TaskID != "" || input.ExpectedRevision != 0 || input.Text != "" || input.AllowExpectedActualChange {
+			return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
+		}
+		target, text, err := s.resolveBenchmarkRevisionSuggestion(ctx, actor, conversation, input.SourceRunID)
+		if err != nil {
+			return BenchmarkRevisionChatReceipt{}, err
+		}
+		input.TaskID, input.ExpectedRevision, input.Text = target.TaskID, target.ExpectedRevision, text
+	}
+	if input.TaskID == "" || input.ExpectedRevision < 1 || strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
 	}
 	key := benchmarkRevisionChatKey(input.RequestID)
@@ -149,13 +162,17 @@ WHERE b.task_id=? AND b.actor=? AND c.case_key=?`, input.TaskID, actor, proposal
 	if stopping || (taskState != "pending" && taskState != "running" && taskState != "paused") || phase != "queued" || operation != "" {
 		return BenchmarkRevisionChatReceipt{}, ErrState
 	}
-	out := BenchmarkRevisionChatReceipt{RunID: id(), ConversationID: conversation, TaskID: input.TaskID, Proposal: proposal}
+	out := BenchmarkRevisionChatReceipt{RunID: id(), ConversationID: conversation, TaskID: input.TaskID, SourceRunID: input.SourceRunID, Proposal: proposal}
 	response := fmt.Sprintf("已生成基准任务 %s 的方案修订预演（基于第 %d 版）。尚未提交或执行，请核对差异。", input.TaskID, input.ExpectedRevision)
 	stamp := now()
 	if _, err := tx.ExecContext(ctx, "INSERT INTO runs(id,conversation_id,status,response,created_at) VALUES(?,?,'completed',?,?)", out.RunID, conversation, response, stamp); err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
-	msg, err := tx.ExecContext(ctx, "INSERT INTO messages(conversation_id,run_id,role,text) VALUES(?,?,'user',?)", conversation, out.RunID, input.Text)
+	messageText := input.Text
+	if input.SourceRunID != "" {
+		messageText = "查看刚才标注的基准修订预演"
+	}
+	msg, err := tx.ExecContext(ctx, "INSERT INTO messages(conversation_id,run_id,role,text) VALUES(?,?,'user',?)", conversation, out.RunID, messageText)
 	if err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}

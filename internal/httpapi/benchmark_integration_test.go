@@ -203,11 +203,26 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	}
 	jsonCall(http.MethodPost, "/api/v1/conversations", map[string]string{"client_request_id": "status-for-integrated-revision", "text": "/benchmark-status " + accepted.TaskID}, &chat, http.StatusAccepted)
 	chatPath := "/api/v1/conversations/" + chat.ConversationID + "/benchmark-revision-preview"
-	intent := work.BenchmarkRevisionChatInput{Action: "preview_benchmark_revision", TaskID: accepted.TaskID, RequestID: "integration-revision-001",
-		BenchmarkRevisionAIInput: work.BenchmarkRevisionAIInput{BenchmarkRevisionProposalInput: work.BenchmarkRevisionProposalInput{ExpectedRevision: 1, Text: revisionText}}}
+	messagePath := "/api/v1/conversations/" + chat.ConversationID + "/messages"
+	target := work.BenchmarkRevisionTarget{TaskID: accepted.TaskID, ExpectedRevision: 1}
+	message := map[string]any{"client_request_id": "integrated-scoped-revision", "text": revisionText, "benchmark_revision_target": target}
+	jsonCall(http.MethodPost, messagePath, map[string]any{"client_request_id": "integrated-scoped-query", "text": "可以改第二项吗？", "benchmark_revision_target": target}, nil, http.StatusBadRequest)
+	jsonCall(http.MethodPost, messagePath, map[string]any{"client_request_id": "integrated-scoped-query", "text": revisionText, "benchmark_revision_target": work.BenchmarkRevisionTarget{TaskID: accepted.TaskID, ExpectedRevision: 2}}, nil, http.StatusConflict)
+	var saved struct {
+		RunID      string                        `json:"run_id"`
+		TaskID     string                        `json:"task_id"`
+		Suggestion *work.BenchmarkRevisionTarget `json:"benchmark_revision_suggestion"`
+	}
+	jsonCall(http.MethodPost, messagePath, message, &saved, http.StatusAccepted)
+	if saved.RunID == "" || saved.TaskID != "" || saved.Suggestion == nil || *saved.Suggestion != target || modelCalls.Load() != 1 {
+		t.Fatalf("scoped message did not persist a read-only labelled suggestion: %+v", saved)
+	}
+	intent := work.BenchmarkRevisionChatInput{Action: "preview_benchmark_revision", SourceRunID: saved.RunID, RequestID: "integration-revision-001"}
+	jsonCall(http.MethodPost, chatPath, map[string]any{"action": intent.Action, "source_run_id": saved.RunID, "client_request_id": intent.RequestID, "task_id": accepted.TaskID}, nil, http.StatusBadRequest)
+	jsonCall(http.MethodPost, "/api/v1/conversations/"+suggestion.ConversationID+"/benchmark-revision-preview", intent, nil, http.StatusNotFound)
 	var pending work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodPost, chatPath, intent, &pending, http.StatusOK)
-	if pending.Proposal.State != "preview_only" || pending.Proposal.Preview.AssetImpact == nil {
+	if pending.Proposal.State != "preview_only" || pending.Proposal.Preview.AssetImpact == nil || pending.SourceRunID != saved.RunID {
 		t.Fatalf("missing actionable but non-applied preview: %+v", pending)
 	}
 	jsonCall(http.MethodGet, taskPath, nil, &progress, http.StatusOK)
@@ -231,6 +246,17 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	jsonCall(http.MethodPost, acceptPath, accept, &acceptedAgain, http.StatusAccepted)
 	if acceptedAgain.TaskID != accepted.TaskID || provider.starts.Load() != 0 {
 		t.Fatalf("confirmation replay queued another task or started execution: %+v", acceptedAgain)
+	}
+
+	savedRun := saved.RunID
+	jsonCall(http.MethodPost, messagePath, message, &saved, http.StatusAccepted)
+	if saved.RunID != savedRun || saved.Suggestion == nil || *saved.Suggestion != target {
+		t.Fatalf("revision suggestion binding was lost on restart: %+v", saved)
+	}
+	var pendingAgain work.BenchmarkRevisionChatReceipt
+	jsonCall(http.MethodPost, chatPath, intent, &pendingAgain, http.StatusOK)
+	if pendingAgain.RunID != pending.RunID || modelCalls.Load() != 2 {
+		t.Fatalf("the same explicit click replayed model or generated a new preview: %+v", pendingAgain)
 	}
 
 	var reopened work.BenchmarkRevisionChatReceipt

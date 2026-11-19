@@ -37,17 +37,18 @@ type Server struct {
 }
 
 type submission struct {
-	RequestID        string                 `json:"client_request_id"`
-	MessageID        string                 `json:"client_message_id"`
-	Text             string                 `json:"text"`
-	Scope            string                 `json:"scope_label"`
-	AttachmentIDs    []string               `json:"attachment_ids"`
-	ReplaceMaterials bool                   `json:"replace_materials"`
-	Criteria         *string                `json:"acceptance_criteria"`
-	Filename         *string                `json:"required_filename"`
-	Revision         int                    `json:"revision"`
-	Read             *work.TaskReadRequest  `json:"mcp_read"`
-	Reads            []work.TaskReadRequest `json:"mcp_reads"`
+	RequestID               string                        `json:"client_request_id"`
+	MessageID               string                        `json:"client_message_id"`
+	Text                    string                        `json:"text"`
+	Scope                   string                        `json:"scope_label"`
+	AttachmentIDs           []string                      `json:"attachment_ids"`
+	ReplaceMaterials        bool                          `json:"replace_materials"`
+	Criteria                *string                       `json:"acceptance_criteria"`
+	Filename                *string                       `json:"required_filename"`
+	Revision                int                           `json:"revision"`
+	BenchmarkRevisionTarget *work.BenchmarkRevisionTarget `json:"benchmark_revision_target"`
+	Read                    *work.TaskReadRequest         `json:"mcp_read"`
+	Reads                   []work.TaskReadRequest        `json:"mcp_reads"`
 }
 
 func (s Server) Handler(assets fs.FS) http.Handler {
@@ -392,6 +393,21 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
+		if target := in.BenchmarkRevisionTarget; target != nil {
+			conversation := r.PathValue("id")
+			if task || !validID(conversation) || !validID(target.TaskID) || len(in.AttachmentIDs) != 0 ||
+				in.Read != nil || len(in.Reads) != 0 || in.Criteria != nil || in.Filename != nil || in.Revision != 0 || in.ReplaceMaterials {
+				benchmarkError(w, work.ErrBenchmarkInput)
+				return
+			}
+			run, err := s.Store.SubmitBenchmarkRevisionSuggestion(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target)
+			if err != nil {
+				benchmarkError(w, err)
+				return
+			}
+			writeSubmission(w, run)
+			return
+		}
 		if !task && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
 			in.Criteria == nil && in.Filename == nil && !in.ReplaceMaterials {
 			run, handled, err := s.Store.SubmitMemoryCommand(r.Context(), key, in.Text, in.Scope, r.PathValue("id"))
@@ -516,6 +532,9 @@ func writeSubmission(w http.ResponseWriter, run work.Run) {
 	response := map[string]any{"task_id": run.TaskID, "conversation_id": run.ConversationID, "run_id": run.ID, "status": run.Status}
 	if run.RouterIntents != nil {
 		response["router_intents"] = run.RouterIntents
+	}
+	if run.BenchmarkRevisionSuggestion != nil {
+		response["benchmark_revision_suggestion"] = run.BenchmarkRevisionSuggestion
 	}
 	if run.BenchmarkSuggestion != nil {
 		response["benchmark_suggestion"] = run.BenchmarkSuggestion
