@@ -52,11 +52,26 @@ func (s Server) proposeBenchmarkRevision(w http.ResponseWriter, r *http.Request)
 
 func (s Server) proposeBenchmarkRevisionAI(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	var input work.BenchmarkRevisionAIInput
+	var input struct {
+		work.BenchmarkRevisionAIInput
+		UseConfiguredRevisionProfile bool `json:"use_configured_revision_profile"`
+	}
 	if !decode(w, r, &input) {
 		return
 	}
-	result, err := s.Store.ProposeBenchmarkRevisionAI(r.Context(), s.principal(r), r.PathValue("id"), input, s.BenchmarkProvider, s.Settings.InterpretBenchmarkRevision)
+	interpret := s.Settings.InterpretBenchmarkRevision
+	if input.UseConfiguredRevisionProfile {
+		if input.AllowExpectedActualChange {
+			fail(w, http.StatusBadRequest, "benchmark_revision_profile_restricted", "专用模型预演不接收实测验收条件；请用现有默认入口修改这类条件")
+			return
+		}
+		interpret = s.Settings.InterpretBenchmarkRevisionWithProfile
+	}
+	result, err := s.Store.ProposeBenchmarkRevisionAI(r.Context(), s.principal(r), r.PathValue("id"), input.BenchmarkRevisionAIInput, s.BenchmarkProvider, interpret)
+	if errors.Is(err, work.ErrBenchmarkRevisionModelBinding) {
+		fail(w, http.StatusConflict, "benchmark_revision_model_binding_unavailable", err.Error())
+		return
+	}
 	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
 		fail(w, http.StatusBadGateway, "benchmark_revision_model_failed", err.Error())
 		return

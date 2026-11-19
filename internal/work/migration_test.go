@@ -159,3 +159,49 @@ CREATE INDEX model_role_bindings ON model_settings(model_id)`); err != nil {
 		t.Fatalf("downgrade rejection changed future schema version: %d %v", version, err)
 	}
 }
+
+func TestRevisionModelRoleUpgradePreservesAdmissionRole(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "model-role-v107.db")
+	old, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := old.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DROP TABLE model_role_bindings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateModelRoleBindings(tx); err != nil {
+		t.Fatal(err)
+	}
+	before := ModelRoleBinding{Role: BenchmarkAdmissionModelRole, Revision: 4, ProfileID: "migration-profile", ProfileRevision: 7, CredentialBinding: "fixture-fingerprint"}
+	if _, err := tx.Exec("INSERT INTO model_role_bindings VALUES(?,?,?,?,?)", before.Role, before.Revision, before.ProfileID, before.ProfileRevision, before.CredentialBinding); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("PRAGMA user_version=107"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, _, err := s.ReadModelRole(ctx, BenchmarkAdmissionModelRole)
+	if err != nil || got != before {
+		t.Fatalf("existing admission consent/pin changed: %+v %v", got, err)
+	}
+	next, _, err := s.ReadModelRole(ctx, BenchmarkRevisionModelRole)
+	if err != nil || next.ProfileID != "" || next.Revision != 0 {
+		t.Fatalf("upgrade implicitly activated new destination: %+v %v", next, err)
+	}
+}

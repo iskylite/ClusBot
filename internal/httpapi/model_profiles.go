@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"clusbot/internal/model"
@@ -80,8 +81,16 @@ func (s Server) testModelProfile(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) readBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Request) {
+	readModelRole(w, r, s.Settings.ReadBenchmarkAdmissionRole)
+}
+
+func (s Server) readBenchmarkRevisionRole(w http.ResponseWriter, r *http.Request) {
+	readModelRole(w, r, s.Settings.ReadBenchmarkRevisionRole)
+}
+
+func readModelRole(w http.ResponseWriter, r *http.Request, read func(context.Context) (model.BenchmarkAdmissionRoleView, error)) {
 	w.Header().Set("Cache-Control", "no-store")
-	out, err := s.Settings.ReadBenchmarkAdmissionRole(r.Context())
+	out, err := read(r.Context())
 	if err != nil {
 		writeModelSettingsError(w, err)
 		return
@@ -90,6 +99,14 @@ func (s Server) readBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Reques
 }
 
 func (s Server) setBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Request) {
+	setModelRole(w, r, s.Settings.SetBenchmarkAdmissionRole)
+}
+
+func (s Server) setBenchmarkRevisionRole(w http.ResponseWriter, r *http.Request) {
+	setModelRole(w, r, s.Settings.SetBenchmarkRevisionRole)
+}
+
+func setModelRole(w http.ResponseWriter, r *http.Request, set func(context.Context, model.BenchmarkAdmissionRoleInput) (model.BenchmarkAdmissionRoleView, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	var in model.BenchmarkAdmissionRoleInput
 	if !decode(w, r, &in) {
@@ -99,7 +116,7 @@ func (s Server) setBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Request
 		writeModelSettingsError(w, model.InvalidSettings("档案标识无效"))
 		return
 	}
-	out, err := s.Settings.SetBenchmarkAdmissionRole(r.Context(), in)
+	out, err := set(r.Context(), in)
 	if err != nil {
 		writeModelSettingsError(w, err)
 		return

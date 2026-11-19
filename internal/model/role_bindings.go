@@ -25,11 +25,11 @@ type BenchmarkAdmissionRoleView struct {
 	EgressFields    []string `json:"egress_fields,omitempty"`
 }
 
-func (s *Settings) benchmarkAdmissionRole(ctx context.Context) (BenchmarkAdmissionRoleView, work.ModelSettings, string, error) {
+func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissionRoleView, work.ModelSettings, string, error) {
 	if s == nil || s.Store == nil {
 		return BenchmarkAdmissionRoleView{}, work.ModelSettings{}, "", InvalidSettings("模型设置尚不可用")
 	}
-	b, p, err := s.Store.ReadModelRole(ctx, work.BenchmarkAdmissionModelRole)
+	b, p, err := s.Store.ReadModelRole(ctx, role)
 	if err != nil {
 		return BenchmarkAdmissionRoleView{}, work.ModelSettings{}, "", err
 	}
@@ -38,7 +38,12 @@ func (s *Settings) benchmarkAdmissionRole(ctx context.Context) (BenchmarkAdmissi
 		return v, work.ModelSettings{}, "", nil
 	}
 	v.ProfileID, v.ProfileRevision, v.Source = b.ProfileID, b.ProfileRevision, "explicit_profile"
-	v.EgressFields = []string{"submitted_text", "published_target", "published_profile_and_version"}
+	switch role {
+	case work.BenchmarkAdmissionModelRole:
+		v.EgressFields = []string{"submitted_text", "published_target", "published_profile_and_version"}
+	case work.BenchmarkRevisionModelRole:
+		v.EgressFields = []string{"submitted_text", "editable_case_keys", "editable_parameter_keys"}
+	}
 	key := keyValue(p.Settings)
 	switch {
 	case s.Demo:
@@ -61,15 +66,28 @@ func (s *Settings) benchmarkAdmissionRole(ctx context.Context) (BenchmarkAdmissi
 }
 
 func (s *Settings) ReadBenchmarkAdmissionRole(ctx context.Context) (BenchmarkAdmissionRoleView, error) {
-	view, _, _, err := s.benchmarkAdmissionRole(ctx)
+	view, _, _, err := s.modelRole(ctx, work.BenchmarkAdmissionModelRole)
 	return view, err
 }
 
 func (s *Settings) SetBenchmarkAdmissionRole(ctx context.Context, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
+	return s.setModelRole(ctx, work.BenchmarkAdmissionModelRole, in)
+}
+
+func (s *Settings) ReadBenchmarkRevisionRole(ctx context.Context) (BenchmarkAdmissionRoleView, error) {
+	view, _, _, err := s.modelRole(ctx, work.BenchmarkRevisionModelRole)
+	return view, err
+}
+
+func (s *Settings) SetBenchmarkRevisionRole(ctx context.Context, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
+	return s.setModelRole(ctx, work.BenchmarkRevisionModelRole, in)
+}
+
+func (s *Settings) setModelRole(ctx context.Context, role string, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
 	if s == nil || s.Store == nil || in.Revision < 0 {
 		return BenchmarkAdmissionRoleView{}, InvalidSettings("角色设置尚不可用或版本无效")
 	}
-	b := work.ModelRoleBinding{Role: work.BenchmarkAdmissionModelRole, Revision: in.Revision}
+	b := work.ModelRoleBinding{Role: role, Revision: in.Revision}
 	switch in.Action {
 	case "bind_profile":
 		if s.Demo || in.ProfileID == "" || in.ProfileRevision < 1 || !in.ConfirmRequestTextEgress {
@@ -100,11 +118,12 @@ func (s *Settings) SetBenchmarkAdmissionRole(ctx context.Context, in BenchmarkAd
 	if _, err := s.Store.SaveModelRole(ctx, b); err != nil {
 		return BenchmarkAdmissionRoleView{}, err
 	}
-	return s.ReadBenchmarkAdmissionRole(ctx)
+	view, _, _, err := s.modelRole(ctx, role)
+	return view, err
 }
 
 func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, bool, error) {
-	v, value, key, err := s.benchmarkAdmissionRole(ctx)
+	v, value, key, err := s.modelRole(ctx, work.BenchmarkAdmissionModelRole)
 	if err != nil {
 		return nil, false, err
 	}
@@ -112,12 +131,17 @@ func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, b
 		p, err := s.provider(ctx)
 		return p, false, err
 	}
-	if v.Status != "locally_configured" {
-		return nil, true, fmt.Errorf("%w（%s）", work.ErrBenchmarkAdmissionModelBinding, v.Status)
+	p, err := s.profileForModelRole(v, value, key, work.ErrBenchmarkAdmissionModelBinding)
+	return p, true, err
+}
+
+func (s *Settings) profileForModelRole(v BenchmarkAdmissionRoleView, value work.ModelSettings, key string, unavailable error) (*Provider, error) {
+	if v.Source != "explicit_profile" || v.Status != "locally_configured" {
+		return nil, fmt.Errorf("%w（%s）", unavailable, v.Status)
 	}
 	p, err := s.providerForValue(value, key)
 	if err != nil {
-		return nil, true, work.ErrBenchmarkAdmissionModelBinding
+		return nil, unavailable
 	}
-	return p, true, nil
+	return p, nil
 }

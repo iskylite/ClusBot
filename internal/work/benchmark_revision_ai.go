@@ -12,6 +12,7 @@ import (
 )
 
 var ErrBenchmarkRevisionModel = errors.New("未取得模型的有效修订建议")
+var ErrBenchmarkRevisionModelBinding = errors.New("专用基准修订模型档案已不可用，请检查绑定、版本或凭据")
 
 type BenchmarkRevisionAIInput struct {
 	BenchmarkRevisionProposalInput
@@ -106,6 +107,9 @@ AND t.state IN ('pending','running','paused') AND c.phase='queued' AND c.operati
 		}
 		return interpret(call, request, budget)
 	}()
+	if errors.Is(err, ErrBenchmarkRevisionModelBinding) {
+		return BenchmarkRevisionProposal{}, err
+	}
 	if err != nil || call.Err() != nil {
 		return BenchmarkRevisionProposal{}, ErrBenchmarkRevisionModel
 	}

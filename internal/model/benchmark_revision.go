@@ -26,12 +26,46 @@ func (s *Settings) InterpretBenchmarkRevision(ctx context.Context, input work.Be
 	if err != nil {
 		return "", work.ErrBenchmarkRevisionModel
 	}
+	return interpretRevisionWithProvider(ctx, p, input, benchmarkRevisionInstructions, limit)
+}
+
+func (s *Settings) InterpretBenchmarkRevisionWithProfile(ctx context.Context, input work.BenchmarkRevisionModelInput, limit int) (string, error) {
+	v, value, key, err := s.modelRole(ctx, work.BenchmarkRevisionModelRole)
+	if err != nil {
+		return "", work.ErrBenchmarkRevisionModelBinding
+	}
+	p, err := s.profileForModelRole(v, value, key, work.ErrBenchmarkRevisionModelBinding)
+	if err != nil {
+		return "", err
+	}
+	type parameter struct {
+		Key string `json:"parameter"`
+	}
+	type editableCase struct {
+		Key        string      `json:"case_key"`
+		Parameters []parameter `json:"parameters"`
+	}
+	payload := struct {
+		Text  string         `json:"text"`
+		Cases []editableCase `json:"editable_cases"`
+	}{Text: input.Text}
+	for _, c := range input.Cases {
+		out := editableCase{Key: c.Key, Parameters: []parameter{}}
+		for _, field := range c.Parameters {
+			out.Parameters = append(out.Parameters, parameter{Key: field.Key})
+		}
+		payload.Cases = append(payload.Cases, out)
+	}
+	return interpretRevisionWithProvider(ctx, p, payload, benchmarkRevisionInstructions+"\n此入口只提供参数名称，不提供实测检查；change_expected_actual_config 必须为 false。若明确要求同步改实测验收，请返回 clarify。", limit)
+}
+
+func interpretRevisionWithProvider(ctx context.Context, p *Provider, input any, instructions string, limit int) (string, error) {
 	body, err := json.Marshal(input)
 	if err != nil {
 		return "", work.ErrBenchmarkRevisionModel
 	}
 	return p.readText(ctx, responseRequest{
-		noRetry: true, Instructions: benchmarkRevisionInstructions, MaxOutputTokens: limit,
+		noRetry: true, Instructions: instructions, MaxOutputTokens: limit,
 		Input: []any{responseMessage{Type: "message", Role: "user", Content: string(body)}},
 	})
 }

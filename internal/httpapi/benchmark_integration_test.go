@@ -60,7 +60,8 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		admitText    = "把 POD7 那一整套基准都安排起来，跑完我再看"
 		revisionText = "第二项先不跑，只把第一项留下"
 	)
-	var modelCalls atomic.Int32
+	var modelCalls, profileCalls atomic.Int32
+	t.Setenv("CLUSBOT_HTTP_FIXTURE_REVISION_KEY", "fixture-dedicated-revision-token")
 	localModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
 			http.NotFound(w, r)
@@ -70,6 +71,15 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		if err != nil {
 			http.Error(w, "read fixture", http.StatusBadRequest)
 			return
+		}
+		dedicated := r.Header.Get("Authorization") == "Bearer fixture-dedicated-revision-token"
+		if dedicated {
+			profileCalls.Add(1)
+			if !strings.Contains(string(body), "dedicated-revision") || !strings.Contains(string(body), revisionText) ||
+				!strings.Contains(string(body), "case_key") || strings.Contains(string(body), "node-1") ||
+				strings.Contains(string(body), "fixture-node") || strings.Contains(string(body), "has_expected_actual_check") {
+				t.Error("dedicated revision model received unapproved input")
+			}
 		}
 		var answer string
 		switch {
@@ -84,7 +94,9 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 			http.Error(w, "unexpected fixture model input", http.StatusBadRequest)
 			return
 		}
-		modelCalls.Add(1)
+		if !dedicated {
+			modelCalls.Add(1)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\ndata: {\"type\":\"response.completed\"}\n\n", answer)
 	}))
@@ -96,6 +108,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		store.SetConnectionCredentialKey("local-http-fixture-key")
 		settings := &model.Settings{Store: store}
 		if configure {
 			if _, err := settings.Initialize(ctx, work.ModelSettings{ModelID: "fixture", Protocol: model.ProtocolResponses, BaseURL: localModel.URL, KeyRef: "env:CLUSBOT_UNUSED_FIXTURE_KEY"}); err != nil {
@@ -198,6 +211,29 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	if progress.State != "pending" || progress.AssetScope.TargetCount != 1 || len(progress.Cases) != 2 || provider.starts.Load() != 0 {
 		t.Fatalf("explicit acceptance did not merely queue: %+v", progress)
 	}
+	revisionProfilePath := "/api/v1/settings/model/roles/benchmark-revision"
+	dedicatedRequest := map[string]any{"expected_revision": 1, "text": revisionText, "use_configured_revision_profile": true}
+	jsonCall(http.MethodPost, taskPath+"/revision/ai-preview", dedicatedRequest, nil, http.StatusConflict)
+	var revisionProfile model.ProfileView
+	profileInput := model.ProfileInput{Name: "专用 fixture", Protocol: model.ProtocolResponses, BaseURL: localModel.URL, ModelID: "dedicated-revision", KeyRef: "env:CLUSBOT_HTTP_FIXTURE_REVISION_KEY"}
+	jsonCall(http.MethodPost, "/api/v1/settings/model/profiles", profileInput, &revisionProfile, http.StatusCreated)
+	binding := model.BenchmarkAdmissionRoleInput{Action: "bind_profile", ProfileID: revisionProfile.ID, ProfileRevision: 1}
+	jsonCall(http.MethodPut, revisionProfilePath, binding, nil, http.StatusBadRequest)
+	binding.ConfirmRequestTextEgress = true
+	var role model.BenchmarkAdmissionRoleView
+	jsonCall(http.MethodPut, revisionProfilePath, binding, &role, http.StatusOK)
+	if role.Role != "benchmark_revision" || role.Status != "locally_configured" || len(role.EgressFields) != 3 {
+		t.Fatalf("dedicated revision role not bound: %+v", role)
+	}
+	var standalone work.BenchmarkRevisionProposal
+	jsonCall(http.MethodPost, taskPath+"/revision/ai-preview", dedicatedRequest, &standalone, http.StatusOK)
+	if standalone.State != "preview_only" || profileCalls.Load() != 1 || modelCalls.Load() != 1 {
+		t.Fatalf("opted-in revision did not use exact profile without executing: %+v", standalone)
+	}
+	dedicatedRequest["allow_expected_actual_change"] = true
+	jsonCall(http.MethodPost, taskPath+"/revision/ai-preview", dedicatedRequest, nil, http.StatusBadRequest)
+	delete(dedicatedRequest, "allow_expected_actual_change")
+
 	var chat struct {
 		ConversationID string `json:"conversation_id"`
 	}
@@ -230,7 +266,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 
 	var pending work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodPost, chatPath, intent, &pending, http.StatusOK)
-	if pending.Proposal.State != "preview_only" || pending.Proposal.Preview.AssetImpact == nil || pending.SourceRunID != saved.RunID {
+	if pending.Proposal.State != "preview_only" || pending.Proposal.Preview.AssetImpact == nil || pending.SourceRunID != saved.RunID || profileCalls.Load() != 1 {
 		t.Fatalf("missing actionable but non-applied preview: %+v", pending)
 	}
 	jsonCall(http.MethodGet, taskPath, nil, &progress, http.StatusOK)
@@ -278,6 +314,12 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	if reopened.Proposal.Preview.AssetImpact == nil || modelCalls.Load() != 2 {
 		t.Fatalf("reopen failed or started model again: %+v", reopened)
 	}
+	t.Setenv("CLUSBOT_HTTP_FIXTURE_REVISION_KEY", "rotated-fixture-revision-key")
+	jsonCall(http.MethodPost, taskPath+"/revision/ai-preview", dedicatedRequest, nil, http.StatusConflict)
+	if modelCalls.Load() != 2 || profileCalls.Load() != 1 {
+		t.Fatal("credential drift sent to a model or silently fell back")
+	}
+
 	confirmPath := chatPath + "/" + pending.RunID + "/confirm"
 	confirm := work.BenchmarkRevisionChatConfirmInput{Action: "apply_benchmark_revision", ExpectedRevision: 1}
 	var revision work.BenchmarkRevisionChatConfirmation
