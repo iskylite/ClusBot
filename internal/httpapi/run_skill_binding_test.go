@@ -68,3 +68,54 @@ func TestRunMCPBindingsUnboundWithoutModel(t *testing.T) {
 		t.Fatalf("unbound run represented incorrectly: %+v, %d, %v", got, res.StatusCode, err)
 	}
 }
+
+func TestConversationSkillSelectionExplicitAPI(t *testing.T) {
+	a := setupA1(t, filepath.Join(t.TempDir(), "conversation-skill-api.sqlite"))
+	defer a.close()
+	ctx := t.Context()
+	const actor = "user:session"
+	chat, handled, err := a.store.SubmitBenchmarkCommand(ctx, "existing-chat", actor, "", "跑 POD7 全套基准", "", nil)
+	if err != nil || !handled {
+		t.Fatalf("existing chat: %+v %v", chat, err)
+	}
+	v, err := a.store.DraftSkill(ctx, "reports", "Internal Skill body", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.store.ActivateSkill(ctx, v.SkillID, v.Version, 0, v.Digest); err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/conversations/" + chat.ConversationID + "/skill-binding"
+	body, err := json.Marshal(work.ConversationSkillBindingInput{Action: "bind_skill", SkillID: v.SkillID, Version: v.Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := a.request(http.MethodPut, path, string(body))
+	req.Header.Del("Cookie")
+	res, err := a.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous can select: %d", res.StatusCode)
+	}
+	res, err = a.ts.Client().Do(a.request(http.MethodPut, path, string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("explicit selection failed: %d", res.StatusCode)
+	}
+	res, err = a.ts.Client().Do(a.request(http.MethodGet, path, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out work.ConversationSkillSelection
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != http.StatusOK || res.Header.Get("Cache-Control") != "no-store" ||
+		out.ConversationID != chat.ConversationID || out.Binding == nil || out.Binding.SkillID != v.SkillID || out.Binding.Version != v.Version {
+		t.Fatalf("wrong no-model binding: %+v, %d, %v", out, res.StatusCode, err)
+	}
+}

@@ -76,3 +76,31 @@ func (s Server) runSkillBinding(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, binding)
 }
+
+func (s Server) readConversationSkillSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	out, err := s.Store.ReadConversationSkillSelection(r.Context(), s.principal(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) setConversationSkillSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.ConversationSkillBindingInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if !validID(r.PathValue("id")) || (in.SkillID != "" && !validID(in.SkillID)) {
+		writeError(w, work.ErrSkill)
+		return
+	}
+	out, err := s.Store.SetConversationSkillSelection(r.Context(), s.principal(r), r.PathValue("id"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
