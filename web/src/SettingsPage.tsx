@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Check, FolderOpen, LoaderCircle } from 'lucide-react'
 import { api, type DiscoveredModel, type ModelAttributes, type ModelProtocol, type ModelSettings, type Settings } from './api'
 
+import {ModelRolesSettings} from './ModelRolesSettings'
+
 const message = (error: unknown) => error instanceof Error ? error.message : '请求未完成，请重试'
 
 export function SettingsPage({ onSaved }: { onSaved: (value: Settings) => void }) {
@@ -21,9 +23,13 @@ export function SettingsPage({ onSaved }: { onSaved: (value: Settings) => void }
 
   return <main className="main settings-page">
     <header className="page-heading"><h1>设置</h1></header>
+    <nav aria-label="模型设置分区" className="model-settings-nav">
+      <a href="#model-default">默认模型</a><a href="#model-profiles">模型档案</a><a href="#model-roles">角色绑定</a>
+    </nav>
     {settings ? <ModelForm initial={settings} onSaved={onSaved}/> : error ?
       <p className="error" role="alert">{error}</p> :
       <p className="muted" role="status">正在加载设置…</p>}
+    <ModelRolesSettings/>
   </main>
 }
 
@@ -158,10 +164,10 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     resetFeedback()
   }
 
-  return <form className="settings-card" onSubmit={save}>
+  return <form id="model-default" className="settings-card" onSubmit={save}>
     <section className="settings-fields" aria-labelledby="model-settings-title">
       <header className="settings-section-heading">
-        <h2 id="model-settings-title">模型</h2>
+        <h2 id="model-settings-title">默认模型</h2>
         {stored.mode === 'demo' && <span className="mode-note">当前使用本地演示</span>}
       </header>
       <div className="settings-model-row">

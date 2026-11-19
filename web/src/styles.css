@@ -599,3 +599,12 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .chat-task-dialog::backdrop { background-color: #25262f40; }
 .chat-task-dialog-bar { position: sticky; top: 0; display: flex; justify-content: flex-end; background: var(--panel); z-index: 1; padding: 4px 12px; }
 .chat-task-dialog-bar button { min-height: 44px; }
+
+.model-settings-nav { display: flex; flex-wrap: wrap; gap: 12px 20px; margin: 0 0 16px; }
+.model-settings-nav a { color: var(--accent); }
+.model-settings-list { padding: 0; list-style: none; display: grid; gap: 8px; }
+.model-settings-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.model-settings-list small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+.model-role-fields { margin-top: 14px; padding-top: 12px; }
+.model-egress { display: flex; gap: 8px; align-items: flex-start; }
+.model-egress input { flex: none; }
