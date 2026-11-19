@@ -241,18 +241,19 @@ type Task struct {
 }
 
 type Run struct {
-	ID              string          `json:"id"`
-	ConversationID  string          `json:"conversation_id"`
-	TaskID          string          `json:"task_id,omitempty"`
-	Status          string          `json:"status"`
-	Response        string          `json:"response"`
-	Error           string          `json:"error,omitempty"`
-	ErrorCode       string          `json:"error_code,omitempty"`
-	Usage           *ExecutionUsage `json:"usage,omitempty"`
-	Generation      int             `json:"execution_generation"`
-	FollowupQueued  bool            `json:"followup_queued,omitempty"`
-	RouterIntents   *[]RouterIntent `json:"router_intents,omitempty"`
-	admissionOutput int
+	ID                  string                     `json:"id"`
+	ConversationID      string                     `json:"conversation_id"`
+	TaskID              string                     `json:"task_id,omitempty"`
+	Status              string                     `json:"status"`
+	Response            string                     `json:"response"`
+	Error               string                     `json:"error,omitempty"`
+	ErrorCode           string                     `json:"error_code,omitempty"`
+	Usage               *ExecutionUsage            `json:"usage,omitempty"`
+	Generation          int                        `json:"execution_generation"`
+	FollowupQueued      bool                       `json:"followup_queued,omitempty"`
+	BenchmarkSuggestion *BenchmarkRouterSuggestion `json:"benchmark_suggestion,omitempty"`
+	RouterIntents       *[]RouterIntent            `json:"router_intents,omitempty"`
+	admissionOutput     int
 }
 
 type Message struct {
@@ -1121,11 +1122,30 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 	}
 	changesDelivery := delivery.Criteria != nil || delivery.Filename != nil
 
+	var suggestion *BenchmarkRouterSuggestion
+	var isBenchmarkSuggestion bool
 	goal := text
 	reply := ""
 	if classification != nil && classification.Route != nil {
 		route := classification.Route
 		switch route.Kind {
+		case "benchmark_preview":
+			isBenchmarkSuggestion = true
+			actor, err := benchmarkRouterActor(ctx, tx, requestKey)
+			if err != nil {
+				return Run{}, err
+			}
+			suggestion, err = benchmarkRouterSuggestionTx(ctx, tx, actor, conversationID, text)
+			if err != nil {
+				return Run{}, err
+			}
+			if suggestion != nil && suggestion.Target == route.BenchmarkTarget && len(materialIDs) == 0 &&
+				(route.BenchmarkProfile == nil || *route.BenchmarkProfile == suggestion.Profile) {
+				reply = "找到 " + suggestion.Target + " 的已发布方案。请明确打开基准受理预览；尚未创建测试任务。"
+			} else {
+				suggestion = nil
+				reply = "当前无法确认唯一可用的已发布基准方案，没有创建测试任务。请核对目标或使用基准预览入口。"
+			}
 		case "new_task":
 			goal = route.Goal
 			delivery.Criteria = &route.Criteria
@@ -1184,7 +1204,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if _, err = tx.Exec("INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)", r.ConversationID, title(text), now()); err != nil {
 			return Run{}, err
 		}
-		if task {
+		if task && !isBenchmarkSuggestion {
 			r.TaskID = id()
 			taskID = r.TaskID
 			if err = insertTask(tx, r, goal, scope, delivery); err != nil {
@@ -1195,37 +1215,39 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if err = checkConversationSubmission(tx, conversationID); err != nil {
 			return Run{}, err
 		}
-		existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
-		if findErr == nil {
-			if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
-				return Run{}, err
-			}
-			if err = ensureNoPublication(tx, existing.ID); err != nil {
-				return Run{}, err
-			}
-			if err = ensureReadConfirmed(tx, existing.ID); err != nil {
-				return Run{}, err
-			}
-			if existing.Status == "cancelled" {
-				return Run{}, ErrState
-			}
-			if changesDelivery && delivery.Revision != existing.Revision {
-				return Run{}, ErrState
-			}
-			r.TaskID = existing.ID
-			taskID = r.TaskID
-			reuseRead = !existing.RequirementsChanged
-			if _, err = tx.Exec(`UPDATE tasks SET acceptance_criteria=coalesce(?,acceptance_criteria),required_filename=coalesce(?,required_filename),
+		if !isBenchmarkSuggestion {
+			existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
+			if findErr == nil {
+				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
+					return Run{}, err
+				}
+				if err = ensureNoPublication(tx, existing.ID); err != nil {
+					return Run{}, err
+				}
+				if err = ensureReadConfirmed(tx, existing.ID); err != nil {
+					return Run{}, err
+				}
+				if existing.Status == "cancelled" {
+					return Run{}, ErrState
+				}
+				if changesDelivery && delivery.Revision != existing.Revision {
+					return Run{}, ErrState
+				}
+				r.TaskID = existing.ID
+				taskID = r.TaskID
+				reuseRead = !existing.RequirementsChanged
+				if _, err = tx.Exec(`UPDATE tasks SET acceptance_criteria=coalesce(?,acceptance_criteria),required_filename=coalesce(?,required_filename),
 status='active',status_reason='queued',reason='补充要求已受理',requirements_changed=0,completed_at=NULL,revision=revision+1,updated_at=? WHERE id=?`, delivery.Criteria, delivery.Filename, now(), r.TaskID); err != nil {
-				return Run{}, err
-			}
-		} else if !errors.Is(findErr, sql.ErrNoRows) {
-			return Run{}, findErr
-		} else if task && !delivery.ReplaceMaterials {
-			r.TaskID = id()
-			taskID = r.TaskID
-			if err = insertTask(tx, r, goal, scope, delivery); err != nil {
-				return Run{}, err
+					return Run{}, err
+				}
+			} else if !errors.Is(findErr, sql.ErrNoRows) {
+				return Run{}, findErr
+			} else if task && !delivery.ReplaceMaterials {
+				r.TaskID = id()
+				taskID = r.TaskID
+				if err = insertTask(tx, r, goal, scope, delivery); err != nil {
+					return Run{}, err
+				}
 			}
 		}
 	}
@@ -1288,6 +1310,12 @@ status='active',status_reason='queued',reason='补充要求已受理',requiremen
 	if err = addEvent(tx, r.ID, "run.state_changed", map[string]string{"status": r.Status}); err != nil {
 		return Run{}, err
 	}
+	if suggestion != nil {
+		if err := addEvent(tx, r.ID, benchmarkRouterEvent, suggestion); err != nil {
+			return Run{}, err
+		}
+		r.BenchmarkSuggestion = suggestion
+	}
 	return r, nil
 }
 
@@ -1313,6 +1341,9 @@ func previousSubmission(tx *sql.Tx, requestKey, fingerprint string) (Run, error)
 			return run, err
 		}
 		run.RouterIntents, err = routerIntentReceipt(tx, run.ID)
+		if err == nil {
+			run.BenchmarkSuggestion, err = readBenchmarkRouterReceipt(tx, run.ID)
+		}
 		return run, err
 	}
 	if !errors.Is(err, sql.ErrNoRows) {

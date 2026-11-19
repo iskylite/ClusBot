@@ -420,7 +420,16 @@ func (s Server) submit(task bool) http.HandlerFunc {
 		delivery := work.Delivery{Criteria: in.Criteria, Filename: in.Filename, Revision: in.Revision, Read: in.Read, Reads: in.Reads, ReplaceMaterials: in.ReplaceMaterials}
 		if !task && delivery.Criteria == nil && delivery.Filename == nil && delivery.Read == nil &&
 			len(delivery.Reads) == 0 && !delivery.ReplaceMaterials && len(in.AttachmentIDs) == 0 {
-			if run, handled, err := s.Store.SubmitBenchmarkCommand(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, s.BenchmarkProvider); handled {
+			fields := strings.Fields(in.Text)
+			var shortcut func(context.Context, string, string, string, string, string) (work.Run, bool, error)
+			if len(fields) > 0 && (fields[0] == "/benchmark" || fields[0] == "/benchmark-status") {
+				shortcut = func(ctx context.Context, key, actor, conversation, text, scope string) (work.Run, bool, error) {
+					return s.Store.SubmitBenchmarkCommand(ctx, key, actor, conversation, text, scope, s.BenchmarkProvider)
+				}
+			} else {
+				shortcut = s.Store.SubmitBenchmarkSuggestionShortcut
+			}
+			if run, handled, err := shortcut(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope); handled {
 				if err != nil {
 					benchmarkError(w, err)
 					return
@@ -506,6 +515,9 @@ func writeSubmission(w http.ResponseWriter, run work.Run) {
 	response := map[string]any{"task_id": run.TaskID, "conversation_id": run.ConversationID, "run_id": run.ID, "status": run.Status}
 	if run.RouterIntents != nil {
 		response["router_intents"] = run.RouterIntents
+	}
+	if run.BenchmarkSuggestion != nil {
+		response["benchmark_suggestion"] = run.BenchmarkSuggestion
 	}
 	if run.FollowupQueued {
 		response["followup_queued"] = true

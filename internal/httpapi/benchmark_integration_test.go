@@ -73,6 +73,9 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		}
 		var answer string
 		switch {
+		case strings.Contains(string(body), admitText) && strings.Contains(string(body), "benchmark_candidate"):
+			answer = `{"kind":"benchmark_preview","benchmark_target":"POD7"}`
+
 		case strings.Contains(string(body), admitText):
 			answer = fmt.Sprintf(`{"action":"preview_admission","target":"POD7","profile":"full","version":1,"quote":%q}`, admitText)
 		case strings.Contains(string(body), revisionText):
@@ -157,6 +160,20 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatal("unknown capacity request reached model or provider")
 	}
 
+	var suggestion struct {
+		RunID               string                          `json:"run_id"`
+		TaskID              string                          `json:"task_id"`
+		BenchmarkSuggestion *work.BenchmarkRouterSuggestion `json:"benchmark_suggestion"`
+	}
+	plain := map[string]string{"client_request_id": "integrated-natural-benchmark", "text": admitText}
+	jsonCall(http.MethodPost, "/api/v1/conversations", plain, &suggestion, http.StatusAccepted)
+	firstRun := suggestion.RunID
+	jsonCall(http.MethodPost, "/api/v1/conversations", plain, &suggestion, http.StatusAccepted)
+	if suggestion.RunID == "" || suggestion.RunID != firstRun || suggestion.TaskID != "" || suggestion.BenchmarkSuggestion == nil ||
+		suggestion.BenchmarkSuggestion.Target != "POD7" || suggestion.BenchmarkSuggestion.State != "explicit_preview_required" || modelCalls.Load() != 1 {
+		t.Fatalf("plain chat dispatched or did not replay the typed suggestion: %+v", suggestion)
+	}
+
 	var draft work.BenchmarkAdmissionPreview
 	jsonCall(http.MethodPost, admission, work.BenchmarkAdmissionPreviewInput{Text: admitText}, &draft, http.StatusOK)
 	if draft.PreviewID == "" || draft.State != "preview_only" || draft.ExecutionStarted || draft.Preflight.FacilityStatus != "not_verified" || provider.starts.Load() != 0 {
@@ -192,9 +209,14 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	// Restart the actual SQLite owner before explicit revision confirmation.
 	a.close()
 	a = start(false)
+	jsonCall(http.MethodPost, "/api/v1/conversations", plain, &suggestion, http.StatusAccepted)
+	if suggestion.RunID != firstRun || suggestion.BenchmarkSuggestion == nil || modelCalls.Load() != 3 {
+		t.Fatalf("router suggestion did not survive restart without a model replay: %+v", suggestion)
+	}
+
 	var reopened work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodGet, chatPath+"/"+pending.RunID, nil, &reopened, http.StatusOK)
-	if reopened.Proposal.Preview.AssetImpact == nil || modelCalls.Load() != 2 {
+	if reopened.Proposal.Preview.AssetImpact == nil || modelCalls.Load() != 3 {
 		t.Fatalf("reopen failed or started model again: %+v", reopened)
 	}
 	confirmPath := chatPath + "/" + pending.RunID + "/confirm"
@@ -236,7 +258,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatalf("admission replay created a new task: %+v", replay)
 	}
 	jsonCall(http.MethodPost, confirmPath, confirm, &revision, http.StatusOK)
-	if revision.Revision != 2 || modelCalls.Load() != 2 {
+	if revision.Revision != 2 || modelCalls.Load() != 3 {
 		t.Fatalf("revision replay changed revision or spent model again: %+v", revision)
 	}
 	// Let production scheduler tick again on the reopened DB, rather

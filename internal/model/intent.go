@@ -64,16 +64,22 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	instructions := delegationInstructions
+	var benchmark *work.BenchmarkRouterSuggestion
 	if routing {
 		instructions = routerInstructions
+		benchmark = work.RouterBenchmarkSuggestion(ctx)
+		if benchmark != nil {
+			instructions += "\n" + `若 current 明确委托新目标的全套基准、没有查询、引用、否定、其他任务或附加条件，可返回 {"kind":"benchmark_preview","benchmark_target":"benchmark_candidate 中的目标原样"}。只会建议用户打开明确预演，不建任务。不能用这类意图替代已有任务后续，不可放入 batch。`
+		}
 	}
 	for {
 		payload, err := json.Marshal(struct {
-			History []work.Message        `json:"history"`
-			Current string                `json:"current"`
-			Tasks   []work.RouteCandidate `json:"tasks,omitempty"`
-			Pending []work.RouterIntent   `json:"pending,omitempty"`
-		}{History: history, Current: text, Tasks: candidates, Pending: work.RouterPending(ctx)})
+			History   []work.Message                  `json:"history"`
+			Current   string                          `json:"current"`
+			Tasks     []work.RouteCandidate           `json:"tasks,omitempty"`
+			Pending   []work.RouterIntent             `json:"pending,omitempty"`
+			Benchmark *work.BenchmarkRouterSuggestion `json:"benchmark_candidate,omitempty"`
+		}{History: history, Current: text, Tasks: candidates, Pending: work.RouterPending(ctx), Benchmark: benchmark})
 		if err != nil {
 			return work.DelegationResult{}, err
 		}

@@ -8,20 +8,22 @@ import (
 )
 
 type RouteDecision struct {
-	Kind             string          `json:"kind"`
-	TaskID           string          `json:"task_id,omitempty"`
-	AfterTaskID      string          `json:"after_task_id,omitempty"`
-	Goal             string          `json:"goal,omitempty"`
-	Criteria         string          `json:"criteria,omitempty"`
-	Question         string          `json:"question,omitempty"`
-	Revision         int             `json:"revision,omitempty"`
-	AfterRevision    int             `json:"after_revision,omitempty"`
-	Priority         string          `json:"priority,omitempty"`
-	PreviousPriority string          `json:"previous_priority,omitempty"`
-	Fragment         string          `json:"fragment,omitempty"`
-	ResolveID        string          `json:"resolve_id,omitempty"`
-	Intents          []RouteDecision `json:"intents,omitempty"`
-	Issue            string          `json:"issue,omitempty"`
+	BenchmarkProfile *BenchmarkProfileRef `json:"benchmark_profile,omitempty"`
+	BenchmarkTarget  string               `json:"benchmark_target,omitempty"`
+	Kind             string               `json:"kind"`
+	TaskID           string               `json:"task_id,omitempty"`
+	AfterTaskID      string               `json:"after_task_id,omitempty"`
+	Goal             string               `json:"goal,omitempty"`
+	Criteria         string               `json:"criteria,omitempty"`
+	Question         string               `json:"question,omitempty"`
+	Revision         int                  `json:"revision,omitempty"`
+	AfterRevision    int                  `json:"after_revision,omitempty"`
+	Priority         string               `json:"priority,omitempty"`
+	PreviousPriority string               `json:"previous_priority,omitempty"`
+	Fragment         string               `json:"fragment,omitempty"`
+	ResolveID        string               `json:"resolve_id,omitempty"`
+	Intents          []RouteDecision      `json:"intents,omitempty"`
+	Issue            string               `json:"issue,omitempty"`
 }
 
 type RouteCandidate struct {
@@ -51,12 +53,26 @@ func (s *Store) SubmitRoutedChat(ctx context.Context, key, text, scope, conversa
 			return DelegationResult{}, err
 		}
 		ctx = context.WithValue(ctx, routerPendingKey{}, pending)
+		var suggestion *BenchmarkRouterSuggestion
+		if len(materials) == 0 {
+			suggestion, err = s.routerBenchmarkSuggestion(ctx, key, conversation, text)
+			if err != nil {
+				return DelegationResult{}, err
+			}
+		}
+		ctx = context.WithValue(ctx, benchmarkRouterKey{}, suggestion)
 		result, err := route(ctx, text, history, candidates, limit)
 		if err != nil {
 			return result, err
 		}
 		if err = validateRoutedInput(result.Route, candidates, pending, text); err != nil {
 			return result, err
+		}
+		if result.Route.Kind == "benchmark_preview" {
+			if suggestion == nil || result.Route.BenchmarkTarget != suggestion.Target || result.Route.Issue != "" || result.Route.ResolveID != "" {
+				return result, errors.New("未核实唯一可用的基准预览目标；没有创建任务")
+			}
+			result.Route.BenchmarkProfile = &suggestion.Profile
 		}
 		result.Task = result.Route.Kind == "new_task" || result.Route.Kind == "follow_up"
 		return result, nil
@@ -104,7 +120,7 @@ func validateRoutedInput(route *RouteDecision, candidates []RouteCandidate, pend
 			item.Fragment = ""
 			item.Issue = "请指出这一项要求对应的原话。"
 		}
-		if len(item.Intents) != 0 || validateRoute(item, candidates) != nil {
+		if len(item.Intents) != 0 || item.Kind == "benchmark_preview" || validateRoute(item, candidates) != nil {
 			item.Issue = "请明确这一项要做什么，以及它对应的事项。"
 			if item.Kind == "order_tasks" {
 				item.Issue = "请指出要先做和后做的两个不同事项。"
@@ -172,9 +188,17 @@ func validateRoute(route *RouteDecision, candidates []RouteCandidate) error {
 	if route.Kind != "order_tasks" && route.AfterTaskID != "" {
 		return invalid
 	}
+	if route.BenchmarkProfile != nil || route.Kind != "benchmark_preview" && route.BenchmarkTarget != "" {
+		return invalid
+	}
 	switch route.Kind {
 	case "chat":
 		if route.TaskID == "" && route.Goal == "" && route.Criteria == "" && route.Question == "" {
+			return nil
+		}
+	case "benchmark_preview":
+		if route.TaskID == "" && route.Goal == "" && route.Criteria == "" && route.Question == "" && route.Fragment == "" &&
+			route.ResolveID == "" && benchmarkOrderTarget.MatchString(route.BenchmarkTarget) {
 			return nil
 		}
 	case "new_task":

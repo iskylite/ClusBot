@@ -43,10 +43,19 @@ func TestBenchmarkChatTargetAPI(t *testing.T) {
 	if code := call(http.MethodPut, target, selector, true); code != http.StatusNoContent {
 		t.Fatalf("activate: %d", code)
 	}
-	// For this test server no provider is configured; matching the profile
-	// does not stage an unexecutable job or wait for an unavailable model.
-	if code, out := a.post("/api/v1/conversations", `{"client_request_id":"benchmark-inactive","text":"跑 POD7 全套基准"}`); code != http.StatusConflict {
-		t.Fatalf("matched without provider: %d %v", code, out)
+	// The familiar sentence has a local suggestion fallback even with no
+	// configured model or provider, but no longer accepts a real test run.
+	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
+	if err := a.store.ImportDomainAssets(t.Context(), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+		t.Fatal(err)
+	}
+	const oldPhrase = `{"client_request_id":"benchmark-inactive","text":"跑 POD7 全套基准"}`
+	for range 2 {
+		code, out := a.post("/api/v1/conversations", oldPhrase)
+		hint, ok := out["benchmark_suggestion"].(map[string]any)
+		if code != http.StatusAccepted || !ok || hint["target"] != "POD7" || hint["state"] != "explicit_preview_required" || out["task_id"] != "" {
+			t.Fatalf("familiar phrase skipped confirmation or gave no preview path: %d %v", code, out)
+		}
 	}
 	if code := call(http.MethodDelete, target, "", true); code != http.StatusNoContent {
 		t.Fatalf("disable: %d", code)
