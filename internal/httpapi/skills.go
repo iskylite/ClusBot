@@ -66,3 +66,13 @@ func (s Server) disableSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s Server) runSkillBinding(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	binding, err := s.Store.ReadRunSkillBinding(r.Context(), s.principal(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, binding)
+}
