@@ -128,6 +128,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("DELETE /api/v1/domain/benchmark-chat-targets/{target}", s.clearBenchmarkChatTarget)
 	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}", s.benchmarkProgress)
+	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/report", s.benchmarkReport)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/revision", s.benchmarkRevision)
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/revision/preview", s.reviseBenchmark(false))
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/revision", s.reviseBenchmark(true))

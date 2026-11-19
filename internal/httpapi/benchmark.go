@@ -71,6 +71,16 @@ func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, p)
 }
 
+func (s Server) benchmarkReport(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	report, err := s.Store.ReadBenchmarkReport(r.Context(), s.principal(r), r.PathValue("id"))
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, report)
+}
+
 func (s Server) benchmarkEvidence(w http.ResponseWriter, r *http.Request) {
 	body, err := s.Store.ReadBenchmarkEvidence(r.Context(), "user:session", r.PathValue("id"), r.PathValue("artifact"))
 	if err != nil {

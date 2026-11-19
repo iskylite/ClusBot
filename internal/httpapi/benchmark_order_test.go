@@ -107,4 +107,16 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 	if res.Header.Get("Cache-Control") != "no-store" || out.TaskID != id || out.State != "pending" || out.StopRequested || len(out.Cases) != 1 || out.Cases[0].Phase != "queued" || out.Cases[0].StepID == "" {
 		t.Fatalf("wrong read-only snapshot: %+v", out)
 	}
+	get(id+"/report", false, http.StatusUnauthorized)
+	get("missing/report", true, http.StatusNotFound)
+	res = get(id+"/report", true, http.StatusOK)
+	var report work.BenchmarkReport
+	if err := json.NewDecoder(res.Body).Decode(&report); err != nil {
+		t.Fatal(err)
+	}
+	if res.Header.Get("Cache-Control") != "no-store" || report.SchemaVersion != 1 || report.TaskID != id ||
+		report.AssetAcceptance != "not_evaluated" || len(report.Cases) != 1 || report.Cases[0].ToolOutcome != "not_started" {
+		t.Fatalf("wrong no-model report: %+v", report)
+	}
+
 }

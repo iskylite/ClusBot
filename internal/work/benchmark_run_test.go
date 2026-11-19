@@ -131,6 +131,11 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if provider.started != 1 {
 				t.Fatalf("got %d starts", provider.started)
 			}
+			pendingReport, err := s.ReadBenchmarkReport(ctx, actor, task)
+			if err != nil || pendingReport.Cases[0].ToolOutcome != "outcome_unknown" || pendingReport.Cases[0].RequiredEvidence != "not_evaluated" {
+				t.Fatalf("in-flight report %+v: %v", pendingReport, err)
+			}
+
 			if err = s.Close(); err != nil {
 				t.Fatal(err)
 			}
@@ -159,6 +164,26 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if got.State != "failed" && missing || got.State != "succeeded" && !missing {
 				t.Fatalf("wrong terminal task state %+v", got)
 			}
+			report, err := s.ReadBenchmarkReport(ctx, actor, task)
+			if err != nil || report.SchemaVersion != 1 || report.AssetAcceptance != "not_evaluated" || report.PlanRevision != got.PlanRevision || len(report.Cases) != 1 {
+				t.Fatalf("report %+v: %v", report, err)
+			}
+			item := report.Cases[0]
+			if item.ToolOutcome != "completed" || len(item.Targets) != 1 {
+				t.Fatalf("remote success is not measurement success: %+v", item)
+			}
+			if missing {
+				if item.RequiredEvidence != "incomplete" || item.Performance != "incomplete" || len(item.Targets[0].VerifiedMetrics) != 0 {
+					t.Fatalf("missing evidence promoted: %+v", item)
+				}
+			} else if item.RequiredEvidence != "covered" || item.Performance != "not_met" ||
+				item.Targets[0].VerifiedMetrics["rate"] != (BenchmarkMeasuredMetric{Value: 100, Unit: "GB/s"}) {
+				t.Fatalf("verified measurements and threshold not distinct: %+v", item)
+			}
+			if _, err := s.ReadBenchmarkReport(ctx, "other", task); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("foreign actor read metrics: %v", err)
+			}
+
 			var holds int
 			if err = s.db.QueryRow("SELECT count(*) FROM benchmark_target_holds").Scan(&holds); err != nil || holds != 0 {
 				t.Fatalf("holds %d %v", holds, err)
