@@ -199,6 +199,43 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		t.Fatalf("completed replay must need no model and omit live assets: %+v %v", replayed, err)
 	}
 
+	reopened, err := s.ReopenBenchmarkRevisionChat(ctx, actor, chat.ConversationID, proposal.RunID, provider)
+	if err != nil || reopened.Proposal.Preview.AssetImpact == nil || toJSON(reopened) != toJSON(proposal) {
+		t.Fatalf("reopen failed to revalidate authorized snapshot: %+v %v", reopened, err)
+	}
+	for _, attempt := range []struct{ actor, conversation, event string }{
+		{"other", chat.ConversationID, proposal.RunID},
+		{actor, id(), proposal.RunID},
+		{actor, chat.ConversationID, chat.ID},
+	} {
+		if _, err := s.ReopenBenchmarkRevisionChat(ctx, attempt.actor, attempt.conversation, attempt.event, provider); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("out-of-scope reopen should look missing: %v", err)
+		}
+	}
+	if _, err := s.ReopenBenchmarkRevisionChat(ctx, actor, chat.ConversationID, proposal.RunID, nil); !errors.Is(err, ErrBenchmarkRevisionPreviewStale) {
+		t.Fatalf("reopening ignored missing provider capability: %v", err)
+	}
+	if _, err := s.db.Exec("UPDATE benchmark_cases SET phase='submitting' WHERE task_id=? AND case_key='second'", task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReopenBenchmarkRevisionChat(ctx, actor, chat.ConversationID, proposal.RunID, provider); !errors.Is(err, ErrBenchmarkRevisionPreviewStale) {
+		t.Fatalf("reopening ignored selected case crossing dispatch boundary: %v", err)
+	}
+	if _, err := s.db.Exec("UPDATE benchmark_cases SET phase='queued' WHERE task_id=? AND case_key='second'", task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.db.Exec("UPDATE authorizations SET revoked_at=? WHERE action='benchmark.execute' AND subject=?", now(), actor); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := s.ReopenBenchmarkRevisionChat(ctx, actor, chat.ConversationID, proposal.RunID, provider); !errors.Is(err, ErrAuthorizationDenied) ||
+		out.Proposal.Preview.AssetImpact != nil {
+		t.Fatalf("revoked grant returned new detail: %+v %v", out, err)
+	}
+	if _, err := s.db.Exec("UPDATE authorizations SET revoked_at=0 WHERE action='benchmark.execute' AND subject=?", actor); err != nil {
+		t.Fatal(err)
+	}
+
 	reusedKey := action
 	reusedKey.Text = "我要查进度"
 	if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, reusedKey, provider, interpret(answer)); !errors.Is(err, ErrConflict) {
@@ -266,6 +303,11 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		})
 	if !errors.Is(err, ErrTaskRevision) {
 		t.Fatalf("model answer survived a changed durable revision: %v", err)
+	}
+
+	if out, err := s.ReopenBenchmarkRevisionChat(ctx, actor, chat.ConversationID, proposal.RunID, provider); !errors.Is(err, ErrBenchmarkRevisionPreviewStale) ||
+		out.Proposal.Preview.AssetImpact != nil {
+		t.Fatalf("old preview rebound against a revised plan: %+v %v", out, err)
 	}
 
 	if _, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "other-edit", Cases: req.Cases}, provider, true); !errors.Is(err, ErrTaskRevision) {

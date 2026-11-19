@@ -141,3 +141,48 @@ WHERE b.task_id=? AND b.actor=? AND c.case_key=?`, input.TaskID, actor, proposal
 	}
 	return out, tx.Commit()
 }
+
+var ErrBenchmarkRevisionPreviewStale = errors.New("预演已失效，请按当前任务状态重新生成预演")
+
+// ReopenBenchmarkRevisionChat reads only the original server-produced intent.
+// It asks neither a client nor the model to supply the old plan/difference.
+// Fresh asset detail is computed by the ordinary preview and never re-saved.
+func (s *Store) ReopenBenchmarkRevisionChat(ctx context.Context, actor, conversation, run string, provider BenchmarkProvider) (BenchmarkRevisionChatReceipt, error) {
+	if actor == "" {
+		return BenchmarkRevisionChatReceipt{}, sql.ErrNoRows
+	}
+	recorded, err := readBenchmarkRevisionChat(s.db, actor, conversation, run)
+	if err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	p := recorded.Proposal
+	if recorded.RunID != run || recorded.ConversationID != conversation || p.State != "preview_only" ||
+		p.Method != "model_interpreted" || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
+		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
+	}
+	current, err := s.benchmarkRevisionProposalBase(ctx, actor, recorded.TaskID, p.ExpectedRevision)
+	if errors.Is(err, ErrTaskRevision) {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
+	}
+	if err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	fresh, err := s.previewBenchmarkRevisionIntent(ctx, actor, recorded.TaskID, current, p.Interpretation, provider, p.Method)
+	switch {
+	case errors.Is(err, ErrAuthorizationDenied):
+		return BenchmarkRevisionChatReceipt{}, ErrAuthorizationDenied
+	case errors.Is(err, ErrTaskRevision), errors.Is(err, ErrConflict), errors.Is(err, ErrState),
+		errors.Is(err, ErrBenchmarkInput), errors.Is(err, ErrBenchmarkBinding):
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
+	case err != nil:
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	// A new backend interpretation of an old stored intent must not silently
+	// generate a different proposal while offering the old card again.
+	if toJSON(fresh.Preview.Profile) != toJSON(p.Preview.Profile) {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
+	}
+	recorded.Proposal = fresh
+	return recorded, nil
+}
