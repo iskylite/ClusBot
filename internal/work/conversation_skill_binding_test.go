@@ -50,6 +50,26 @@ func TestConversationSkillSelectionPinsOnlyMatchingFutureRun(t *testing.T) {
 	if err != nil || initial.Binding == nil || initial.Binding.Validity != "valid" || initial.Binding.Version != first.Version {
 		t.Fatalf("expected explicitly selected approved version: %+v %v", initial, err)
 	}
+	if initial.BindingRevision != 1 {
+		t.Fatalf("wrong initial binding revision: %+v", initial)
+	}
+	if _, err := s.SetConversationSkillSelection(ctx, actor, conversationID, clear); !errors.Is(err, ErrConversationBindingConflict) {
+		t.Fatalf("legacy omission overwrote a selected binding: %v", err)
+	}
+	clear.ExpectedBindingRevision = &initial.BindingRevision
+	gone, err := s.SetConversationSkillSelection(ctx, actor, conversationID, clear)
+	if err != nil || gone.Binding != nil || gone.BindingRevision != 2 {
+		t.Fatalf("lost cleared revision: %+v %v", gone, err)
+	}
+	bind.ExpectedBindingRevision = &gone.BindingRevision
+	renewed, err := s.SetConversationSkillSelection(ctx, actor, conversationID, bind)
+	if err != nil || renewed.BindingRevision != 3 {
+		t.Fatalf("same target rebind reused revision: %+v %v", renewed, err)
+	}
+	if _, err := s.SetConversationSkillSelection(ctx, actor, conversationID, clear); !errors.Is(err, ErrConversationBindingConflict) {
+		t.Fatalf("older window cleared same target after ABA: %v", err)
+	}
+	clear.ExpectedBindingRevision = &renewed.BindingRevision
 	if _, err := s.ReadConversationSkillSelection(ctx, "other", conversationID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("foreign principal could read local selection: %v", err)
 	}
@@ -58,6 +78,10 @@ func TestConversationSkillSelectionPinsOnlyMatchingFutureRun(t *testing.T) {
 	}
 	second := draft("Second version", 1)
 	activate(second, 1)
+	bind.ExpectedBindingRevision = &renewed.BindingRevision
+	if _, err := s.SetConversationSkillSelection(ctx, actor, conversationID, bind); !errors.Is(err, ErrState) {
+		t.Fatalf("current binding revision accepted stale source version: %v", err)
+	}
 	claim := func(key, conv, selectedScope string) Run {
 		t.Helper()
 		if _, err := s.Submit(ctx, key, "Organize this report", selectedScope, conv, true); err != nil {
@@ -106,6 +130,12 @@ func TestConversationSkillSelectionPinsOnlyMatchingFutureRun(t *testing.T) {
 	}
 	if got, err := s.SetConversationSkillSelection(ctx, actor, conversationID, clear); err != nil || got.Binding != nil {
 		t.Fatalf("clear selected skill when idle: %+v %v", got, err)
+	}
+	if _, err := s.db.Exec("UPDATE conversations SET archived=1 WHERE id=?", conversationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetConversationSkillSelection(ctx, actor, conversationID, clear); !errors.Is(err, ErrConversationArchived) {
+		t.Fatalf("archived binding changed: %v", err)
 	}
 	if old, err := s.ReadRunSkillBinding(ctx, actor, run.ID); err != nil || old.Binding == nil || old.Binding.Version != first.Version {
 		t.Fatalf("clearing future choice rewrote a run history: %+v %v", old, err)

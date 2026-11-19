@@ -35,14 +35,16 @@ CREATE TABLE IF NOT EXISTS run_skills (
 }
 
 type ConversationSkillBindingInput struct {
-	Action  string `json:"action"`
-	SkillID string `json:"skill_id,omitempty"`
-	Version int    `json:"version,omitempty"`
+	ExpectedBindingRevision *int   `json:"expected_binding_revision,omitempty"`
+	Action                  string `json:"action"`
+	SkillID                 string `json:"skill_id,omitempty"`
+	Version                 int    `json:"version,omitempty"`
 }
 
 type ConversationSkillSelection struct {
-	ConversationID string                    `json:"conversation_id"`
-	Binding        *ConversationSkillBinding `json:"binding"`
+	BindingRevision int                       `json:"binding_revision"`
+	ConversationID  string                    `json:"conversation_id"`
+	Binding         *ConversationSkillBinding `json:"binding"`
 }
 
 type ConversationSkillBinding struct {
@@ -55,9 +57,14 @@ type ConversationSkillBinding struct {
 
 func readConversationSkillSelection(ctx context.Context, tx *sql.Tx, conversation string) (ConversationSkillSelection, error) {
 	out := ConversationSkillSelection{ConversationID: conversation}
+	revision, err := conversationBindingRevision(ctx, tx, conversation, "skill")
+	if err != nil {
+		return out, err
+	}
+	out.BindingRevision = revision
 	var c ConversationSkillBinding
 	var active, approved sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT b.skill_id,s.scope_label,b.version,b.selected_at,s.active_version,v.approved_at
+	err = tx.QueryRowContext(ctx, `SELECT b.skill_id,s.scope_label,b.version,b.selected_at,s.active_version,v.approved_at
 FROM conversation_skill_bindings b JOIN personal_skills s ON s.id=b.skill_id
 JOIN personal_skill_versions v ON v.skill_id=b.skill_id AND v.version=b.version WHERE b.conversation_id=?`, conversation).
 		Scan(&c.SkillID, &c.Scope, &c.Version, &c.SelectedAt, &active, &approved)
@@ -118,6 +125,10 @@ func (s *Store) SetConversationSkillSelection(ctx context.Context, actor, conver
 	if err := checkConversationSubmission(tx, conversation); err != nil {
 		return ConversationSkillSelection{}, err
 	}
+	current, err := checkConversationBindingRevision(ctx, tx, conversation, "skill", input.ExpectedBindingRevision)
+	if err != nil {
+		return ConversationSkillSelection{}, err
+	}
 	var changed sql.Result
 	if input.Action == "clear_skill" {
 		changed, err = tx.ExecContext(ctx, "DELETE FROM conversation_skill_bindings WHERE conversation_id=?", conversation)
@@ -139,6 +150,9 @@ WHERE conversation_skill_bindings.skill_id<>excluded.skill_id OR conversation_sk
 			conversation, input.SkillID, input.Version, now())
 	}
 	if err != nil {
+		return ConversationSkillSelection{}, err
+	}
+	if err := advanceConversationBindingRevision(ctx, tx, conversation, "skill", current, input.ExpectedBindingRevision, changed); err != nil {
 		return ConversationSkillSelection{}, err
 	}
 	if n, err := changed.RowsAffected(); err != nil {

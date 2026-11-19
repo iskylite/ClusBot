@@ -118,4 +118,26 @@ func TestConversationSkillSelectionExplicitAPI(t *testing.T) {
 		out.ConversationID != chat.ConversationID || out.Binding == nil || out.Binding.SkillID != v.SkillID || out.Binding.Version != v.Version {
 		t.Fatalf("wrong no-model binding: %+v, %d, %v", out, res.StatusCode, err)
 	}
+	if out.BindingRevision != 1 {
+		t.Fatalf("GET missing authoritative binding revision: %+v", out)
+	}
+	rejected, err := a.ts.Client().Do(a.request(http.MethodPut, path, `{"action":"clear_skill","expected_binding_revision":0}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rejected.Body.Close()
+	var conflict map[string]string
+	if err := json.NewDecoder(rejected.Body).Decode(&conflict); err != nil || rejected.StatusCode != http.StatusConflict || conflict["code"] != "conversation_binding_conflict" {
+		t.Fatalf("lost actionable HTTP conflict: %d %+v %v", rejected.StatusCode, conflict, err)
+	}
+	finally, err := a.ts.Client().Do(a.request(http.MethodPut, path, `{"action":"clear_skill","expected_binding_revision":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer finally.Body.Close()
+	var cleared work.ConversationSkillSelection
+	if err := json.NewDecoder(finally.Body).Decode(&cleared); err != nil || finally.StatusCode != http.StatusOK || cleared.Binding != nil || cleared.BindingRevision != 2 {
+		t.Fatalf("wrong HTTP clear transition: %d %+v %v", finally.StatusCode, cleared, err)
+	}
+
 }

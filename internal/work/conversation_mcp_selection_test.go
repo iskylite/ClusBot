@@ -62,6 +62,73 @@ func TestConversationMCPSelectionOnlyNarrowsExistingReadCandidates(t *testing.T)
 	if err != nil || selected.Selection == nil || selected.LocalValidity != "locally_ready" {
 		t.Fatalf("current selection: %+v %v", selected, err)
 	}
+	clearFirst := ConversationMCPInput{Action: "clear_mcp_read", ExpectedBindingRevision: &selected.BindingRevision}
+	if selected.BindingRevision != 1 {
+		t.Fatalf("first selection has wrong revision: %+v", selected)
+	}
+	cleared, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, clearFirst)
+	if err != nil || cleared.Selection != nil || cleared.BindingRevision != 2 {
+		t.Fatalf("lost cleared MCP revision: %+v %v", cleared, err)
+	}
+	renew := choice("fixture-second")
+	renew.ExpectedBindingRevision = &cleared.BindingRevision
+	again, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, renew)
+	if err != nil || again.BindingRevision != 3 {
+		t.Fatalf("same MCP pin did not advance: %+v %v", again, err)
+	}
+	if _, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, clearFirst); !errors.Is(err, ErrConversationBindingConflict) {
+		t.Fatalf("stale clear won after MCP ABA: %v", err)
+	}
+	if _, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, choice("fixture-first")); !errors.Is(err, ErrConversationBindingConflict) {
+		t.Fatalf("omitting MCP revision overwrote existing selection: %v", err)
+	}
+	if same, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, choice("fixture-second")); err != nil || same.BindingRevision != 3 {
+		t.Fatalf("legacy no-op unexpectedly mutated revision: %+v %v", same, err)
+	}
+	drift := choice("fixture-first")
+	drift.ExpectedBindingRevision = &again.BindingRevision
+	drift.Revision++
+	if _, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, drift); !errors.Is(err, ErrToolPermission) {
+		t.Fatalf("CAS bypassed source connection revision: %v", err)
+	}
+
+	// Both windows use the same snapshot and attempt actual, distinct writes.
+	left := choice("fixture-first")
+	right := ConversationMCPInput{Action: "clear_mcp_read"}
+	left.ExpectedBindingRevision, right.ExpectedBindingRevision = &again.BindingRevision, &again.BindingRevision
+	begin := make(chan struct{})
+	outcomes := make(chan error, 2)
+	for _, window := range []ConversationMCPInput{left, right} {
+		go func() {
+			<-begin
+			_, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, window)
+			outcomes <- err
+		}()
+	}
+	close(begin)
+	successes, conflicts := 0, 0
+	for range 2 {
+		err := <-outcomes
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrConversationBindingConflict):
+			conflicts++
+		default:
+			t.Fatalf("unexpected competing edit: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("competing writes both applied: %d/%d", successes, conflicts)
+	}
+	next := choice("fixture-second")
+	current := again.BindingRevision + 1
+	next.ExpectedBindingRevision = &current
+	again, err = s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, next)
+	if err != nil || again.BindingRevision != current+1 {
+		t.Fatalf("cannot recover using actual revision: %+v %v", again, err)
+	}
+
 	tools, err := s.TaskTools(ctx)
 	if err != nil || len(tools) != 2 {
 		t.Fatalf("selection changed global grants: %+v %v", tools, err)
@@ -83,7 +150,7 @@ func TestConversationMCPSelectionOnlyNarrowsExistingReadCandidates(t *testing.T)
 		t.Fatalf("pin should be distinct from actual tool invocation: %+v %v", view, err)
 	}
 
-	clear := ConversationMCPInput{Action: "clear_mcp_read"}
+	clear := ConversationMCPInput{Action: "clear_mcp_read", ExpectedBindingRevision: &again.BindingRevision}
 	if _, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, clear); !errors.Is(err, ErrActive) {
 		t.Fatalf("changed an active run's context: %v", err)
 	}
@@ -102,6 +169,10 @@ func TestConversationMCPSelectionOnlyNarrowsExistingReadCandidates(t *testing.T)
 	exec("UPDATE runs SET status='interrupted' WHERE id=?", run.ID)
 	if value, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, clear); err != nil || value.Selection != nil {
 		t.Fatalf("idle selection clear: %+v %v", value, err)
+	}
+	exec("UPDATE conversations SET archived=1 WHERE id=?", chat.ConversationID)
+	if _, err := s.SetConversationMCPSelection(ctx, actor, chat.ConversationID, clear); !errors.Is(err, ErrConversationArchived) {
+		t.Fatalf("archived MCP binding changed: %v", err)
 	}
 	run.Generation = 1
 	if candidates, err := s.automaticTaskTools(ctx, run); !errors.Is(err, ErrReadCheckpoint) || len(candidates) != 0 {

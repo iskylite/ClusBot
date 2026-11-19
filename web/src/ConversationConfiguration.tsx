@@ -1,15 +1,20 @@
 import {useCallback,useEffect,useId,useRef,useState,type FormEvent} from 'react'
 import {api,APIError,type TaskToolOption} from './api'
 
-type SkillSelection={conversation_id:string;binding:null|{skill_id:string;scope:string;version:number;validity:string}}
+type SkillSelection={conversation_id:string;binding_revision:number;binding:null|{skill_id:string;scope:string;version:number;validity:string}}
 type ToolRef={connection_id:string;connection_revision:number;tool_name:string;tool_version:string}
-type ToolSelection={conversation_id:string;selection:ToolRef|null;local_validity?:string}
+type ToolSelection={conversation_id:string;binding_revision:number;selection:ToolRef|null;local_validity?:string}
 type SkillVersion={skill_id:string;scope_label:string;version:number;instructions:string;active:boolean;approved_at?:number}
 type Option={key:string;label:string;body:Record<string,unknown>}
 type Selection={key:string;label:string;validity:string}
+type Snapshot={revision:number;value:Selection|null}
 type Spec={title:string;choose:string;empty:string;path:string;clear:string;catalog:string;
-  project:(body:unknown,id:string)=>Selection|null;options:(body:unknown)=>Option[]}
+  project:(body:unknown,id:string)=>Snapshot;options:(body:unknown)=>Option[]}
 
+function snapshot(revision:number,value:Selection|null):Snapshot {
+  if(!Number.isSafeInteger(revision)||revision<0)throw new Error('无法核对会话配置版本，请更新应用或重新连接。')
+  return {revision,value}
+}
 const skillKey=(id:string,version:number)=>JSON.stringify([id,version])
 const toolKey=(t:ToolRef)=>JSON.stringify([t.connection_id,t.connection_revision,t.tool_name,t.tool_version])
 const skill:Spec={
@@ -19,7 +24,7 @@ const skill:Spec={
     const result=body as SkillSelection|undefined
     if(result?.conversation_id!==id||!('binding' in result))throw new Error('无法核对当前 Skill 绑定')
     const b=result.binding
-    return b?{key:skillKey(b.skill_id,b.version),label:b.scope+' · v'+b.version,validity:b.validity}:null
+    return snapshot(result.binding_revision,b?{key:skillKey(b.skill_id,b.version),label:b.scope+' · v'+b.version,validity:b.validity}:null)
   },
   options:body=>(Array.isArray(body)?body as SkillVersion[]:[]).filter(v=>v.active&&v.approved_at&&v.instructions)
     .map(v=>({key:skillKey(v.skill_id,v.version),label:v.scope_label+' · v'+v.version,body:{action:'bind_skill',skill_id:v.skill_id,version:v.version}})),
@@ -31,7 +36,7 @@ const mcp:Spec={
     const result=body as ToolSelection|undefined
     if(result?.conversation_id!==id||!('selection' in result))throw new Error('无法核对当前 MCP 绑定')
     const t=result.selection
-    return t?{key:toolKey(t),label:t.tool_name+' · 连接版本 '+t.connection_revision,validity:result.local_validity??'unavailable'}:null
+    return snapshot(result.binding_revision,t?{key:toolKey(t),label:t.tool_name+' · 连接版本 '+t.connection_revision,validity:result.local_validity??'unavailable'}:null)
   },
   options:body=>(Array.isArray(body)?body as TaskToolOption[]:[]).filter(o=>o.tool?.allowed&&!o.tool.schema_error)
     .map(o=>{
@@ -43,7 +48,8 @@ const mcp:Spec={
 function BindingEditor({spec,id,open,disabled}:{spec:Spec;id:string;open:boolean;disabled:boolean}){
   const title=useId()
   const path='/conversations/'+encodeURIComponent(id)+spec.path
-  const [current,setCurrent]=useState<Selection|null>()
+  const [server,setServer]=useState<Snapshot>()
+  const current=server?.value
   const [options,setOptions]=useState<Option[]>()
   const [choice,setChoice]=useState('')
   const [busy,setBusy]=useState(false)
@@ -60,7 +66,7 @@ function BindingEditor({spec,id,open,disabled}:{spec:Spec;id:string;open:boolean
       const [state,catalog]=await Promise.allSettled([api(path),api(spec.catalog)])
       if(token!==generation.current)return
       if(state.status==='rejected')throw state.reason
-      setCurrent(spec.project(state.value,id))
+      setServer(spec.project(state.value,id))
       if(catalog.status==='rejected')throw catalog.reason
       setOptions(spec.options(catalog.value));setStale(false)
     }catch(e){if(token===generation.current)setError(e instanceof Error?e.message:'暂时无法读取配置')}
@@ -69,22 +75,25 @@ function BindingEditor({spec,id,open,disabled}:{spec:Spec;id:string;open:boolean
   const selected=options?.find(o=>o.key===choice)
   const ready=current?.validity==='valid'||current?.validity==='locally_ready'
   async function save(option:Option|null){
-    if(disabled||stale||lock.current||current===undefined||(!option&&!current))return
+    if(disabled||stale||lock.current||!server||(!option&&!current))return
     lock.current=true;generation.current++;setBusy(true);setNotice('');setError('')
     let recheck=false
     try{
       const actual=spec.project(await api(path),id)
-      if(JSON.stringify(actual)!==JSON.stringify(current)){
-        setCurrent(actual);setStale(true);recheck=true
+      if(actual.revision!==server.revision||JSON.stringify(actual.value)!==JSON.stringify(server.value)){
+        setServer(actual);setStale(true);recheck=true
         setNotice('服务端当前选择已变化。未保存，已保留你的选择，请重新核对。')
         return
       }
-      const value=spec.project(await api(path,option?.body??{action:spec.clear},'PUT'),id)
-      if(option?(value?.key!==option.key):value!==null)throw new Error('无法核对配置回执')
-      setCurrent(value);setChoice('');setNotice(option?'已保存为本会话的选择。':'已清除本会话的选择。')
+      const request={...(option?.body??{action:spec.clear}),expected_binding_revision:actual.revision}
+      const value=spec.project(await api(path,request,'PUT'),id)
+      const targetKey=option?.key??null
+      const expectedReceipt=actual.revision+(targetKey!==(actual.value?.key??null)?1:0)
+      if(value.revision!==expectedReceipt||(value.value?.key??null)!==targetKey)throw new Error('无法核对配置回执')
+      setServer(value);setChoice('');setNotice(option?'已保存为本会话的选择。':'已清除本会话的选择。')
     }catch(e){
       setStale(true)
-      setError(e instanceof APIError&&e.status===409?'配置已变化或会话正忙。没有自动重发，核对当前状态后再试。':e instanceof Error?e.message:'没有收到配置回执，请先重新核对。')
+      setError(e instanceof APIError&&e.code==='conversation_binding_conflict'?'绑定已被其他操作修改。已保留你的选择，重新核对后再保存。':e instanceof APIError&&e.status===409?'配置已变化或会话正忙。没有自动重发，核对当前状态后再试。':e instanceof Error?e.message:'没有收到配置回执，请先重新核对。')
     }finally{
       lock.current=false;setBusy(false)
       if(recheck)void reload()

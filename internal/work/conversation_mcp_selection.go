@@ -29,14 +29,16 @@ type MCPReadSelection struct {
 }
 
 type ConversationMCPInput struct {
-	Action string `json:"action"`
+	ExpectedBindingRevision *int   `json:"expected_binding_revision,omitempty"`
+	Action                  string `json:"action"`
 	MCPReadSelection
 }
 
 type ConversationMCPSelection struct {
-	ConversationID string            `json:"conversation_id"`
-	Selection      *MCPReadSelection `json:"selection"`
-	LocalValidity  string            `json:"local_validity,omitempty"`
+	BindingRevision int               `json:"binding_revision"`
+	ConversationID  string            `json:"conversation_id"`
+	Selection       *MCPReadSelection `json:"selection"`
+	LocalValidity   string            `json:"local_validity,omitempty"`
 }
 
 func (s *Store) selectedMCPOption(ctx context.Context, tx *sql.Tx, sel MCPReadSelection) (TaskToolOption, error) {
@@ -76,8 +78,13 @@ AND EXISTS(SELECT 1 FROM (
 
 func (s *Store) readConversationMCPSelection(ctx context.Context, tx *sql.Tx, conversation string) (ConversationMCPSelection, error) {
 	out := ConversationMCPSelection{ConversationID: conversation}
+	revision, err := conversationBindingRevision(ctx, tx, conversation, "mcp")
+	if err != nil {
+		return out, err
+	}
+	out.BindingRevision = revision
 	var sel MCPReadSelection
-	err := tx.QueryRowContext(ctx, `SELECT connection_id,connection_revision,tool_name,tool_version
+	err = tx.QueryRowContext(ctx, `SELECT connection_id,connection_revision,tool_name,tool_version
 FROM conversation_mcp_selections WHERE conversation_id=?`, conversation).Scan(&sel.ConnectionID, &sel.Revision, &sel.ToolName, &sel.ToolVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
@@ -131,17 +138,27 @@ func (s *Store) SetConversationMCPSelection(ctx context.Context, actor, conversa
 	if err := checkConversationSubmission(tx, conversation); err != nil {
 		return ConversationMCPSelection{}, err
 	}
+	current, err := checkConversationBindingRevision(ctx, tx, conversation, "mcp", in.ExpectedBindingRevision)
+	if err != nil {
+		return ConversationMCPSelection{}, err
+	}
+	var changed sql.Result
 	if in.Action == "clear_mcp_read" {
-		_, err = tx.ExecContext(ctx, "DELETE FROM conversation_mcp_selections WHERE conversation_id=?", conversation)
+		changed, err = tx.ExecContext(ctx, "DELETE FROM conversation_mcp_selections WHERE conversation_id=?", conversation)
 	} else {
 		if _, err := s.selectedMCPOption(ctx, tx, sel); err != nil {
 			return ConversationMCPSelection{}, err
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO conversation_mcp_selections VALUES(?,?,?,?,?)
+		changed, err = tx.ExecContext(ctx, `INSERT INTO conversation_mcp_selections VALUES(?,?,?,?,?)
 ON CONFLICT(conversation_id) DO UPDATE SET connection_id=excluded.connection_id,connection_revision=excluded.connection_revision,
-tool_name=excluded.tool_name,tool_version=excluded.tool_version`, conversation, sel.ConnectionID, sel.Revision, sel.ToolName, sel.ToolVersion)
+tool_name=excluded.tool_name,tool_version=excluded.tool_version
+WHERE conversation_mcp_selections.connection_id<>excluded.connection_id OR conversation_mcp_selections.connection_revision<>excluded.connection_revision
+ OR conversation_mcp_selections.tool_name<>excluded.tool_name OR conversation_mcp_selections.tool_version<>excluded.tool_version`, conversation, sel.ConnectionID, sel.Revision, sel.ToolName, sel.ToolVersion)
 	}
 	if err != nil {
+		return ConversationMCPSelection{}, err
+	}
+	if err := advanceConversationBindingRevision(ctx, tx, conversation, "mcp", current, in.ExpectedBindingRevision, changed); err != nil {
 		return ConversationMCPSelection{}, err
 	}
 	out, err := s.readConversationMCPSelection(ctx, tx, conversation)
