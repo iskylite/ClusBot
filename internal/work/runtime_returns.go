@@ -73,19 +73,49 @@ func returnLoan(tx *sql.Tx, objectRef string, v ReturnVerification, now int64) e
 	if !v.RepairCompleted {
 		return fmt.Errorf("专项维修未完成（专项维修保持借出状态）")
 	}
-	// 同事务结束有效 loan 并进入待复核。
-	res, err := tx.Exec(`UPDATE loans SET state='returned', returned_at=? WHERE object_ref=? AND state='active'`,
-		now, objectRef)
+	// User attestation cannot override a durable, unresolved operation.
+	held, err := targetHasLocalExclusiveHold(tx, objectRef)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return fmt.Errorf("对象 %s 无有效借用（归还与 loan 更新原子一致）", objectRef)
+	if held {
+		return fmt.Errorf("%w：资产仍有运行中或待核对的占用，不能确认归还", ErrConflict)
 	}
-	// 归还后相关证据重新复查（不能自动恢复历史在役）：资产回待复核。
-	if _, err := tx.Exec(`UPDATE ops_assets SET state=?, updated_at=? WHERE object_ref=?`,
-		AssetStateRecheck, now, objectRef); err != nil {
+	var loanID string
+	var epoch int
+	var handoverFreeze int64
+	if err := tx.QueryRow(`SELECT l.loan_id,l.ownership_epoch_at_lend,h.frozen_at
+FROM loans l JOIN loan_handovers h ON h.handover_id=l.handover_id AND h.object_ref=l.object_ref
+WHERE l.object_ref=? AND l.state='active' AND h.intent='lend' AND h.state='confirmed'`, objectRef).
+		Scan(&loanID, &epoch, &handoverFreeze); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w：对象没有可核对的有效借用", ErrState)
+		}
 		return err
+	}
+	// End only this confirmed loan. The handover's own freeze ends here,
+	// but a separate administrative freeze must remain in effect.
+	res, err := tx.Exec(`UPDATE ops_assets SET state=?, ownership_epoch=ownership_epoch+1, updated_at=?,
+frozen_at=CASE WHEN frozen_at=? AND frozen_by='' AND freeze_reason='交接冻结' THEN 0 ELSE frozen_at END,
+freeze_reason=CASE WHEN frozen_at=? AND frozen_by='' AND freeze_reason='交接冻结' THEN '' ELSE freeze_reason END
+WHERE object_ref=? AND state=? AND ownership_epoch=?`,
+		AssetStateRecheck, now, handoverFreeze, handoverFreeze, objectRef, AssetStateLent, epoch)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return fmt.Errorf("%w：归还时的资产状态或责任版本已变化", ErrConflict)
+	}
+	res, err = tx.Exec(`UPDATE loans SET state='returned', returned_at=? WHERE loan_id=? AND state='active'`, now, loanID)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrConflict
 	}
 	// 交接确认（归还后相关证据重新复查）。
 	return recordAudit(tx, AuditEvent{

@@ -170,7 +170,63 @@ func TestLoanAndBenchmarkUseSameTargetOwnership(t *testing.T) {
 	if err != nil || asset.FrozenAt != 0 || asset.State == AssetStateLent {
 		t.Fatalf("rejected loan mutated asset: %+v %v", asset, err)
 	}
+	// Reproduce the historical overlap (before the production lend guard)
+	// using the old unchecked handover path, without affecting a real asset.
+	legacy, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legacy.Rollback()
+	h, err := initiateLoanHandover(legacy, LoanHandover{ObjectRef: "node-held", Intent: "lend"}, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loan, err := confirmLoanHandover(legacy, h.HandoverID, actor, "borrower", stamp+900000, "", stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	verified := ReturnVerification{IdentityVerified: true, CurrentStateKnown: true, RepairCompleted: true, OperationsReconciled: true, ResponsibilityTransferred: true}
+	if err := s.ReturnAsset(ctx, "node-held", verified); !errors.Is(err, ErrConflict) {
+		t.Fatalf("attested return bypassed an unresolved operation: %v", err)
+	}
+	var loanState string
+	if err := s.db.QueryRow("SELECT state FROM loans WHERE loan_id=?", loan.LoanID).Scan(&loanState); err != nil || loanState != "active" {
+		t.Fatalf("conflicting return changed loan: %s %v", loanState, err)
+	}
+	if err := s.ReturnAsset(ctx, "node-disjoint", verified); err != nil {
+		t.Fatalf("verified disjoint return: %v", err)
+	}
+	returned, err := readAsset(s.db, "node-disjoint")
+	if err != nil || returned.State != AssetStateRecheck || returned.FrozenAt != 0 || returned.FreezeReason != "" {
+		t.Fatalf("verified return retained its stale loan freeze or did not require recheck: %+v %v", returned, err)
+	}
+	if _, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{RequestKey: "after-return", Profile: "node-disjoint", Version: 1}, p); err != nil {
+		t.Fatalf("verified return did not permit fresh scoped precheck and enqueue: %v", err)
+	}
+
 	if p.started != 0 || p.looked != 0 || p.read != 0 {
 		t.Fatalf("unexpected provider calls: %+v", p)
+	}
+}
+
+func TestReturnPreservesIndependentAssetFreeze(t *testing.T) {
+	s, _ := setupV3P420(t, "independent-return-freeze.db")
+	asset, err := readAsset(s.db, "node-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE ops_assets SET frozen_by='admin',freeze_reason='external review' WHERE object_ref='node-1'"); err != nil {
+		t.Fatal(err)
+	}
+	v := ReturnVerification{IdentityVerified: true, CurrentStateKnown: true, RepairCompleted: true, OperationsReconciled: true, ResponsibilityTransferred: true}
+	if err := s.ReturnAsset(t.Context(), "node-1", v); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := readAsset(s.db, "node-1")
+	if err != nil || fresh.State != AssetStateRecheck || fresh.FrozenAt != asset.FrozenAt || fresh.FrozenBy != "admin" || fresh.FreezeReason != "external review" || fresh.OwnershipEpoch != asset.OwnershipEpoch+1 {
+		t.Fatalf("verified return overwrote another freeze or reused authority: %+v %v", fresh, err)
 	}
 }
