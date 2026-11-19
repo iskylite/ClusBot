@@ -53,6 +53,7 @@ type RecoveryReport struct {
 	AppliedTimerEvents int // 已消费的 Timer 到期事件（不等于完成后续工作）
 	DeliveredTimers    int // 投递的到期 Timer 数
 	TriggeredSchedules int // 触发的计划数
+	ExpiredApprovals   int // 已持久记录的到期审批，不是人工拒绝
 	ReadyUnits         int // 就绪单元数
 }
 
@@ -116,6 +117,12 @@ AND state='received' AND payload_ref<>''`); err != nil {
 		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
 	}
 	if _, err := s.consumeTimerWaitFollowups(ctx, now, 50); err != nil {
+		report.FailedPhase = PhaseWaitsTimers
+		report.Failure = err.Error()
+		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
+	}
+	report.ExpiredApprovals, err = s.expirePendingApprovals(ctx, now, approvalExpiryBatch)
+	if err != nil {
 		report.FailedPhase = PhaseWaitsTimers
 		report.Failure = err.Error()
 		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
@@ -387,6 +394,9 @@ func (l *RuntimeLoop) tick(ctx context.Context) {
 		l.recordFailure()
 	}
 	if _, err := l.store.consumeTimerWaitFollowups(ctx, now, 50); err != nil {
+		l.recordFailure()
+	}
+	if _, err := l.store.expirePendingApprovals(ctx, now, approvalExpiryBatch); err != nil {
 		l.recordFailure()
 	}
 	if _, err := scanDueSchedules(l.store.db, now, 20); err != nil {

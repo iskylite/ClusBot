@@ -95,16 +95,19 @@ FROM approvals WHERE request_key=?`, requestKey).
 	if err != nil {
 		return Approval{}, err
 	}
-	// 重复决定：返回原决定（幂等）。
+	// 重复人工决定返回原决定；到期不伪装成已执行的人工决定。
+	if existing.Decision == "expired" {
+		return Approval{}, ErrApprovalExpired
+	}
 	if existing.Decision != "pending" {
 		return existing, nil
 	}
 	// 过期：拒绝。
 	if existing.ExpiresAt > 0 && now >= existing.ExpiresAt {
-		if _, err := tx.Exec(`UPDATE approvals SET decision='expired', decided_at=? WHERE approval_id=?`, now, existing.ApprovalID); err != nil {
+		if err := expireOneApproval(tx, existing.ApprovalID, now); err != nil {
 			return Approval{}, err
 		}
-		return Approval{}, fmt.Errorf("确认已过期")
+		return Approval{}, ErrApprovalExpired
 	}
 	// 内容/权限/版本变化：旧确认无效（需重判）。
 	if expectedVersions.ContractRevision > 0 && existing.ContractRevision != expectedVersions.ContractRevision {
@@ -217,6 +220,14 @@ FROM approvals WHERE approval_id=?`, approvalID).
 		return Approval{}, err
 	}
 	updated, err := decideApproval(tx, a.RequestKey, decision, decidedBy, Approval{}, now())
+	if errors.Is(err, ErrApprovalExpired) {
+		// Commit the authoritative expiry and its feed event, even though the
+		// requested human decision cannot be given after the deadline.
+		if commitErr := tx.Commit(); commitErr != nil {
+			return Approval{}, commitErr
+		}
+		return Approval{}, err
+	}
 	if err != nil {
 		return Approval{}, err
 	}
