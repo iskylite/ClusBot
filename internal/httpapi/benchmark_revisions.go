@@ -108,3 +108,26 @@ func (s Server) reopenBenchmarkRevisionChat(w http.ResponseWriter, r *http.Reque
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) confirmBenchmarkRevisionChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	conversation, run := r.PathValue("id"), r.PathValue("run_id")
+	if !validID(conversation) || !validID(run) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	var in work.BenchmarkRevisionChatConfirmInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.ConfirmBenchmarkRevisionChat(r.Context(), s.principal(r), conversation, run, in, s.BenchmarkProvider)
+	if errors.Is(err, work.ErrBenchmarkRevisionPreviewStale) {
+		fail(w, http.StatusConflict, "benchmark_revision_preview_stale", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,4 +128,17 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 		t.Fatalf("wrong empty no-model inventory: %+v %v", page, err)
 	}
 
+}
+
+func TestBenchmarkChatConfirmDoesNotAcceptClientPlan(t *testing.T) {
+	a := setupA1(t, filepath.Join(t.TempDir(), "revision-confirm-api.sqlite"))
+	defer a.close()
+	path := "/api/v1/conversations/" + strings.Repeat("a", 32) + "/benchmark-revision-preview/" + strings.Repeat("b", 32) + "/confirm"
+	const valid = `{"action":"apply_benchmark_revision","expected_revision":1}`
+	if status, result := a.post(path, `{"action":"apply_benchmark_revision","expected_revision":1,"cases":[]}`); status != http.StatusBadRequest {
+		t.Fatalf("client case payload accepted: %d %+v", status, result)
+	}
+	if status, result := a.post(path, valid); status != http.StatusNotFound {
+		t.Fatalf("unknown server preview ref accepted: %d %+v", status, result)
+	}
 }

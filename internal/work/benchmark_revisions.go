@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const benchmarkRevisionsSchema = `
@@ -47,11 +48,14 @@ type benchmarkRevisionCase struct {
 }
 
 func (s *Store) ReviseBenchmark(ctx context.Context, actor, task string, req BenchmarkRevisionInput, provider BenchmarkProvider, apply bool) (BenchmarkRevision, error) {
+	return s.reviseBenchmark(ctx, actor, task, req, provider, apply, nil)
+}
+
+func (s *Store) reviseBenchmark(ctx context.Context, actor, task string, req BenchmarkRevisionInput, provider BenchmarkProvider, apply bool, confirmation *benchmarkRevisionConfirmation) (BenchmarkRevision, error) {
 	if actor == "" {
 		return BenchmarkRevision{}, ErrAuthorizationDenied
 	}
-	if req.ExpectedRevision < 1 || len(req.Cases) < 1 || len(req.Cases) > 64 ||
-		(apply && (len(req.RequestKey) < 8 || len(req.RequestKey) > 128)) {
+	if confirmation == nil && strings.HasPrefix(req.RequestKey, benchmarkChatConfirmationPrefix) {
 		return BenchmarkRevision{}, ErrBenchmarkInput
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -59,6 +63,30 @@ func (s *Store) ReviseBenchmark(ctx context.Context, actor, task string, req Ben
 		return BenchmarkRevision{}, err
 	}
 	defer tx.Rollback()
+	if confirmation != nil {
+		recorded, err := checkedRecordedBenchmarkPreview(tx, actor, confirmation.conversation, confirmation.run)
+		if err != nil {
+			return BenchmarkRevision{}, err
+		}
+		if confirmation.expected != recorded.Proposal.ExpectedRevision {
+			return BenchmarkRevision{}, ErrBenchmarkRevisionPreviewStale
+		}
+		var archived bool
+		if err := tx.QueryRowContext(ctx, "SELECT archived FROM conversations WHERE id=?", confirmation.conversation).Scan(&archived); err != nil {
+			return BenchmarkRevision{}, err
+		}
+		if archived {
+			return BenchmarkRevision{}, ErrConversationArchived
+		}
+
+		task = recorded.TaskID
+		req = BenchmarkRevisionInput{ExpectedRevision: recorded.Proposal.ExpectedRevision,
+			RequestKey: benchmarkChatConfirmationPrefix + confirmation.run, Cases: recorded.Proposal.Preview.Profile.Cases}
+	}
+	if req.ExpectedRevision < 1 || len(req.Cases) < 1 || len(req.Cases) > 64 ||
+		(apply && (len(req.RequestKey) < 8 || len(req.RequestKey) > 128)) {
+		return BenchmarkRevision{}, ErrBenchmarkInput
+	}
 	var active, base int
 	var key, state string
 	var stopping bool
@@ -271,7 +299,11 @@ VALUES(?,?,?,?,?,'queued',?)`, step, task, c.Key, meta.targets, meta.grants, toJ
 	if _, err := tx.ExecContext(ctx, "UPDATE benchmark_runs SET plan_revision=? WHERE task_id=?", out.Revision, task); err != nil {
 		return BenchmarkRevision{}, err
 	}
-	if err := recordAudit(tx, AuditEvent{TaskID: task, Event: "benchmark_task_revised", Actor: actor,
+	var previewRun string
+	if confirmation != nil {
+		previewRun = confirmation.run
+	}
+	if err := recordAudit(tx, AuditEvent{TaskID: task, RunID: previewRun, Event: "benchmark_task_revised", Actor: actor,
 		Summary: fmt.Sprintf("单次测试方案修订 %d", out.Revision), OccurredAt: stamp}); err != nil {
 		return BenchmarkRevision{}, err
 	}

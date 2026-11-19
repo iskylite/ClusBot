@@ -148,19 +148,11 @@ var ErrBenchmarkRevisionPreviewStale = errors.New("预演已失效，请按当�
 // It asks neither a client nor the model to supply the old plan/difference.
 // Fresh asset detail is computed by the ordinary preview and never re-saved.
 func (s *Store) ReopenBenchmarkRevisionChat(ctx context.Context, actor, conversation, run string, provider BenchmarkProvider) (BenchmarkRevisionChatReceipt, error) {
-	if actor == "" {
-		return BenchmarkRevisionChatReceipt{}, sql.ErrNoRows
-	}
-	recorded, err := readBenchmarkRevisionChat(s.db, actor, conversation, run)
+	recorded, err := checkedRecordedBenchmarkPreview(s.db, actor, conversation, run)
 	if err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
 	p := recorded.Proposal
-	if recorded.RunID != run || recorded.ConversationID != conversation || p.State != "preview_only" ||
-		p.Method != "model_interpreted" || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
-		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") {
-		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
-	}
 	current, err := s.benchmarkRevisionProposalBase(ctx, actor, recorded.TaskID, p.ExpectedRevision)
 	if errors.Is(err, ErrTaskRevision) {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
@@ -185,4 +177,61 @@ func (s *Store) ReopenBenchmarkRevisionChat(ctx context.Context, actor, conversa
 	}
 	recorded.Proposal = fresh
 	return recorded, nil
+}
+
+func checkedRecordedBenchmarkPreview(q recordsQuerier, actor, conversation, run string) (BenchmarkRevisionChatReceipt, error) {
+	if actor == "" {
+		return BenchmarkRevisionChatReceipt{}, sql.ErrNoRows
+	}
+	recorded, err := readBenchmarkRevisionChat(q, actor, conversation, run)
+	if err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	p := recorded.Proposal
+	if recorded.RunID != run || recorded.ConversationID != conversation || p.State != "preview_only" ||
+		p.Method != "model_interpreted" || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
+		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
+	}
+	return recorded, nil
+}
+
+const benchmarkChatConfirmationPrefix = "chat-preview-confirm:"
+
+type benchmarkRevisionConfirmation struct {
+	conversation string
+	run          string
+	expected     int
+}
+
+type BenchmarkRevisionChatConfirmInput struct {
+	Action           string `json:"action"`
+	ExpectedRevision int    `json:"expected_revision"`
+}
+
+type BenchmarkRevisionChatConfirmation struct {
+	RunID    string `json:"preview_run_id"`
+	Revision int    `json:"revision"`
+	State    string `json:"state"`
+}
+
+// ConfirmBenchmarkRevisionChat applies precisely a server-stored preview,
+// rechecking authority and write preconditions in the same transaction.
+// Repeated confirmations return only their original revision receipt.
+func (s *Store) ConfirmBenchmarkRevisionChat(ctx context.Context, actor, conversation, run string, input BenchmarkRevisionChatConfirmInput, provider BenchmarkProvider) (BenchmarkRevisionChatConfirmation, error) {
+	if input.Action != "apply_benchmark_revision" || input.ExpectedRevision < 1 || conversation == "" || run == "" {
+		return BenchmarkRevisionChatConfirmation{}, ErrBenchmarkInput
+	}
+	applied, err := s.reviseBenchmark(ctx, actor, "", BenchmarkRevisionInput{}, provider, true,
+		&benchmarkRevisionConfirmation{conversation: conversation, run: run, expected: input.ExpectedRevision})
+	switch {
+	case errors.Is(err, ErrAuthorizationDenied):
+		return BenchmarkRevisionChatConfirmation{}, ErrAuthorizationDenied
+	case errors.Is(err, ErrTaskRevision), errors.Is(err, ErrConflict), errors.Is(err, ErrState),
+		errors.Is(err, ErrBenchmarkInput), errors.Is(err, ErrBenchmarkBinding):
+		return BenchmarkRevisionChatConfirmation{}, ErrBenchmarkRevisionPreviewStale
+	case err != nil:
+		return BenchmarkRevisionChatConfirmation{}, err
+	}
+	return BenchmarkRevisionChatConfirmation{RunID: run, Revision: applied.Revision, State: "applied"}, nil
 }
