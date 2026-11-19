@@ -72,3 +72,20 @@ func (s Server) cancelConversation(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusAccepted, run)
 }
+
+func (s Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
+	if !validID(r.PathValue("id")) {
+		fail(w, 400, "invalid_conversation", "会话标识无效")
+		return
+	}
+	page, err := s.Store.ReadConversationEvents(r.Context(), s.principal(r), r.PathValue("id"), r.URL.Query().Get("cursor"))
+	if errors.Is(err, work.ErrConversationEventCursorReset) {
+		fail(w, 409, "conversation_event_cursor_reset", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, 200, page)
+}

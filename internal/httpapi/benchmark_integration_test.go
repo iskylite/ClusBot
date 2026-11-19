@@ -220,6 +220,14 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	intent := work.BenchmarkRevisionChatInput{Action: "preview_benchmark_revision", SourceRunID: saved.RunID, RequestID: "integration-revision-001"}
 	jsonCall(http.MethodPost, chatPath, map[string]any{"action": intent.Action, "source_run_id": saved.RunID, "client_request_id": intent.RequestID, "task_id": accepted.TaskID}, nil, http.StatusBadRequest)
 	jsonCall(http.MethodPost, "/api/v1/conversations/"+suggestion.ConversationID+"/benchmark-revision-preview", intent, nil, http.StatusNotFound)
+	conversationFeed := "/api/v1/conversations/" + chat.ConversationID + "/events"
+	var beforeFeed work.ConversationEventPage
+	jsonCall(http.MethodGet, conversationFeed, nil, &beforeFeed, http.StatusOK)
+	if len(beforeFeed.Events) == 0 || beforeFeed.Events[len(beforeFeed.Events)-1].Kind != "benchmark.revision_suggested" || beforeFeed.Events[len(beforeFeed.Events)-1].RunID != saved.RunID {
+		t.Fatalf("reconnect did not read the labelled revision: %+v", beforeFeed)
+	}
+	jsonCall(http.MethodGet, "/api/v1/conversations/"+suggestion.ConversationID+"/events?cursor="+beforeFeed.Cursor, nil, nil, http.StatusConflict)
+
 	var pending work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodPost, chatPath, intent, &pending, http.StatusOK)
 	if pending.Proposal.State != "preview_only" || pending.Proposal.Preview.AssetImpact == nil || pending.SourceRunID != saved.RunID {
@@ -257,6 +265,12 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	jsonCall(http.MethodPost, chatPath, intent, &pendingAgain, http.StatusOK)
 	if pendingAgain.RunID != pending.RunID || modelCalls.Load() != 2 {
 		t.Fatalf("the same explicit click replayed model or generated a new preview: %+v", pendingAgain)
+	}
+
+	var afterFeed work.ConversationEventPage
+	jsonCall(http.MethodGet, conversationFeed+"?cursor="+beforeFeed.Cursor, nil, &afterFeed, http.StatusOK)
+	if len(afterFeed.Events) != 1 || afterFeed.Events[0].Kind != "benchmark.revision_preview" || afterFeed.Events[0].RunID != pending.RunID {
+		t.Fatalf("reconnect did not catch the real persisted preview event: %+v", afterFeed)
 	}
 
 	var reopened work.BenchmarkRevisionChatReceipt
