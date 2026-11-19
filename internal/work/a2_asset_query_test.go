@@ -433,3 +433,90 @@ WHERE l.lease_id=? AND l.state='reclaimed' AND u.state='ready'`, due[0].claim.Le
 		t.Fatalf("later saturated task did not finish: %+v %v", fresh, err)
 	}
 }
+
+func TestSpecializedDeterministicTaskDoesNotAcceptGenericFollowup(t *testing.T) {
+	for _, kind := range []string{"asset-acceptance", "ticket-maintenance"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := t.Context()
+			var s *Store
+			var taskID string
+			if kind == "asset-acceptance" {
+				s = setupA2(t, "typed-query.db")
+				sub, err := s.SubmitAssetAcceptanceQuery(ctx, "specialized-query", "node-1", "user:session")
+				if err != nil {
+					t.Fatal(err)
+				}
+				taskID = sub.TaskID
+			} else {
+				store, fake, provider := setupB(t, "typed-ticket.db")
+				s = store
+				sub, err := s.QueueTicketCreate(ctx, TicketCreateRequest{
+					RequestKey: "specialized-ticket", ObjectRef: "node-1", FaultEvidence: "本地测试故障", Subject: "user:ops",
+				}, provider)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := s.db.QueryRowContext(ctx, "SELECT task_id FROM operations WHERE operation_id=?", sub.OperationID).Scan(&taskID); err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if fake.createCount() != 0 {
+						t.Fatal("ordinary continuation reached external ticket dispatch")
+					}
+				}()
+			}
+			before, err := s.Detail(taskID, true)
+			if err != nil || before.Task == nil {
+				t.Fatalf("expected production-created task: %+v / %v", before, err)
+			}
+			run, err := s.SubmitWithDelivery(ctx, "mistaken-generic-follow-up", "继续办理", "", before.Conversation.ID, true, Delivery{})
+			if !errors.Is(err, ErrDeterministicTaskRecoveryUnsupported) || run.ID != "" {
+				t.Errorf("specialized task silently entered generic assistant: %+v / %v", run, err)
+			}
+			for action, attempt := range map[string]func(context.Context, string, string, int) (Run, error){
+				"resume": s.Resume, "retry": s.RetryTask, "reassign": s.ReassignTask,
+			} {
+				if run, err := attempt(ctx, taskID, "specialized-"+action, before.Task.Revision); !errors.Is(err, ErrDeterministicTaskRecoveryUnsupported) || run.ID != "" {
+					t.Fatalf("%s created a generic transition: %+v / %v", action, run, err)
+				}
+			}
+			routed, err := s.SubmitRoutedChat(ctx, "routed-specialized", "继续办理"+before.Task.Title, "", "", Delivery{}, func(_ context.Context, text string, _ []Message, candidates []RouteCandidate, _ int) (DelegationResult, error) {
+				return DelegationResult{Route: &RouteDecision{Kind: "follow_up", TaskID: taskID, Revision: before.Task.Revision, Fragment: text}}, nil
+			})
+			if !errors.Is(err, ErrDeterministicTaskRecoveryUnsupported) || routed.ID != "" {
+				t.Fatalf("unsafe or unclear Router intent: %+v / %v", routed, err)
+			}
+			discussion, err := s.SubmitWithDelivery(ctx, "standalone-discussion", "解释这个功能如何工作", "", before.Conversation.ID, false, Delivery{})
+			if err != nil || discussion.ConversationID != before.Conversation.ID || discussion.TaskID != "" || discussion.Status != "queued" {
+				t.Fatalf("ordinary discussion should remain standalone: %+v / %v", discussion, err)
+			}
+			discussion, err = s.claim(ctx)
+			if err != nil || discussion.ID == "" || discussion.TaskID != "" || discussion.ConversationID != before.Conversation.ID {
+				t.Fatalf("discussion claimed as specialized task: %+v / %v", discussion, err)
+			}
+			s.execute(ctx, testProvider(func(_ context.Context, _ []Message, asTask bool, _ int, emit func(string) error) (*TokenUsage, error) {
+				if asTask {
+					return nil, errors.New("discussion mislabeled as a task")
+				}
+				return nil, emit("仅解释，不执行")
+			}), discussion, RunLimits{OutputTokens: 64, ActiveTime: time.Minute, ModelTimeout: time.Minute})
+			after, err := s.Detail(taskID, true)
+			if err != nil || *after.Task != *before.Task || after.Run != nil {
+				t.Errorf("dedicated task state changed: %+v / %+v / %v", before.Task, after.Task, err)
+			}
+			var ordinaryRuns int
+			if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM runs WHERE task_id=?", taskID).Scan(&ordinaryRuns); err != nil || ordinaryRuns != 0 {
+				t.Fatalf("deterministic task gained ordinary runs: %d / %v", ordinaryRuns, err)
+			}
+			var state string
+			query, want := "SELECT state FROM work_units WHERE task_id=?", "ready"
+			if kind == "ticket-maintenance" {
+				query, want = "SELECT state FROM operations WHERE task_id=?", "registered"
+			}
+			if err := s.db.QueryRowContext(ctx, query, taskID).Scan(&state); err != nil || state != want {
+				t.Fatalf("specialized queue/operation changed: %q want %q / %v", state, want, err)
+			}
+
+		})
+	}
+}

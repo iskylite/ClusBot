@@ -142,6 +142,52 @@ func requireNotDiscoveryRecovery(q recordsQuerier, taskID string) error {
 	return nil
 }
 
+var ErrDeterministicTaskRecoveryUnsupported = errors.New("资产验收查询和工单由专用运行器处理，不能用普通助手继续、重试或重新分派；请查看原查询或工单进度")
+
+// Dedicated query and ticket producers create their own tasks; neither uses
+// a personal-worker Run. Match only those persisted producer memberships.
+func deterministicDomainTask(q recordsQuerier, taskID string) (bool, error) {
+	var exists bool
+	err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM domain_query_tasks WHERE task_id=?)
+OR EXISTS(SELECT 1 FROM maintenance_tasks WHERE task_id=?)`, taskID, taskID).Scan(&exists)
+	return exists, err
+}
+
+// CheckDeterministicFollowupConversation rejects explicit task writes before
+// admission (including model-off installations). Submission repeats the guard.
+func (s *Store) CheckDeterministicFollowupConversation(ctx context.Context, conversationID string) error {
+	if conversationID == "" {
+		return nil
+	}
+	var taskID string
+	err := s.db.QueryRowContext(ctx, "SELECT id FROM tasks WHERE conversation_id=?", conversationID).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	deterministic, err := deterministicDomainTask(s.db, taskID)
+	if err == nil && deterministic {
+		return ErrDeterministicTaskRecoveryUnsupported
+	}
+	return err
+}
+
+func requireOrdinaryTaskFollowup(q recordsQuerier, taskID string) error {
+	if err := requireNotDiscoveryRecovery(q, taskID); err != nil {
+		return err
+	}
+	deterministic, err := deterministicDomainTask(q, taskID)
+	if err != nil {
+		return err
+	}
+	if deterministic {
+		return ErrDeterministicTaskRecoveryUnsupported
+	}
+	return nil
+}
+
 func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
 	var benchmark bool
 	if err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
@@ -150,7 +196,7 @@ func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
 	if benchmark {
 		return ErrBenchmarkRecoveryUnsupported
 	}
-	return requireNotDiscoveryRecovery(q, taskID)
+	return requireOrdinaryTaskFollowup(q, taskID)
 }
 
 // CheckGenericTaskRecovery lets the HTTP entry point explain the domain guard

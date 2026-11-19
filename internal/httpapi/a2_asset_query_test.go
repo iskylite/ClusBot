@@ -212,3 +212,28 @@ func TestA2HTTPAssetAcceptanceClosedLoop(t *testing.T) {
 		}
 	})
 }
+
+func TestA2HTTPDeterministicTaskRejectsGenericChangesWithoutModel(t *testing.T) {
+	c, store := setupA2HTTP(t, filepath.Join(t.TempDir(), "typed-query-http.db"))
+	defer c.close()
+	defer store.Close()
+	code, out := c.do(c.request("POST", "/api/v1/domain/asset-acceptance",
+		`{"client_request_id":"typed-query-http","object_ref":"node-1"}`, true))
+	taskID, _ := out["task_id"].(string)
+	if code != 202 || taskID == "" {
+		t.Fatalf("domain submit: code=%d out=%v", code, out)
+	}
+	d, err := store.Detail(taskID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []struct{ URL, Body string }{
+		{"/api/v1/conversations/" + d.Conversation.ID + "/task", `{"client_request_id":"typed-followup-http","text":"继续办理"}`},
+		{"/api/v1/tasks/" + taskID + "/resume", `{"client_request_id":"typed-resume-http","revision":1,"reassign":true}`},
+	} {
+		code, out := c.do(c.request("POST", path.URL, path.Body, true))
+		if code != 409 || out["code"] != "deterministic_task_recovery_unsupported" {
+			t.Fatalf("%s did not fail independently of model with actionable conflict: %d %+v", path.URL, code, out)
+		}
+	}
+}

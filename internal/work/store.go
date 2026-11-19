@@ -1233,7 +1233,7 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 			}
 			switch route.Kind {
 			case "follow_up":
-				if err := requireNotDiscoveryRecovery(tx, target.ID); err != nil {
+				if err := requireOrdinaryTaskFollowup(tx, target.ID); err != nil {
 					return Run{}, err
 				}
 
@@ -1298,17 +1298,17 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 		}
 		if !withoutTaskContinuation {
 			existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
-			discovery := false
+			specialized := false
 			if findErr == nil {
-				discovery, err = discoveryOccurrenceTask(tx, existing.ID)
-				if err != nil {
-					return Run{}, err
-				}
-				if discovery && (task || changesDelivery || len(reads) > 0 || delivery.ReplaceMaterials) {
-					return Run{}, ErrDiscoveryRecoveryUnsupported
+				boundaryErr := requireOrdinaryTaskFollowup(tx, existing.ID)
+				if boundaryErr != nil {
+					specialized = errors.Is(boundaryErr, ErrDiscoveryRecoveryUnsupported) || errors.Is(boundaryErr, ErrDeterministicTaskRecoveryUnsupported)
+					if !specialized || task || changesDelivery || len(reads) > 0 || delivery.ReplaceMaterials {
+						return Run{}, boundaryErr
+					}
 				}
 			}
-			if findErr == nil && !discovery {
+			if findErr == nil && !specialized {
 				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
 					return Run{}, err
 				}
@@ -1618,14 +1618,14 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 	if err := enrichMessageTaskRefs(tx, key, d.Messages); err != nil {
 		return d, err
 	}
-	var discoveryTask string
+	var specializedTask string
 	if isTask {
-		isDiscovery, err := discoveryOccurrenceTask(tx, d.Task.ID)
-		if err != nil {
-			return d, err
-		}
-		if isDiscovery {
-			discoveryTask = d.Task.ID
+		boundaryErr := requireOrdinaryTaskFollowup(tx, d.Task.ID)
+		switch {
+		case errors.Is(boundaryErr, ErrDiscoveryRecoveryUnsupported), errors.Is(boundaryErr, ErrDeterministicTaskRecoveryUnsupported):
+			specializedTask = d.Task.ID
+		case boundaryErr != nil:
+			return d, boundaryErr
 		}
 	}
 
@@ -1634,7 +1634,7 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 	r, err := scanRun(tx.QueryRow("SELECT "+runColumns+` FROM runs WHERE conversation_id=?
 AND (NOT ? OR NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=runs.id))
 AND (?='' OR task_id=?)
-ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask, discoveryTask, discoveryTask))
+ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask, specializedTask, specializedTask))
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, err
 	}

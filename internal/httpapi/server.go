@@ -525,6 +525,12 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
+		if task || delivery.Criteria != nil || delivery.Filename != nil || len(reads) > 0 || delivery.ReplaceMaterials {
+			if err := s.Store.CheckDeterministicFollowupConversation(r.Context(), r.PathValue("id")); err != nil {
+				writeError(w, err)
+				return
+			}
+		}
 		// A1 持久受理：在可信主体与请求校验之后、模型分类之前提交 Inbox。
 		// 同键同请求返回原回执，同键异请求返回冲突；可经 GET /api/v1/admissions/{key} 查询。
 		modelAvailable := s.ModelAvailable(r.Context())
@@ -997,6 +1003,8 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 409, "conversation_binding_conflict", err.Error())
 	case errors.Is(err, work.ErrDiscoveryRecoveryUnsupported):
 		fail(w, 409, "discovery_recovery_unsupported", err.Error())
+	case errors.Is(err, work.ErrDeterministicTaskRecoveryUnsupported):
+		fail(w, http.StatusConflict, "deterministic_task_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrBenchmarkRecoveryUnsupported):
 		fail(w, 409, "benchmark_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrApprovalExpired):

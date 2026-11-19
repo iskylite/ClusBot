@@ -410,7 +410,7 @@ func isRouterIntentConflict(err error) bool {
 		return true
 	}
 	for _, known := range []error{sql.ErrNoRows, ErrState, ErrTaskRevision, ErrActive, ErrConversationArchived,
-		ErrReadUnconfirmed, ErrReadCheckpoint, ErrReadNeedsSelection, ErrPublicationOpen} {
+		ErrReadUnconfirmed, ErrReadCheckpoint, ErrReadNeedsSelection, ErrPublicationOpen, ErrDeterministicTaskRecoveryUnsupported} {
 		if errors.Is(err, known) {
 			return true
 		}
@@ -423,6 +423,8 @@ func routerConflictQuestion(err error) string {
 	switch {
 	case errors.As(err, &edit):
 		return edit.Error()
+	case errors.Is(err, ErrDeterministicTaskRecoveryUnsupported):
+		return err.Error()
 	case errors.Is(err, ErrTaskRevision):
 		return "事项状态已变化。请查看最新状态后确认是否仍要执行这一项。"
 	case errors.Is(err, sql.ErrNoRows), errors.Is(err, ErrConversationArchived):
