@@ -60,7 +60,8 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		admitText    = "把 POD7 那一整套基准都安排起来，跑完我再看"
 		revisionText = "第二项先不跑，只把第一项留下"
 	)
-	var modelCalls, profileCalls atomic.Int32
+	var modelCalls, profileCalls, executionModelCalls atomic.Int32
+	const executionText = "这次不跑集合通信，默认不变"
 	t.Setenv("CLUSBOT_HTTP_FIXTURE_REVISION_KEY", "fixture-dedicated-revision-token")
 	localModel := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" || r.Method != http.MethodPost {
@@ -82,7 +83,15 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 			}
 		}
 		var answer string
+		execution := strings.Contains(string(body), executionText)
 		switch {
+		case execution:
+			executionModelCalls.Add(1)
+			if dedicated || !strings.Contains(string(body), "position") || strings.Contains(string(body), "node-1") || strings.Contains(string(body), "history") {
+				t.Error("execution suggestions sent unapproved input or used the wrong model")
+			}
+			answer = fmt.Sprintf(`{"action":"suggest_skip_this_run","case_key":"second","quote":%q}`, executionText)
+
 		case strings.Contains(string(body), admitText) && strings.Contains(string(body), "benchmark_candidate"):
 			answer = `{"kind":"benchmark_preview","benchmark_target":"POD7"}`
 
@@ -94,7 +103,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 			http.Error(w, "unexpected fixture model input", http.StatusBadRequest)
 			return
 		}
-		if !dedicated {
+		if !dedicated && !execution {
 			modelCalls.Add(1)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -412,4 +421,53 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	if err != nil || download.StatusCode != http.StatusOK || string(raw) != integrationEvidence {
 		t.Fatalf("raw evidence changed or missing: %q %d %v", raw, download.StatusCode, err)
 	}
+	// The dedicated language interpretation is optional and only makes a
+	// proposal; a later explicit action owns the actual execution change.
+	suggestTask, err := a.store.SubmitBenchmarkRun(ctx, "user:session", work.BenchmarkRunRequest{RequestKey: "execution-natural-task", Profile: "full", Version: 1}, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	suggestTaskPath := runs + suggestTask
+	natural := map[string]any{
+		"client_request_id": "execution-natural-proposal", "text": executionText, "interpret_benchmark_execution": true,
+		"benchmark_execution_target": work.BenchmarkExecutionTarget{TaskID: suggestTask, ExpectedPlanRevision: 1},
+	}
+	var interpreted struct {
+		RunID      string                             `json:"run_id"`
+		Suggestion *work.BenchmarkExecutionSuggestion `json:"benchmark_execution_suggestion"`
+	}
+	jsonCall(http.MethodPost, messagePath, natural, &interpreted, http.StatusAccepted)
+	if interpreted.Suggestion == nil || interpreted.Suggestion.CaseKey != "second" || interpreted.Suggestion.State != "confirmation_required" || executionModelCalls.Load() != 1 {
+		t.Fatalf("natural message did not return a bounded suggestion: %+v", interpreted)
+	}
+	jsonCall(http.MethodGet, suggestTaskPath, nil, &progress, http.StatusOK)
+	if progress.PlanRevision != 1 || len(progress.Cases) != 2 || progress.Cases[1].Phase != "queued" {
+		t.Fatalf("model suggestion silently applied control: %+v", progress)
+	}
+	var beforeControl work.ConversationEventPage
+	jsonCall(http.MethodGet, conversationFeed, nil, &beforeControl, http.StatusOK)
+	last := beforeControl.Events[len(beforeControl.Events)-1]
+	if last.Kind != "benchmark.execution_suggested" || last.RunID != interpreted.RunID || last.Status != "confirmation_required" {
+		t.Fatalf("suggestion unavailable to reconnect: %+v", last)
+	}
+	a.close()
+	a = start(false)
+	suggestRun := interpreted.RunID
+	jsonCall(http.MethodPost, messagePath, natural, &interpreted, http.StatusAccepted)
+	if interpreted.RunID != suggestRun || executionModelCalls.Load() != 1 {
+		t.Fatalf("restart repeated model call: %+v", interpreted)
+	}
+	actionPath := "/benchmark-execution-suggestions/" + suggestRun + "/confirm"
+	confirmControl := map[string]string{"action": "skip_this_run"}
+	jsonCall(http.MethodPost, "/api/v1/conversations/"+suggestion.ConversationID+actionPath, confirmControl, nil, http.StatusNotFound)
+	var applied work.BenchmarkExecutionControlReceipt
+	for range 2 {
+		jsonCall(http.MethodPost, "/api/v1/conversations/"+chat.ConversationID+actionPath, confirmControl, &applied, http.StatusOK)
+	}
+	var later work.ConversationEventPage
+	jsonCall(http.MethodGet, conversationFeed+"?cursor="+beforeControl.Cursor, nil, &later, http.StatusOK)
+	if len(later.Events) != 1 || later.Events[0].Kind != "benchmark.execution_skipped" || later.Events[0].StepID != applied.StepID || provider.starts.Load() != 1 || executionModelCalls.Load() != 1 {
+		t.Fatalf("repeat confirmed twice, reinterpreted, or dispatched: %+v", later)
+	}
+
 }

@@ -222,3 +222,27 @@ func (s Server) benchmarkExecutionControl(w http.ResponseWriter, r *http.Request
 	}
 	jsonResponse(w, http.StatusOK, result)
 }
+
+func (s Server) confirmBenchmarkExecutionSuggestion(w http.ResponseWriter, r *http.Request) {
+	conversation, run := r.PathValue("id"), r.PathValue("run")
+	if !validID(conversation) || !validID(run) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	var in struct {
+		Action string `json:"action"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.ConfirmBenchmarkExecutionSuggestion(r.Context(), s.principal(r), conversation, run, in.Action)
+	if errors.Is(err, work.ErrBenchmarkCaseNotPending) {
+		fail(w, 409, "benchmark_case_not_pending", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, 200, out)
+}

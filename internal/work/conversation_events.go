@@ -35,15 +35,15 @@ type conversationEventCursor struct {
 }
 
 const conversationEventsQuery = `SELECT e.seq,r.id,
- CASE WHEN e.kind IN ('benchmark.admission_queued','benchmark.execution_skipped') AND json_valid(e.data)
+ CASE WHEN e.kind IN ('benchmark.admission_queued','benchmark.execution_skipped','benchmark.execution_suggested') AND json_valid(e.data)
  THEN COALESCE(json_extract(e.data,'$.task_id'),'')
  ELSE COALESCE((SELECT t.id FROM tasks t WHERE t.id=r.task_id AND t.conversation_id=r.conversation_id), '') END,
  e.kind, CASE WHEN e.kind='run.state_changed' AND json_valid(e.data)
   THEN COALESCE(json_extract(e.data,'$.status'),'') ELSE '' END,
  CASE WHEN e.kind='benchmark.revision_applied' AND json_valid(e.data)
   THEN COALESCE(json_extract(e.data,'$.revision'),0) ELSE 0 END,
- CASE WHEN e.kind='benchmark.execution_skipped' AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.step_id'),'') ELSE '' END,
- CASE WHEN e.kind='benchmark.execution_skipped' AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.plan_revision'),0) ELSE 0 END
+ CASE WHEN e.kind IN ('benchmark.execution_skipped','benchmark.execution_suggested') AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.step_id'),'') ELSE '' END,
+ CASE WHEN e.kind IN ('benchmark.execution_skipped','benchmark.execution_suggested') AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.plan_revision'),0) ELSE 0 END
 FROM runs r JOIN run_events e INDEXED BY events_by_run ON e.run_id=r.id
 WHERE r.conversation_id=:conversation AND (
  e.kind='run.state_changed'
@@ -55,6 +55,13 @@ WHERE r.conversation_id=:conversation AND (
   SELECT 1 FROM benchmark_admission_previews p JOIN benchmark_runs b ON b.task_id=p.task_id AND b.actor=p.actor
   WHERE p.actor=:actor AND p.source_run=r.id AND p.source_run<>'' AND p.source_conversation=r.conversation_id AND p.confirmed_at>0
   AND p.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
+ ))
+ OR (e.kind='benchmark.execution_suggested' AND EXISTS (
+  SELECT 1 FROM benchmark_runs b WHERE b.actor=:actor
+  AND b.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
+ ) AND EXISTS (
+  SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
+  WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=:actor AND sub.run_id=r.id
  ))
  OR (e.kind='benchmark.execution_skipped' AND EXISTS (
   SELECT 1 FROM benchmark_execution_controls c JOIN benchmark_runs b ON b.task_id=c.task_id AND b.actor=c.actor
@@ -85,11 +92,14 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 	}
 	// This proof is over the safe event projection, not raw errors, messages,
 	// or material. It detects an unrelated anchor at the same cursor position.
-	if e.Kind == benchmarkExecutionSkippedEvent {
+	if e.Kind == benchmarkExecutionSkippedEvent || e.Kind == benchmarkExecutionSuggestedEvent {
 		if e.TaskID == "" || e.StepID == "" || e.PlanRevision < 1 {
 			return ConversationEvent{}, 0, ErrState
 		}
 		e.Status = benchmarkSkippedThisRun
+		if e.Kind == benchmarkExecutionSuggestedEvent {
+			e.Status = "confirmation_required"
+		}
 		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status, e.TaskID, e.StepID, e.PlanRevision}))
 	} else if e.Kind == benchmarkAdmissionQueuedEvent {
 		if e.TaskID == "" {

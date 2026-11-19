@@ -37,19 +37,20 @@ type Server struct {
 }
 
 type submission struct {
-	RequestID                string                         `json:"client_request_id"`
-	MessageID                string                         `json:"client_message_id"`
-	Text                     string                         `json:"text"`
-	Scope                    string                         `json:"scope_label"`
-	AttachmentIDs            []string                       `json:"attachment_ids"`
-	ReplaceMaterials         bool                           `json:"replace_materials"`
-	Criteria                 *string                        `json:"acceptance_criteria"`
-	Filename                 *string                        `json:"required_filename"`
-	Revision                 int                            `json:"revision"`
-	BenchmarkExecutionTarget *work.BenchmarkExecutionTarget `json:"benchmark_execution_target"`
-	BenchmarkRevisionTarget  *work.BenchmarkRevisionTarget  `json:"benchmark_revision_target"`
-	Read                     *work.TaskReadRequest          `json:"mcp_read"`
-	Reads                    []work.TaskReadRequest         `json:"mcp_reads"`
+	RequestID                   string                         `json:"client_request_id"`
+	MessageID                   string                         `json:"client_message_id"`
+	Text                        string                         `json:"text"`
+	Scope                       string                         `json:"scope_label"`
+	AttachmentIDs               []string                       `json:"attachment_ids"`
+	ReplaceMaterials            bool                           `json:"replace_materials"`
+	Criteria                    *string                        `json:"acceptance_criteria"`
+	Filename                    *string                        `json:"required_filename"`
+	Revision                    int                            `json:"revision"`
+	InterpretBenchmarkExecution bool                           `json:"interpret_benchmark_execution"`
+	BenchmarkExecutionTarget    *work.BenchmarkExecutionTarget `json:"benchmark_execution_target"`
+	BenchmarkRevisionTarget     *work.BenchmarkRevisionTarget  `json:"benchmark_revision_target"`
+	Read                        *work.TaskReadRequest          `json:"mcp_read"`
+	Reads                       []work.TaskReadRequest         `json:"mcp_reads"`
 }
 
 func (s Server) Handler(assets fs.FS) http.Handler {
@@ -202,6 +203,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)
 	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false))
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview", s.benchmarkRevisionChat)
+	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-execution-suggestions/{run}/confirm", s.confirmBenchmarkExecutionSuggestion)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}", s.benchmarkRevisionRequestState)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}", s.reopenBenchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}/confirm", s.confirmBenchmarkRevisionChat)
@@ -398,6 +400,10 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
+		if in.InterpretBenchmarkExecution && in.BenchmarkExecutionTarget == nil {
+			benchmarkError(w, work.ErrBenchmarkInput)
+			return
+		}
 		if target := in.BenchmarkExecutionTarget; target != nil {
 			conversation := r.PathValue("id")
 			if task || !validID(conversation) || !validID(target.TaskID) || in.BenchmarkRevisionTarget != nil ||
@@ -406,7 +412,13 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				benchmarkError(w, work.ErrBenchmarkInput)
 				return
 			}
-			run, err := s.Store.SubmitBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target)
+			var run work.Run
+			var err error
+			if in.InterpretBenchmarkExecution {
+				run, err = s.Store.SuggestBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target, s.Settings.InterpretBenchmarkExecution)
+			} else {
+				run, err = s.Store.SubmitBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target)
+			}
 			if errors.Is(err, work.ErrBenchmarkExecutionClarify) {
 				fail(w, 400, "benchmark_execution_clarify", err.Error())
 				return
@@ -561,6 +573,9 @@ func writeSubmission(w http.ResponseWriter, run work.Run) {
 	response := map[string]any{"task_id": run.TaskID, "conversation_id": run.ConversationID, "run_id": run.ID, "status": run.Status}
 	if run.RouterIntents != nil {
 		response["router_intents"] = run.RouterIntents
+	}
+	if run.BenchmarkExecutionSuggestion != nil {
+		response["benchmark_execution_suggestion"] = run.BenchmarkExecutionSuggestion
 	}
 	if run.BenchmarkExecutionControl != nil {
 		response["benchmark_execution_control"] = run.BenchmarkExecutionControl

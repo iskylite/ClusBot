@@ -241,21 +241,22 @@ type Task struct {
 }
 
 type Run struct {
-	ID                          string                            `json:"id"`
-	ConversationID              string                            `json:"conversation_id"`
-	TaskID                      string                            `json:"task_id,omitempty"`
-	Status                      string                            `json:"status"`
-	Response                    string                            `json:"response"`
-	Error                       string                            `json:"error,omitempty"`
-	ErrorCode                   string                            `json:"error_code,omitempty"`
-	Usage                       *ExecutionUsage                   `json:"usage,omitempty"`
-	Generation                  int                               `json:"execution_generation"`
-	FollowupQueued              bool                              `json:"followup_queued,omitempty"`
-	BenchmarkExecutionControl   *BenchmarkExecutionControlReceipt `json:"benchmark_execution_control,omitempty"`
-	BenchmarkRevisionSuggestion *BenchmarkRevisionTarget          `json:"benchmark_revision_suggestion,omitempty"`
-	BenchmarkSuggestion         *BenchmarkRouterSuggestion        `json:"benchmark_suggestion,omitempty"`
-	RouterIntents               *[]RouterIntent                   `json:"router_intents,omitempty"`
-	admissionOutput             int
+	ID                           string                            `json:"id"`
+	ConversationID               string                            `json:"conversation_id"`
+	TaskID                       string                            `json:"task_id,omitempty"`
+	Status                       string                            `json:"status"`
+	Response                     string                            `json:"response"`
+	Error                        string                            `json:"error,omitempty"`
+	ErrorCode                    string                            `json:"error_code,omitempty"`
+	Usage                        *ExecutionUsage                   `json:"usage,omitempty"`
+	Generation                   int                               `json:"execution_generation"`
+	FollowupQueued               bool                              `json:"followup_queued,omitempty"`
+	BenchmarkExecutionSuggestion *BenchmarkExecutionSuggestion     `json:"benchmark_execution_suggestion,omitempty"`
+	BenchmarkExecutionControl    *BenchmarkExecutionControlReceipt `json:"benchmark_execution_control,omitempty"`
+	BenchmarkRevisionSuggestion  *BenchmarkRevisionTarget          `json:"benchmark_revision_suggestion,omitempty"`
+	BenchmarkSuggestion          *BenchmarkRouterSuggestion        `json:"benchmark_suggestion,omitempty"`
+	RouterIntents                *[]RouterIntent                   `json:"router_intents,omitempty"`
+	admissionOutput              int
 }
 
 type Message struct {
@@ -1146,6 +1147,9 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 	if classification != nil && classification.Route != nil {
 		route := classification.Route
 		switch route.Kind {
+		case "benchmark_execution_suggestion":
+			isBenchmarkReceipt = true
+			reply = "我找到一个可能要跳过的测项。还没有执行；请核对后明确确认。"
 		case "benchmark_execution_skip":
 			isBenchmarkReceipt = true
 			reply = "已跳过该测项，仅对本次生效。原方案和必测要求不变；这不算通过或免测。"
@@ -1372,6 +1376,12 @@ func previousSubmission(tx *sql.Tx, requestKey, fingerprint string) (Run, error)
 		}
 		if err == nil {
 			run.BenchmarkExecutionControl, err = readBenchmarkExecutionChatReceipt(tx, run.ID)
+		}
+		if err == nil {
+			run.BenchmarkExecutionSuggestion, err = readBenchmarkExecutionSuggestion(tx, run.ID)
+			if run.BenchmarkExecutionSuggestion != nil && run.BenchmarkExecutionControl != nil {
+				run.BenchmarkExecutionSuggestion.State = "confirmed"
+			}
 		}
 		return run, err
 	}
