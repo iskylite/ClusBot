@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 const benchmarkRouterEvent = "benchmark.admission_suggested"
@@ -174,4 +175,78 @@ func (s *Store) SubmitBenchmarkSuggestionShortcut(ctx context.Context, key, acto
 		return Run{}, true, err
 	}
 	return run, true, tx.Commit()
+}
+
+const benchmarkRouterSuggestionLifetime = 30 * time.Minute
+
+type BenchmarkSuggestionPreviewInput struct {
+	Action string `json:"action"`
+}
+
+// PreviewBenchmarkSuggestion reopens only a server-recorded Router decision.
+// A repeat request revalidates authorization and returns the same preview,
+// not a new model request, benchmark task or queue action.
+func (s *Store) PreviewBenchmarkSuggestion(ctx context.Context, actor, conversation, run string, in BenchmarkSuggestionPreviewInput, provider BenchmarkProvider) (BenchmarkAdmissionPreview, error) {
+	if in.Action != "preview_benchmark_suggestion" || conversation == "" || run == "" {
+		return BenchmarkAdmissionPreview{}, ErrBenchmarkInput
+	}
+	if actor == "" {
+		return BenchmarkAdmissionPreview{}, sql.ErrNoRows
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	defer tx.Rollback()
+	var text string
+	var created int64
+	if err := tx.QueryRowContext(ctx, `SELECT m.text,r.created_at FROM runs r
+JOIN messages m ON m.run_id=r.id AND m.conversation_id=r.conversation_id AND m.role='user'
+WHERE r.id=? AND r.conversation_id=? AND r.status='completed' AND r.task_id IS NULL
+AND EXISTS (SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
+WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=? AND sub.run_id=r.id)
+ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&text, &created); err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	receipt, err := readBenchmarkRouterReceipt(tx, run)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	if receipt == nil || receipt.State != "explicit_preview_required" {
+		return BenchmarkAdmissionPreview{}, sql.ErrNoRows
+	}
+	stamp := now()
+	if created <= 0 || stamp < created || stamp-created >= benchmarkRouterSuggestionLifetime.Milliseconds() || benchmarkAdmissionText(text) != nil {
+		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	}
+	candidate, flight, err := benchmarkAdmissionVisibleTx(ctx, tx, actor, text, provider)
+	if errors.Is(err, ErrBenchmarkAdmissionClarify) || errors.Is(err, ErrBenchmarkInput) || errors.Is(err, ErrState) || errors.Is(err, sql.ErrNoRows) {
+		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	}
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	if candidate.Target != receipt.Target || candidate.Profile != receipt.Profile {
+		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	}
+
+	// The deterministic ID belongs to this one click target. Confirm uses the
+	// same general preview table and the same transactional admission guard.
+	preview := digest(toJSON([]string{"benchmark-suggestion-preview", actor, conversation, run}))[:32]
+	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_admission_previews
+(preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at) VALUES(?,?,?,?,?,?,?)
+ON CONFLICT(preview_id) DO NOTHING`, preview, actor, candidate.Target, candidate.Profile.Profile,
+		candidate.Profile.Version, candidate.inventoryFingerprint, stamp); err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	var valid bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM benchmark_admission_previews
+WHERE preview_id=? AND actor=? AND target=? AND profile_key=? AND profile_version=? AND snapshot_digest=?)`,
+		preview, actor, candidate.Target, candidate.Profile.Profile, candidate.Profile.Version, candidate.inventoryFingerprint).Scan(&valid); err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	if !valid {
+		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	}
+	return BenchmarkAdmissionPreview{PreviewID: preview, State: "preview_only", Selection: candidate, Preflight: flight}, tx.Commit()
 }

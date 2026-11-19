@@ -161,6 +161,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	}
 
 	var suggestion struct {
+		ConversationID      string                          `json:"conversation_id"`
 		RunID               string                          `json:"run_id"`
 		TaskID              string                          `json:"task_id"`
 		BenchmarkSuggestion *work.BenchmarkRouterSuggestion `json:"benchmark_suggestion"`
@@ -175,7 +176,15 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	}
 
 	var draft work.BenchmarkAdmissionPreview
-	jsonCall(http.MethodPost, admission, work.BenchmarkAdmissionPreviewInput{Text: admitText}, &draft, http.StatusOK)
+	suggestionPath := "/api/v1/conversations/" + suggestion.ConversationID + "/benchmark-suggestions/" + firstRun + "/preview"
+	action := work.BenchmarkSuggestionPreviewInput{Action: "preview_benchmark_suggestion"}
+	jsonCall(http.MethodPost, suggestionPath, map[string]string{"action": action.Action, "target": "POD8"}, nil, http.StatusBadRequest)
+	jsonCall(http.MethodPost, suggestionPath, action, &draft, http.StatusOK)
+	var repeated work.BenchmarkAdmissionPreview
+	jsonCall(http.MethodPost, suggestionPath, action, &repeated, http.StatusOK)
+	if repeated.PreviewID != draft.PreviewID || modelCalls.Load() != 1 || provider.starts.Load() != 0 {
+		t.Fatalf("opening the same suggestion generated a new preview or invoked a model/provider: %+v", repeated)
+	}
 	if draft.PreviewID == "" || draft.State != "preview_only" || draft.ExecutionStarted || draft.Preflight.FacilityStatus != "not_verified" || provider.starts.Load() != 0 {
 		t.Fatalf("preview started work or invented facility certainty: %+v", draft)
 	}
@@ -210,13 +219,23 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	a.close()
 	a = start(false)
 	jsonCall(http.MethodPost, "/api/v1/conversations", plain, &suggestion, http.StatusAccepted)
-	if suggestion.RunID != firstRun || suggestion.BenchmarkSuggestion == nil || modelCalls.Load() != 3 {
+	if suggestion.RunID != firstRun || suggestion.BenchmarkSuggestion == nil || modelCalls.Load() != 2 {
 		t.Fatalf("router suggestion did not survive restart without a model replay: %+v", suggestion)
+	}
+
+	jsonCall(http.MethodPost, suggestionPath, action, &repeated, http.StatusOK)
+	if repeated.PreviewID != draft.PreviewID || modelCalls.Load() != 2 {
+		t.Fatalf("preview did not survive restart without a model replay: %+v", repeated)
+	}
+	var acceptedAgain work.BenchmarkAdmissionConfirmation
+	jsonCall(http.MethodPost, acceptPath, accept, &acceptedAgain, http.StatusAccepted)
+	if acceptedAgain.TaskID != accepted.TaskID || provider.starts.Load() != 0 {
+		t.Fatalf("confirmation replay queued another task or started execution: %+v", acceptedAgain)
 	}
 
 	var reopened work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodGet, chatPath+"/"+pending.RunID, nil, &reopened, http.StatusOK)
-	if reopened.Proposal.Preview.AssetImpact == nil || modelCalls.Load() != 3 {
+	if reopened.Proposal.Preview.AssetImpact == nil || modelCalls.Load() != 2 {
 		t.Fatalf("reopen failed or started model again: %+v", reopened)
 	}
 	confirmPath := chatPath + "/" + pending.RunID + "/confirm"
@@ -258,7 +277,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatalf("admission replay created a new task: %+v", replay)
 	}
 	jsonCall(http.MethodPost, confirmPath, confirm, &revision, http.StatusOK)
-	if revision.Revision != 2 || modelCalls.Load() != 3 {
+	if revision.Revision != 2 || modelCalls.Load() != 2 {
 		t.Fatalf("revision replay changed revision or spent model again: %+v", revision)
 	}
 	// Let production scheduler tick again on the reopened DB, rather

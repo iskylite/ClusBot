@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -79,6 +80,47 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 	if err != nil || run.Status != "completed" || run.BenchmarkSuggestion != nil || run.TaskID != "" {
 		t.Fatalf("stale published candidate was replaced silently: %+v %v", run, err)
 	}
+	valid, handled, err := s.SubmitBenchmarkSuggestionShortcut(ctx, "real-shortcut-receipt", actor, "", "在POD7上跑一下完整的基准测试", "")
+	if err != nil || !handled || valid.BenchmarkSuggestion == nil {
+		t.Fatalf("could not persist valid suggestion: %+v %t %v", valid, handled, err)
+	}
+	open := func(who, conversation, run string) (BenchmarkAdmissionPreview, error) {
+		return s.PreviewBenchmarkSuggestion(ctx, who, conversation, run,
+			BenchmarkSuggestionPreviewInput{Action: "preview_benchmark_suggestion"}, &benchFixtureProvider{})
+	}
+	for _, pair := range [][2]string{{"user:other", valid.ConversationID}, {actor, taskRun.ConversationID}} {
+		if _, err := open(pair[0], pair[1], valid.ID); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("cross-actor/conversation suggested preview disclosed: %v", err)
+		}
+	}
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := open(actor, valid.ConversationID, valid.ID); err != nil {
+		t.Fatalf("valid receipt denied: %v", err)
+	}
+	exec("UPDATE authorizations SET revoked_at=? WHERE action='benchmark.execute' AND subject=?", now(), actor)
+	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("cached preview survived grant revocation: %v", err)
+	}
+	exec("UPDATE authorizations SET revoked_at=0 WHERE action='benchmark.execute' AND subject=?", actor)
+	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("suggestion silently accepted replaced profile: %v", err)
+	}
+	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE runs SET created_at=? WHERE id=?", now()-benchmarkRouterSuggestionLifetime.Milliseconds(), valid.ID)
+	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("expired suggestion reopened: %v", err)
+	}
+
 	var domainTasks int
 	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_runs").Scan(&domainTasks); err != nil || domainTasks != 0 {
 		t.Fatalf("ordinary chat created a domain task: %d %v", domainTasks, err)
