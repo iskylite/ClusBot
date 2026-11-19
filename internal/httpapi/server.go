@@ -181,6 +181,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/conversations/{id}/history", s.messageHistory)
 	api.HandleFunc("GET /api/v1/conversations/{id}/skill-binding", s.readConversationSkillSelection)
 	api.HandleFunc("PUT /api/v1/conversations/{id}/skill-binding", s.setConversationSkillSelection)
+	api.HandleFunc("GET /api/v1/conversations/{id}/mcp-selection", s.readConversationMCPSelection)
+	api.HandleFunc("PUT /api/v1/conversations/{id}/mcp-selection", s.setConversationMCPSelection)
 	api.HandleFunc("POST /api/v1/conversations/{id}/cancel", s.cancelConversation)
 	api.HandleFunc("PATCH /api/v1/conversations/{id}", s.changeConversation)
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)

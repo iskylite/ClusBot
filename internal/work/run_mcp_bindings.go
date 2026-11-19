@@ -4,15 +4,22 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 
 	"clusbot/internal/mcpclient"
 )
 
 type RunMCPBindings struct {
-	RunID     string              `json:"run_id"`
-	TaskID    string              `json:"task_id,omitempty"`
-	RunStatus string              `json:"run_status"`
-	Bindings  []RunMCPReadBinding `json:"bindings"`
+	RunID        string              `json:"run_id"`
+	TaskID       string              `json:"task_id,omitempty"`
+	RunStatus    string              `json:"run_status"`
+	AutomaticPin *RunMCPAutomaticPin `json:"automatic_pin,omitempty"`
+	Bindings     []RunMCPReadBinding `json:"bindings"`
+}
+
+type RunMCPAutomaticPin struct {
+	MCPReadSelection
+	LocalValidity string `json:"local_validity"`
 }
 
 type RunMCPReadBinding struct {
@@ -47,6 +54,22 @@ func (s *Store) ReadRunMCPBindings(ctx context.Context, actor, runID string) (Ru
 		Scan(&out.RunID, &out.TaskID, &out.RunStatus, &control); err != nil {
 		return RunMCPBindings{}, err
 	}
+	var pin RunMCPAutomaticPin
+	err = tx.QueryRowContext(ctx, `SELECT connection_id,connection_revision,tool_name,tool_version
+FROM run_mcp_selections WHERE run_id=?`, runID).
+		Scan(&pin.ConnectionID, &pin.Revision, &pin.ToolName, &pin.ToolVersion)
+	if err == nil {
+		pin.LocalValidity = "locally_ready"
+		if _, err := s.selectedMCPOption(ctx, tx, pin.MCPReadSelection); errors.Is(err, ErrToolPermission) {
+			pin.LocalValidity = "unavailable"
+		} else if err != nil {
+			return RunMCPBindings{}, err
+		}
+		out.AutomaticPin = &pin
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return RunMCPBindings{}, err
+	}
+
 	rows, err := tx.QueryContext(ctx, `SELECT r.position,r.connection_id,r.connection_name,r.connection_revision,r.tool_name,r.tool_version,
 r.status,r.model_round IS NOT NULL,
 c.id,c.revision,c.enabled,c.status,c.config,c.credential_binding,t.definition,t.allowed

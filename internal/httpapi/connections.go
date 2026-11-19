@@ -138,3 +138,31 @@ func (s Server) runMCPBindings(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) readConversationMCPSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	out, err := s.Store.ReadConversationMCPSelection(r.Context(), s.principal(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) setConversationMCPSelection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.ConversationMCPInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if !validID(r.PathValue("id")) || (in.ConnectionID != "" && !validID(in.ConnectionID)) {
+		writeError(w, work.ErrReadSelection)
+		return
+	}
+	out, err := s.Store.SetConversationMCPSelection(r.Context(), s.principal(r), r.PathValue("id"), in)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

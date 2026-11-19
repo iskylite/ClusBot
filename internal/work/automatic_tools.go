@@ -54,8 +54,8 @@ var workspaceTools = []taskTool{
 	},
 }
 
-func (s *Store) automaticTaskTools(ctx context.Context) ([]taskTool, error) {
-	options, err := s.TaskTools(ctx)
+func (s *Store) automaticTaskTools(ctx context.Context, run Run) ([]taskTool, error) {
+	options, err := s.automaticMCPOptions(ctx, run)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +126,9 @@ func (s *Store) streamWithAutomaticTools(ctx context.Context, runID string, star
 		}
 		if limit < 16 {
 			return TaskAnswer{}, ErrOutputBudget
+		}
+		if err := s.checkAutomaticMCPPin(ctx, runID); err != nil {
+			return TaskAnswer{}, err
 		}
 		if err = s.reserveReadRequest(ctx, runID, limit, time.Since(started)); err != nil {
 			return TaskAnswer{}, err

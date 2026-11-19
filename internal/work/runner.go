@@ -456,7 +456,7 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 		if !supportsTools {
 			err = ErrReadCheckpoint
 		} else {
-			tools, err = s.automaticTaskTools(controlled)
+			tools, err = s.automaticTaskTools(controlled, run)
 			automatic = automatic || len(tools) > 0
 			if automatic {
 				providerBinding += "\n" + automaticReadProtocol
