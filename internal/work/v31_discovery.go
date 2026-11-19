@@ -61,18 +61,20 @@ type DiscoveryObservation struct {
 	Address string `json:"address"`
 }
 type DiscoveryPlanRequest struct {
-	ID              string `json:"id"`
-	Source          string `json:"source"`
-	Scope           string `json:"scope"`
-	PeriodSeconds   int64  `json:"period_seconds"`
-	FirstAt         int64  `json:"first_at_unix_ms"`
-	CheckAfterAdmit bool   `json:"check_after_admit"`
+	ID                  string `json:"id"`
+	Source              string `json:"source"`
+	Scope               string `json:"scope"`
+	PeriodSeconds       int64  `json:"period_seconds"`
+	FirstAt             int64  `json:"first_at_unix_ms"`
+	CheckAfterAdmit     bool   `json:"check_after_admit"`
+	CheckOnAddressDrift bool   `json:"check_on_address_drift"`
 }
 type DiscoveryGrant struct {
 	Source              string `json:"source"`
 	Scope               string `json:"scope"`
 	ExpiresAt           int64  `json:"expires_at_unix_ms"`
 	AllowAdmissionCheck bool   `json:"allow_admission_check"`
+	AllowDriftCheck     bool   `json:"allow_drift_check"`
 }
 
 func (s *Store) GrantDiscovery(ctx context.Context, actor string, g DiscoveryGrant, source DiscoveryScanSource) (string, error) {
@@ -127,8 +129,8 @@ func (s *Store) PublishDiscoveryPlan(ctx context.Context, actor string, p Discov
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO discovery_plans(plan_id,actor,source,scope,period_ms,next_at,check_after_admit) VALUES(?,?,?,?,?,?,?)`,
-		p.ID, actor, p.Source, p.Scope, p.PeriodSeconds*1000, p.FirstAt, p.CheckAfterAdmit); err != nil {
+	if _, err = tx.Exec(`INSERT INTO discovery_plans(plan_id,actor,source,scope,period_ms,next_at,check_after_admit,check_on_address_drift) VALUES(?,?,?,?,?,?,?,?)`,
+		p.ID, actor, p.Source, p.Scope, p.PeriodSeconds*1000, p.FirstAt, p.CheckAfterAdmit, p.CheckOnAddressDrift); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -336,6 +338,14 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 			state = "conflict"
 		}
 		candidate := digest(toJSON(identity))
+		var priorAddress, priorState, asset, priorScope string
+		var priorSeen int64
+		priorErr := tx.QueryRow("SELECT address,state,admitted_ref,scope,seen_at FROM discovery_candidates WHERE candidate_id=?", candidate).
+			Scan(&priorAddress, &priorState, &asset, &priorScope, &priorSeen)
+		if priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows) {
+			return priorErr
+		}
+
 		if _, err = tx.Exec(`INSERT INTO discovery_candidates(candidate_id,source,scope,serial,address,seen_at,state) VALUES(?,?,?,?,?,?,?)
 ON CONFLICT(candidate_id) DO UPDATE SET address=excluded.address,seen_at=excluded.seen_at,
 state=CASE WHEN discovery_candidates.state='conflict' OR discovery_candidates.scope<>excluded.scope OR excluded.state='conflict'
@@ -346,6 +356,12 @@ WHERE discovery_candidates.seen_at<=excluded.seen_at`, candidate, d.source, d.sc
 		if _, err = tx.Exec(`INSERT INTO discovery_observations VALUES(?,?,?,?,?,?)`, d.plan, d.at, i, candidate, ip, stamp); err != nil {
 			return err
 		}
+		if priorErr == nil && asset != "" && priorState == "admitted" && state == "observed" && priorScope == d.scope && priorAddress != ip && priorSeen <= stamp {
+			if err = evaluateDiscoveryDrift(tx, d, candidate, priorAddress, ip, asset, stamp); err != nil {
+				return err
+			}
+		}
+
 		accepted++
 	}
 	if err = finishDiscovery(tx, d, true, fmt.Sprintf("已登记 %d 条有来源的观测；未自动纳管", accepted), stamp); err != nil {

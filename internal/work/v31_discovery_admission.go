@@ -139,6 +139,10 @@ func (s *Store) AdmitDiscoveryCandidate(ctx context.Context, actor string, req D
 }
 
 func guardDiscoveryAdmissionCheck(tx *sql.Tx, task, principal string, stamp int64) error {
+	if strings.HasPrefix(principal, "policy:discovery-drift:") {
+		return guardDiscoveryDriftCheck(tx, task, stamp)
+	}
+
 	if !strings.HasPrefix(principal, "policy:discovery-check:") {
 		return nil
 	}

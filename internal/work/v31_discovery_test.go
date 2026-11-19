@@ -26,12 +26,12 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 	defer func() { s.Close() }()
 	source := discoveryFixture{}
 	actor := "user:session"
-	auth, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: now() + 600000, AllowAdmissionCheck: true}, source)
+	auth, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: now() + 600000, AllowAdmissionCheck: true, AllowDriftCheck: true}, source)
 	if err != nil {
 		t.Fatal(err)
 	}
 	due := now() + 2000
-	if err = s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "daily", Source: "inventory-1", Scope: "POD7", PeriodSeconds: 60, FirstAt: due, CheckAfterAdmit: true}, source); err != nil {
+	if err = s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "daily", Source: "inventory-1", Scope: "POD7", PeriodSeconds: 60, FirstAt: due, CheckAfterAdmit: true, CheckOnAddressDrift: true}, source); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.claimDiscovery(ctx, source, due-1); ok || err != nil {
@@ -93,11 +93,26 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 	if err = s.db.QueryRow("SELECT count(*) FROM ops_assets").Scan(&assets); err != nil || assets != 1 {
 		t.Fatalf("wrong asset count %d %v", assets, err)
 	}
+	var deployed DiscoveryCandidate
+	for _, c := range candidates {
+		if c.Serial == "SN-2" {
+			deployed = c
+		}
+	}
+	deployed, err = s.AdmitDiscoveryCandidate(ctx, actor, DiscoveryAdmission{Candidate: deployed.ID, ConfirmedSerial: deployed.Serial,
+		ExpectedSeenAt: deployed.SeenAt, Owner: "ops", Location: "rack7", Role: "compute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec("UPDATE ops_assets SET state=? WHERE object_ref=?", AssetStateInService, deployed.Asset); err != nil {
+		t.Fatal(err)
+	}
+
 	next, ok, err := s.claimDiscovery(ctx, source, due+60000)
 	if err != nil || !ok || next.task == first.task {
 		t.Fatalf("next tick %+v %v", next, err)
 	}
-	if err = s.settleDiscovery(ctx, next, []DiscoveryObservation{{"SN-1", "192.0.2.3"}}, nil, now()); err != nil {
+	if err = s.settleDiscovery(ctx, next, []DiscoveryObservation{{"SN-1", "192.0.2.3"}, {"SN-2", "192.0.2.4"}}, nil, now()); err != nil {
 		t.Fatal(err)
 	}
 	candidates, err = s.ListDiscoveryCandidates(ctx, actor)
@@ -109,6 +124,28 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 			t.Fatalf("address move changed identity %+v", c)
 		}
 	}
+	var driftChecks, goals int
+	if err = s.db.QueryRow("SELECT count(*) FROM discovery_drift_checks WHERE task_id IS NOT NULL").Scan(&driftChecks); err != nil || driftChecks != 2 {
+		t.Fatalf("known undelivered and delivered assets both require read-only checks: %d %v", driftChecks, err)
+	}
+	if err = s.db.QueryRow("SELECT count(*) FROM goals").Scan(&goals); err != nil || goals != 0 {
+		t.Fatalf("discovery should not create Goal: %d %v", goals, err)
+	}
+	repeat, ok, err := s.claimDiscovery(ctx, source, due+120000)
+	if err != nil || !ok {
+		t.Fatalf("repeat tick: %+v %v", repeat, err)
+	}
+	if err = s.settleDiscovery(ctx, repeat, []DiscoveryObservation{{"SN-1", "192.0.2.3"}, {"SN-2", "192.0.2.4"}}, nil, now()); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.db.QueryRow("SELECT count(*) FROM discovery_drift_checks").Scan(&driftChecks); err != nil || driftChecks != 2 {
+		t.Fatalf("same observation caused extra follow-up: %d %v", driftChecks, err)
+	}
+	var driftTask string
+	if err = s.db.QueryRow("SELECT task_id FROM discovery_drift_checks WHERE candidate_id=?", deployed.ID).Scan(&driftTask); err != nil {
+		t.Fatal(err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -121,10 +158,15 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 		tx.Rollback()
 		t.Fatalf("revoked policy still able to read: %v", err)
 	}
+	if err = guardDiscoveryDriftCheck(tx, driftTask, now()); !errors.Is(err, ErrAuthorizationDenied) {
+		tx.Rollback()
+		t.Fatalf("revoked drift grant still allows read: %v", err)
+	}
+
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err = s.claimDiscovery(ctx, source, due+120000); err != nil || ok {
+	if _, ok, err = s.claimDiscovery(ctx, source, due+180000); err != nil || ok {
 		t.Fatalf("revoked grant made a new task: %v %v", ok, err)
 	}
 }
