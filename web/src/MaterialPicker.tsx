@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileText, LoaderCircle, Paperclip, Search, Upload, X } from 'lucide-react'
+import { File, FileText, Image, LoaderCircle, Paperclip, Search, Upload, X } from 'lucide-react'
 import { api, type Material, type MaterialFile } from './api'
+
+// Classify only the namespaces produced by the server after validating
+// image bytes or capturing trusted text. A basename cannot enable previews.
+export function MaterialTypeIcon({material,size=16}:{material:Material;size?:number}) {
+  const Icon=material.path.startsWith('images/')?Image:
+    material.upload||material.path.startsWith('materials/')?FileText:File
+  return <Icon size={size} aria-hidden="true"/>
+}
 
 export function MaterialPicker({selected,disabled,choose,upload,choosePart,remove,replacement,allowImages}:{
   allowImages:boolean; selected:Material[]; disabled:boolean; choose:(path:string)=>Promise<void>; upload:(file:File)=>Promise<void>;
@@ -31,7 +39,7 @@ export function MaterialPicker({selected,disabled,choose,upload,choosePart,remov
   return <div className="material-picker">
     {selected.length>0 && <div className="material-chips" aria-label="已选材料">{selected.map(item=>
       <span className="material-chip" key={item.upload?.id??item.id} title={(item.upload?.name??item.path)+' · '+item.sha256}>
-        <FileText size={14}/><span>{item.upload?.name??item.path.slice(item.path.indexOf('/')+1)}</span>
+        <MaterialTypeIcon material={item}/><span>{item.upload?.name??item.path.slice(item.path.indexOf('/')+1)}</span>
         {item.upload && item.upload.parts>1 && <select aria-label={'选择 '+item.upload.name+' 的片段'} disabled={disabled} value={item.upload.part}
           onChange={event=>{if(item.upload)void choosePart(item.upload.id,Number(event.target.value))}}>
           {Array.from({length:item.upload.parts},(_,index)=><option key={index} value={index+1}>第 {index+1} / {item.upload?.parts} 段</option>)}

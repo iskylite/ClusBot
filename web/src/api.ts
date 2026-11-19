@@ -13,7 +13,9 @@ export type ExecutionUsage = {
   model_requests:number; unreported_requests:number; active_ms:number; time_partial:boolean; untracked_runs:number
   input_tokens:number|null; output_tokens:number|null; last_input_tokens?:number|null
 }
-export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number} }
+export type BenchmarkExecutionSuggestion={task_id:string;step_id:string;case_key:string;plan_revision:number;state:string}
+export type BenchmarkExecutionReceipt={task_id:string;step_id:string;plan_revision:number;action:string;state:string}
+export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number}; benchmark_execution_suggestion?:BenchmarkExecutionSuggestion; benchmark_execution_control?:BenchmarkExecutionReceipt }
 export type RunListItem = {id:string; status:string; created_at:number; input_excerpt?:string}
 export type RunPage = {items:RunListItem[]; next_cursor?:string}
 export type RunRecord = Run & {

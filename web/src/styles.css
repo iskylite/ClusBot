@@ -421,7 +421,15 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
   .material-chip select, .material-menu .upload-material, .material-replacement { min-height: 44px; }
 }
 .material-chip svg, .message-material svg { flex: none; }
-.message-material { margin-top: 7px; overflow-wrap: anywhere; }
+.message-attachments { margin-top: 7px; }
+.message-attachment-grid { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0; }
+.message-material { flex: 0 1 auto; width: fit-content; padding: 6px 8px; border-radius: 8px; background: var(--selected); }
+.message-material > span { display: grid; gap: 1px; min-width: 0; }
+.message-material strong { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(28ch, 53vw); }
+.message-material small, .message-attachments summary { color: var(--muted); font-size: 12px; }
+.message-attachments details { margin-top: 6px; }
+.message-attachments summary { width: fit-content; cursor: pointer; }
+.message-attachments details[open] summary { margin-bottom: 6px; }
 .user-message { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
 .message:target { background: var(--selected); border-radius: 9px; }
 .user-message > div { min-width: 0; }

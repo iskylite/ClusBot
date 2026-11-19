@@ -24,6 +24,7 @@ import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearCompo
 import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './BenchmarkExecution'
 import {useConversationTasks,type TaskLink} from './ConversationTasks'
 import {BenchmarkConversation} from './BenchmarkConversation'
+import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import './styles.css'
 
 if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
@@ -877,6 +878,9 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const busy=activeRun(data?.run)
   const conversation=data?.conversation
   const run=data?.run
+  const executionSuggestion=run?.benchmark_execution_suggestion
+  const executionTarget=taskReference?.planRevision!==undefined ? taskReference :
+    executionSuggestion ? {taskID:executionSuggestion.task_id,title:'任务 '+executionSuggestion.task_id,planRevision:executionSuggestion.plan_revision} : undefined
   const taskLinks=new Map(eventTasks.map(link=>[link.taskID,link]))
   if(run?.task_id && !taskLinks.has(run.task_id))taskLinks.set(run.task_id,{taskID:run.task_id,benchmark:false})
   if(latestReceipt&&!taskLinks.has(latestReceipt.taskID))taskLinks.set(latestReceipt.taskID,latestReceipt)
@@ -986,6 +990,9 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {canResume && <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>}
       </div>}
       {id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
+      {id&&executionTarget&&<BenchmarkExecutionConversation key={executionTarget.taskID+':'+executionTarget.planRevision} conversationID={id}
+        target={executionTarget} run={run} disabled={Boolean(busy||conversation?.archived)}
+        canSuggest={taskReference?.taskID===executionTarget.taskID&&taskReference?.planRevision!==undefined} onChange={()=>void reload()}/>}
       <Composer inputRef={chatInput} reference={taskReference&&<div className="composer-task-reference">
         <button type="button" className="text-button" aria-haspopup="dialog" onClick={event=>{
           taskTrigger.current=event.currentTarget;setSelectedTask(taskReference.taskID)
