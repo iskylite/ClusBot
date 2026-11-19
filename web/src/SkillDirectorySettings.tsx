@@ -1,7 +1,8 @@
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react'
 import {api,APIError} from './api'
 
-type Skill={skill_id:string;scope_label:string;revision:number;version:number;base_revision:number;instructions:string;sha256:string;active:boolean;approved_at?:number}
+import {SkillDocumentImport,type DirectorySkill as Skill} from './SkillDocumentImport'
+
 type Proposal={skill:Pick<Skill,'skill_id'|'version'>}
 type Draft={scope:string;instructions:string;revision:number}
 const versionKey=(v:Pick<Skill,'skill_id'|'version'>)=>v.skill_id+':'+v.version
@@ -13,6 +14,7 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
   const [list,setList]=useState<Skill[]>()
   const [proposalKeys,setProposalKeys]=useState<Set<string>>()
   const [draft,setDraft]=useState<Draft>()
+  const [showImport,setShowImport]=useState(false)
   const [review,setReview]=useState<string>()
   const [fresh,setFresh]=useState(false)
   const [busy,setBusy]=useState(false)
@@ -74,8 +76,13 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
   }
   return <section id="skill-directory" className="settings-card" aria-labelledby="skill-directory-title">
     <header className="settings-section-heading"><h2 id="skill-directory-title">Skill 目录</h2>
-      <button type="button" className="outline" disabled={!fresh||busy||Boolean(draft)} onClick={()=>setDraft(empty)}>新建文字草稿</button></header>
-    <p className="muted">在这里保存和复核工作范围内的文字方法，不导入 SKILL.md 或安装包。启用不执行 Skill、不授予权限；要为指定会话选择版本，请回到该会话的配置。</p>
+      <div className="settings-actions">
+        <button type="button" className="outline" disabled={!fresh||busy||Boolean(draft)} onClick={()=>setDraft(empty)}>新建文字草稿</button>
+        <button type="button" className="outline" aria-expanded={showImport} onClick={()=>setShowImport(!showImport)}>导入 SKILL.md</button>
+      </div></header>
+    <p className="muted">在这里保存和复核文字方法，也可导入单个 SKILL.md 主文档；不支持安装包。启用不执行 Skill、不授予权限；要为指定会话选择版本，请回到该会话的配置。</p>
+    <SkillDocumentImport visible={showImport} skills={list} ready={fresh&&!busy} onClose={()=>setShowImport(false)}
+      onRefresh={()=>void refresh()} onImported={v=>{setReview(versionKey(v));void refresh()}}/>
     {!list&&!error&&<p role="status">正在读取 Skill 目录…</p>}
     {list?.length===0&&<p>暂无 Skill，可新建文字草稿。</p>}
     {list&&list.length>0&&<ul className="model-settings-list">{list.map(v=><li key={versionKey(v)}>
@@ -84,9 +91,13 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
     </li>)}</ul>}
     {picked&&<section className="settings-fields" aria-labelledby="skill-review-title">
       <h3 id="skill-review-title">{picked.scope_label} · v{picked.version}</h3>
-      <p className="muted">来源：{knownProposal?'受审经验提案':'目录未标明来源'}。{current?'当前启用 v'+current.version+'。':'当前未启用版本。'}</p>
+      <p className="muted">来源：{picked.source?.kind==='skill_md_main_document'?'SKILL.md 主文档':knownProposal?'受审经验提案':'目录未标明来源'}。{current?'当前启用 v'+current.version+'。':'当前未启用版本。'}</p>
+      {picked.source?.kind==='skill_md_main_document'&&<div className="muted">
+        <p>{picked.source.name} · {picked.source.description}</p>
+        <p>源文件 SHA-256：<code className="skill-digest">{picked.source.source_sha256}</code>。仅主文档，未导入附带资源。</p>
+      </div>}
       {picked.approved_at&&<p className="muted">批准时间：{new Date(picked.approved_at).toLocaleString('zh-CN')}</p>}
-      <p className="muted">内容指纹：<code className="skill-digest">{picked.sha256}</code></p>
+      <p className="muted">正文 SHA-256：<code className="skill-digest">{picked.sha256}</code></p>
       {picked.instructions?<p className="skill-instructions">{picked.instructions}</p>:<p>原始来源不可用，无法复核正文。</p>}
       {knownProposal&&!picked.approved_at&&<button type="button" className="text-button" onClick={openProposals}>在经验提案中复核并批准</button>}
       {!picked.approved_at&&picked.base_revision!==picked.revision&&<p>此草稿基于旧版本，不能直接启用。可用正文新建一版后复核。</p>}
