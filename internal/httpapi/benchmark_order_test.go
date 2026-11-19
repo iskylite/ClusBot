@@ -292,3 +292,48 @@ func TestBenchmarkChatConfirmDoesNotAcceptClientPlan(t *testing.T) {
 		t.Fatalf("unknown server preview ref accepted: %d %+v", status, result)
 	}
 }
+
+func TestStartBenchmarkDraftHTTP(t *testing.T) {
+	a := setupA1(t, filepath.Join(t.TempDir(), "start-draft-http.sqlite"))
+	defer a.close()
+	const path = "/api/v1/domain/benchmark-profiles/full/draft"
+	const body = `{"base_version":1,"expected_revision":0}`
+	req := a.request(http.MethodPost, path+"/start-from-published", body)
+	req.Header.Del("Cookie")
+	res, err := a.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous starter: %d", res.StatusCode)
+	}
+	if code, _ := a.post(path+"/start-from-published", body); code != http.StatusNotFound {
+		t.Fatalf("missing template: %d", code)
+	}
+	profile := `{"key":"full","version":1,"cases":[{"key":"test","binding":{"connection":"bench","revision":1,"tool":"test","validator":"structured-metrics@1"},"targets":["node-1"],"required_metrics":{"rate":"GB/s"}}]}`
+	if code, _ := a.post("/api/v1/domain/benchmark-profiles", profile); code != http.StatusCreated {
+		t.Fatalf("publish fixture: %d", code)
+	}
+	if code, _ := a.post(path+"/start-from-published", `{"base_version":1}`); code != http.StatusBadRequest {
+		t.Fatalf("missing CAS token: %d", code)
+	}
+	if code, _ := a.post(path+"/start-from-published", `{"base_version":2,"expected_revision":0}`); code != http.StatusNotFound {
+		t.Fatalf("never published template: %d", code)
+	}
+	if code, out := a.post(path+"/start-from-published", body); code != http.StatusOK || out["published"] != false {
+		t.Fatalf("start returned %d %+v", code, out)
+	}
+	if code, _ := a.post(path+"/start-from-published", body); code != http.StatusConflict {
+		t.Fatalf("stale restart: %d", code)
+	}
+	res, err = a.ts.Client().Do(a.request(http.MethodGet, path, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var got work.BenchmarkDraft
+	if err := json.NewDecoder(res.Body).Decode(&got); err != nil || res.StatusCode != http.StatusOK || got.BaseVersion != 1 || got.Revision != 1 || got.Published {
+		t.Fatalf("lost start response not discoverable: %+v %d %v", got, res.StatusCode, err)
+	}
+}

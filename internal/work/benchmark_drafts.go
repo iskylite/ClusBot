@@ -164,16 +164,70 @@ func (s *Store) SaveBenchmarkDraft(ctx context.Context, actor, key string, req B
 	if revision != req.ExpectedRevision {
 		return BenchmarkDraft{}, fmt.Errorf("%w：草稿已更新到修订 %d，请刷新后编辑", ErrConflict, revision)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_profile_drafts(profile_key,actor,revision,base_version,document)
- VALUES(?,?,?,?,?) ON CONFLICT(profile_key,actor) DO UPDATE SET revision=excluded.revision,base_version=excluded.base_version,
- document=excluded.document,published=0`, key, actor, revision+1, req.BaseVersion, string(raw)); err != nil {
-		return BenchmarkDraft{}, err
-	}
-	draft, err := loadBenchmarkDraft(ctx, tx, actor, key)
+	draft, err := writeBenchmarkDraft(ctx, tx, actor, key, revision, req.BaseVersion, raw)
 	if err != nil {
 		return BenchmarkDraft{}, err
 	}
 	return draft, tx.Commit()
+}
+
+// StartBenchmarkDraftFromPublished initializes authoring from an immutable
+// published snapshot, never from a run or client-supplied copies. An editor
+// must explicitly continue any unpublished draft rather than replace it.
+func (s *Store) StartBenchmarkDraftFromPublished(ctx context.Context, actor, key string, base, expected int) (BenchmarkDraft, error) {
+	if actor == "" {
+		return BenchmarkDraft{}, ErrAuthorizationDenied
+	}
+	const maxInt = int(^uint(0) >> 1)
+	if !validBenchKey(key) || base < 1 || base == maxInt || expected < 0 || expected == maxInt {
+		return BenchmarkDraft{}, ErrBenchmarkInput
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BenchmarkDraft{}, err
+	}
+	defer tx.Rollback()
+	profile, err := readBenchmarkProfile(tx, key, base)
+	if err != nil {
+		return BenchmarkDraft{}, err
+	}
+	if err := guardBenchmarkDraftBase(ctx, tx, key, base); err != nil {
+		return BenchmarkDraft{}, err
+	}
+	var revision int
+	var published bool
+	err = tx.QueryRowContext(ctx, `SELECT revision,published FROM benchmark_profile_drafts WHERE profile_key=? AND actor=?`, key, actor).Scan(&revision, &published)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return BenchmarkDraft{}, err
+	}
+	if revision != expected {
+		return BenchmarkDraft{}, fmt.Errorf("%w：草稿已更新到修订 %d，请刷新后编辑", ErrConflict, revision)
+	}
+	if revision != 0 && !published {
+		return BenchmarkDraft{}, fmt.Errorf("%w：已有未发布草稿，请继续编辑现有草稿", ErrConflict)
+	}
+	profile.Version = base + 1
+	raw, err := json.Marshal(profile)
+	if err != nil {
+		return BenchmarkDraft{}, err
+	}
+	if len(raw) > benchmarkDraftMaxBytes {
+		return BenchmarkDraft{}, ErrBenchmarkInput
+	}
+	draft, err := writeBenchmarkDraft(ctx, tx, actor, key, revision, base, raw)
+	if err != nil {
+		return BenchmarkDraft{}, err
+	}
+	return draft, tx.Commit()
+}
+
+func writeBenchmarkDraft(ctx context.Context, tx *sql.Tx, actor, key string, revision, base int, raw []byte) (BenchmarkDraft, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_profile_drafts(profile_key,actor,revision,base_version,document)
+ VALUES(?,?,?,?,?) ON CONFLICT(profile_key,actor) DO UPDATE SET revision=excluded.revision,base_version=excluded.base_version,
+ document=excluded.document,published=0`, key, actor, revision+1, base, string(raw)); err != nil {
+		return BenchmarkDraft{}, err
+	}
+	return loadBenchmarkDraft(ctx, tx, actor, key)
 }
 
 func (s *Store) PublishBenchmarkDraft(ctx context.Context, actor, key string, expected int) (BenchmarkDraft, error) {

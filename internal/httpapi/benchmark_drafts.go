@@ -28,6 +28,27 @@ func (s Server) saveBenchmarkDraft(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, draft)
 }
 
+func (s Server) startBenchmarkDraftFromPublished(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var req struct {
+		BaseVersion      int  `json:"base_version"`
+		ExpectedRevision *int `json:"expected_revision"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if req.ExpectedRevision == nil {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	draft, err := s.Store.StartBenchmarkDraftFromPublished(r.Context(), s.principal(r), r.PathValue("key"), req.BaseVersion, *req.ExpectedRevision)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, draft)
+}
+
 func (s Server) publishBenchmarkDraft(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ExpectedRevision int `json:"expected_revision"`
