@@ -37,6 +37,7 @@ type Server struct {
 }
 
 type submission struct {
+	TaskRef                     *work.MessageTaskRef           `json:"task_ref"`
 	RequestID                   string                         `json:"client_request_id"`
 	MessageID                   string                         `json:"client_message_id"`
 	Text                        string                         `json:"text"`
@@ -400,6 +401,12 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
+		if in.TaskRef != nil && (task || !validID(r.PathValue("id")) || !validID(in.TaskRef.TaskID) ||
+			in.BenchmarkExecutionTarget != nil || in.BenchmarkRevisionTarget != nil || in.InterpretBenchmarkExecution ||
+			in.Read != nil || len(in.Reads) > 0 || in.Criteria != nil || in.Filename != nil || in.ReplaceMaterials || in.Revision != 0) {
+			fail(w, 400, "invalid_task_reference", "只读任务引用只能用于当前会话的普通消息")
+			return
+		}
 		if in.InterpretBenchmarkExecution && in.BenchmarkExecutionTarget == nil {
 			benchmarkError(w, work.ErrBenchmarkInput)
 			return
@@ -449,7 +456,7 @@ func (s Server) submit(task bool) http.HandlerFunc {
 			writeSubmission(w, run)
 			return
 		}
-		if !task && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
+		if in.TaskRef == nil && !task && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
 			in.Criteria == nil && in.Filename == nil && !in.ReplaceMaterials {
 			run, handled, err := s.Store.SubmitMemoryCommand(r.Context(), key, in.Text, in.Scope, r.PathValue("id"))
 			if handled {
@@ -475,8 +482,8 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
-		delivery := work.Delivery{Criteria: in.Criteria, Filename: in.Filename, Revision: in.Revision, Read: in.Read, Reads: in.Reads, ReplaceMaterials: in.ReplaceMaterials}
-		if !task && delivery.Criteria == nil && delivery.Filename == nil && delivery.Read == nil &&
+		delivery := work.Delivery{TaskRef: in.TaskRef, Criteria: in.Criteria, Filename: in.Filename, Revision: in.Revision, Read: in.Read, Reads: in.Reads, ReplaceMaterials: in.ReplaceMaterials}
+		if in.TaskRef == nil && !task && delivery.Criteria == nil && delivery.Filename == nil && delivery.Read == nil &&
 			len(delivery.Reads) == 0 && !delivery.ReplaceMaterials && len(in.AttachmentIDs) == 0 {
 			fields := strings.Fields(in.Text)
 			var shortcut func(context.Context, string, string, string, string, string) (work.Run, bool, error)

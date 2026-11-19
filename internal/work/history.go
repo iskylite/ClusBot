@@ -109,6 +109,9 @@ UNION ALL SELECT seq FROM (SELECT seq FROM messages WHERE conversation_id=? AND 
 	if err != nil {
 		return MessagePage{}, err
 	}
+	if err := enrichMessageTaskRefs(tx, conversationID, page.Items); err != nil {
+		return MessagePage{}, err
+	}
 	if len(page.Items) != 0 {
 		first, last := page.Items[0].ID, page.Items[len(page.Items)-1].ID
 		var older, newer bool

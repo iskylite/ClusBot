@@ -95,3 +95,53 @@ func TestConversationEventsReconnectReportsInputRequiredWithoutQuestion(t *testi
 		t.Fatalf("unchanged reconnect duplicated the waiting marker: %+v", empty)
 	}
 }
+
+func TestConversationHistoryTaskRefIsExplicitAndReadOnly(t *testing.T) {
+	ctx := t.Context()
+	a := setupA1(t, filepath.Join(t.TempDir(), "task-ref-api.db"))
+	defer a.close()
+	r, err := a.store.Submit(ctx, "task-ref-test-origin", "needs input", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerCtx, stop := context.WithCancel(ctx)
+	workers := a.store.Start(workerCtx, waitingInputFixture{}, 1, work.RunLimits{ActiveTime: 5 * time.Second, ModelTimeout: time.Second, OutputTokens: 256})
+	defer func() { stop(); workers.Wait() }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		d, err := a.store.Detail(r.TaskID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Task.Status == "waiting_user" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fixture did not stop waiting for input")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	stop()
+	workers.Wait()
+	prefix := "/api/v1/conversations/" + r.ConversationID
+	body := `{"client_request_id":"read-only-task-tag","text":"普通备注","task_ref":{"task_id":"` + r.TaskID + `"}}`
+	if code, response := a.post(prefix+"/messages", body); code != http.StatusAccepted || response["model_pending"] != true {
+		t.Fatalf("task ref was not durably admitted: %d %+v", code, response)
+	}
+	if err := a.store.ProcessChatAdmissions(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.ts.Client().Do(a.request(http.MethodGet, prefix+"/history", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var page work.MessagePage
+	if err := json.NewDecoder(res.Body).Decode(&page); err != nil || len(page.Items) != 3 || page.Items[2].TaskRef == nil || page.Items[2].TaskRef.TaskID != r.TaskID || page.Items[1].TaskRef != nil {
+		t.Fatalf("wrong explicit task reference in history: %+v %v", page, err)
+	}
+	d, err := a.store.Detail(r.TaskID, true)
+	if err != nil || d.Task.Status != "waiting_user" || d.Run.TaskID != "" {
+		t.Fatalf("reference changed actual current task: %+v %v", d, err)
+	}
+}

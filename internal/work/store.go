@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 110
+const databaseSchemaVersion = 111
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -260,21 +260,22 @@ type Run struct {
 }
 
 type Message struct {
-	ID               int64          `json:"id,omitempty"`
-	RunID            string         `json:"run_id,omitempty"`
-	AssetQueryTaskID string         `json:"asset_query_task_id,omitempty"`
-	Role             string         `json:"role"`
-	Text             string         `json:"text"`
-	Materials        []Material     `json:"materials,omitempty"`
-	ReplaceMaterials bool           `json:"replace_materials,omitempty"`
-	MemoryRefs       []MemoryRef    `json:"memory_refs,omitempty"`
-	Incomplete       bool           `json:"incomplete,omitempty"`
-	RequiredInput    bool           `json:"-"`
-	Memories         []Memory       `json:"-"`
-	Experience       *ExperienceRef `json:"-"`
-	Skill            *SkillVersion  `json:"-"`
-	Read             *TaskRead      `json:"-"`
-	Reads            []TaskRead     `json:"-"`
+	TaskRef          *MessageTaskRef `json:"task_ref,omitempty"`
+	ID               int64           `json:"id,omitempty"`
+	RunID            string          `json:"run_id,omitempty"`
+	AssetQueryTaskID string          `json:"asset_query_task_id,omitempty"`
+	Role             string          `json:"role"`
+	Text             string          `json:"text"`
+	Materials        []Material      `json:"materials,omitempty"`
+	ReplaceMaterials bool            `json:"replace_materials,omitempty"`
+	MemoryRefs       []MemoryRef     `json:"memory_refs,omitempty"`
+	Incomplete       bool            `json:"incomplete,omitempty"`
+	RequiredInput    bool            `json:"-"`
+	Memories         []Memory        `json:"-"`
+	Experience       *ExperienceRef  `json:"-"`
+	Skill            *SkillVersion   `json:"-"`
+	Read             *TaskRead       `json:"-"`
+	Reads            []TaskRead      `json:"-"`
 }
 
 type Conversation struct {
@@ -630,6 +631,7 @@ func initializeDatabase(db *sql.DB) error {
 		{107, migrateBenchmarkRevisionModelRole},
 		{108, migrateBenchmarkAdmissionConversationSource},
 		{109, migrateBenchmarkExecutionControls},
+		{110, migrateMessageTaskRefs},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -847,6 +849,9 @@ func initializeDatabase(db *sql.DB) error {
 	if err := migrateBenchmarkExecutionControls(tx); err != nil {
 		return err
 	}
+	if err := migrateMessageTaskRefs(tx); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
 		return err
 	}
@@ -996,6 +1001,7 @@ func (s *Store) Submit(ctx context.Context, requestKey, text, scope, conversatio
 }
 
 type Delivery struct {
+	TaskRef          *MessageTaskRef `json:",omitempty"`
 	Criteria         *string
 	Filename         *string
 	Revision         int
@@ -1055,6 +1061,9 @@ func fullSubmissionFingerprint(text, scope, conversationID string, task bool, de
 			return "", err
 		}
 		fingerprint = digest(fingerprint + " reads " + string(payload))
+	}
+	if delivery.TaskRef != nil {
+		fingerprint = digest(fingerprint + " message task reference " + delivery.TaskRef.TaskID)
 	}
 	return fingerprint, nil
 }
@@ -1141,7 +1150,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 	changesDelivery := delivery.Criteria != nil || delivery.Filename != nil
 
 	var suggestion *BenchmarkRouterSuggestion
-	var isBenchmarkReceipt bool
+	isBenchmarkReceipt := delivery.TaskRef != nil
 	goal := text
 	reply := ""
 	if classification != nil && classification.Route != nil {
@@ -1303,6 +1312,21 @@ status='active',status_reason='queued',reason='补充要求已受理',requiremen
 	seq, err := res.LastInsertId()
 	if err != nil {
 		return Run{}, err
+	}
+	if delivery.TaskRef != nil {
+		actor, err := benchmarkRouterActor(ctx, tx, requestKey)
+		if err != nil {
+			return Run{}, err
+		}
+		if task || classification != nil {
+			return Run{}, ErrState
+		}
+		if err := checkMessageTaskRef(tx, actor, r.ConversationID, delivery.TaskRef); err != nil {
+			return Run{}, err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO message_task_refs VALUES(?,?,?)", seq, delivery.TaskRef.TaskID, actor); err != nil {
+			return Run{}, err
+		}
 	}
 	if err = recordInputEvent(tx, seq, requestKey); err != nil {
 		return Run{}, err
@@ -1524,6 +1548,9 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 		return d, err
 	}
 	if d.Messages, err = messages(tx, key, false); err != nil {
+		return d, err
+	}
+	if err := enrichMessageTaskRefs(tx, key, d.Messages); err != nil {
 		return d, err
 	}
 	r, err := scanRun(tx.QueryRow("SELECT "+runColumns+" FROM runs WHERE conversation_id=? ORDER BY memory_command,rowid DESC LIMIT 1", key))

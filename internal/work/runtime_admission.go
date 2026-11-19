@@ -286,6 +286,14 @@ func (s *Store) AdmitChat(ctx context.Context, requestKey, principal, conversati
 	if err != nil {
 		return AdmissionResult{}, err
 	}
+	if previous.ID == "" && delivery.TaskRef != nil {
+		if task {
+			return AdmissionResult{}, ErrState
+		}
+		if err := checkMessageTaskRef(tx, principal, conversationID, delivery.TaskRef); err != nil {
+			return AdmissionResult{}, err
+		}
+	}
 	receipt, err := admitChatInputWithFingerprint(tx, requestKey, principal, text, fingerprint, string(payload), now())
 	if err != nil {
 		return AdmissionResult{}, err

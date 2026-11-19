@@ -1,0 +1,69 @@
+package work
+
+import (
+	"database/sql"
+)
+
+type MessageTaskRef struct {
+	TaskID string `json:"task_id"`
+}
+
+func migrateMessageTaskRefs(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS message_task_refs (
+ message_seq INTEGER PRIMARY KEY REFERENCES messages(seq) ON DELETE CASCADE,
+ task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ actor TEXT NOT NULL
+)`)
+	return err
+}
+
+const visibleMessageTask = `t.conversation_id=c.id AND c.archived=0 AND NOT EXISTS(
+ SELECT 1 FROM benchmark_runs b WHERE b.task_id=t.id AND b.actor<>'user:session')`
+
+func checkMessageTaskRef(tx *sql.Tx, actor, conversation string, ref *MessageTaskRef) error {
+	if ref == nil {
+		return nil
+	}
+	if actor != "user:session" || conversation == "" || ref.TaskID == "" {
+		return sql.ErrNoRows
+	}
+	var id string
+	return tx.QueryRow(`SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
+WHERE c.id=? AND t.id=? AND `+visibleMessageTask, conversation, ref.TaskID).Scan(&id)
+}
+
+// enrichMessageTaskRefs is only for authenticated message display. Model
+// history and routing continue to read the undecorated message records.
+func enrichMessageTaskRefs(tx *sql.Tx, conversation string, messages []Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(messages))
+	for _, m := range messages {
+		ids = append(ids, m.ID)
+	}
+	rows, err := tx.Query(`SELECT m.seq,t.id FROM message_task_refs ref
+JOIN messages m ON m.seq=ref.message_seq AND m.role='user'
+JOIN tasks t ON t.id=ref.task_id JOIN conversations c ON c.id=m.conversation_id
+WHERE c.id=? AND ref.actor='user:session' AND m.seq IN (SELECT value FROM json_each(?))
+AND `+visibleMessageTask, conversation, toJSON(ids))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	refs := map[int64]string{}
+	for rows.Next() {
+		var seq int64
+		var task string
+		if err := rows.Scan(&seq, &task); err != nil {
+			return err
+		}
+		refs[seq] = task
+	}
+	for i := range messages {
+		if task := refs[messages[i].ID]; task != "" {
+			messages[i].TaskRef = &MessageTaskRef{TaskID: task}
+		}
+	}
+	return rows.Err()
+}

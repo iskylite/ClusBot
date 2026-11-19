@@ -42,6 +42,10 @@ type Router func(context.Context, string, []Message, []RouteCandidate, int) (Del
 // request identity. Model proposals are checked against the supplied candidates
 // and the selected Task is checked again in the submission transaction.
 func (s *Store) SubmitRoutedChat(ctx context.Context, key, text, scope, conversation string, delivery Delivery, route Router, materials ...string) (Run, error) {
+	if delivery.TaskRef != nil {
+		// It is display metadata, never a routing or write target.
+		return s.SubmitClassifiedChat(ctx, key, text, scope, conversation, delivery, nil, materials...)
+	}
 	ctx = context.WithValue(ctx, routerBudgetKey{}, true)
 	return s.SubmitClassifiedChat(ctx, key, text, scope, conversation, delivery, func(ctx context.Context, text string, history []Message, limit int) (DelegationResult, error) {
 		candidates, err := s.routeCandidates(ctx, text)
