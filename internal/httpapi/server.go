@@ -135,6 +135,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/domain/discovery/authorizations", s.grantDiscovery)
 	api.HandleFunc("POST /api/v1/domain/discovery/plans", s.publishDiscovery)
 	api.HandleFunc("DELETE /api/v1/domain/discovery/plans/{id}", s.stopDiscovery)
+	api.HandleFunc("GET /api/v1/domain/discovery/plans/{id}/observations", s.discoveryObservationHistory)
 	api.HandleFunc("GET /api/v1/domain/discovery/candidates", s.discoveryCandidates)
 	api.HandleFunc("POST /api/v1/domain/discovery/candidates/{id}/admit", s.admitDiscovery)
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)

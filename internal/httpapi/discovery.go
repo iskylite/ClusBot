@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"clusbot/internal/work"
 )
@@ -64,4 +65,32 @@ func (s Server) admitDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, item)
+}
+
+func (s Server) discoveryObservationHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	q := r.URL.Query()
+	limit := 25
+	if values, exists := q["limit"]; exists {
+		if len(values) != 1 {
+			discoveryError(w, work.ErrDiscoveryInput)
+			return
+		}
+		var err error
+		limit, err = strconv.Atoi(values[0])
+		if err != nil {
+			discoveryError(w, work.ErrDiscoveryInput)
+			return
+		}
+	}
+	if values, exists := q["before"]; exists && (len(values) != 1 || values[0] == "") {
+		discoveryError(w, work.ErrDiscoveryInput)
+		return
+	}
+	out, err := s.Store.ListDiscoveryObservations(r.Context(), s.principal(r), r.PathValue("id"), q.Get("before"), limit)
+	if err != nil {
+		discoveryError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
 }

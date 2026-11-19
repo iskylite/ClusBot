@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -124,6 +125,28 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 			t.Fatalf("address move changed identity %+v", c)
 		}
 	}
+	page, err := s.ListDiscoveryObservations(ctx, actor, "daily", "", 2)
+	if err != nil || page.PlanID != "daily" || page.Source != "inventory-1" || page.Scope != "POD7" || page.NextBefore == "" || len(page.Items) != 2 {
+		t.Fatalf("observation provenance page: %+v %v", page, err)
+	}
+	if item := page.Items[1]; item.Address != "192.0.2.3" || item.CandidateID != node.ID || item.ScanTaskID != next.task || item.PlanRevision != next.revision {
+		t.Fatalf("latest immutable observation: %+v", item)
+	}
+	historical, err := s.ListDiscoveryObservations(ctx, actor, "daily", page.NextBefore, 3)
+	if err != nil || len(historical.Items) != 3 || historical.NextBefore != "" ||
+		historical.Items[2].CandidateID != node.ID || historical.Items[2].Address != "192.0.2.1" || historical.Items[2].ScanTaskID != first.task {
+		t.Fatalf("history should not reflect current candidate address: %+v %v", historical, err)
+	}
+	if _, err := s.GrantDiscovery(ctx, "other", DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: now() + 600000}, source); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListDiscoveryObservations(ctx, "other", "daily", page.NextBefore, 3); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("a grant alone must not authorize another actor's plan: %v", err)
+	}
+	if _, err := s.ListDiscoveryObservations(ctx, actor, "daily", "bad:cursor", 3); !errors.Is(err, ErrDiscoveryInput) {
+		t.Fatalf("invalid cursor: %v", err)
+	}
+
 	var driftChecks, goals int
 	if err = s.db.QueryRow("SELECT count(*) FROM discovery_drift_checks WHERE task_id IS NOT NULL").Scan(&driftChecks); err != nil || driftChecks != 2 {
 		t.Fatalf("known undelivered and delivered assets both require read-only checks: %d %v", driftChecks, err)
@@ -166,6 +189,10 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.ListDiscoveryObservations(ctx, actor, "daily", page.NextBefore, 3); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("a prior cursor must not retain access after revocation: %v", err)
+	}
+
 	if _, ok, err = s.claimDiscovery(ctx, source, due+180000); err != nil || ok {
 		t.Fatalf("revoked grant made a new task: %v %v", ok, err)
 	}
