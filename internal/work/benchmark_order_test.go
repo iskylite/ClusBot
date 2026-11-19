@@ -44,7 +44,7 @@ func TestBenchmarkOrderBindingVersionsAndAuthorization(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 3}); !errors.Is(err, ErrBenchmarkInput) {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 3}); !errors.Is(err, ErrBenchmarkInput) {
 		t.Fatalf("unpublished version activated: %v", err)
 	}
 	text := "跑 POD7 全套基准"
@@ -89,7 +89,7 @@ func TestBenchmarkOrderBindingVersionsAndAuthorization(t *testing.T) {
 	if _, _, err := s.SubmitBenchmarkCommand(ctx, "first-direct", "another-user", "", text, "", provider); !errors.Is(err, ErrConflict) {
 		t.Fatalf("wrong principal replay: %v", err)
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
 		t.Fatal(err)
 	}
 	again, err := call("first-direct", text)
@@ -104,7 +104,7 @@ func TestBenchmarkOrderBindingVersionsAndAuthorization(t *testing.T) {
 	if err != nil || !strings.Contains(second.Response, "full@2") {
 		t.Fatalf("explicit switch didn't affect the next order: %+v %v", second, err)
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", nil); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", nil); err != nil {
 		t.Fatal(err)
 	}
 	disabled, err := call("after-disable", text)

@@ -50,6 +50,10 @@ func benchmarkOrderTargetFromText(text string) string {
 // target affects new requests only; previously accepted requests keep their
 // frozen profile. This is operator configuration, not a grant to run tests.
 func (s *Store) SetBenchmarkChatTarget(ctx context.Context, actor, target string, selector *BenchmarkProfileRef) error {
+	return s.UpdateBenchmarkChatTarget(ctx, actor, target, selector, nil)
+}
+
+func (s *Store) UpdateBenchmarkChatTarget(ctx context.Context, actor, target string, selector *BenchmarkProfileRef, expected *int) error {
 	if actor == "" {
 		return ErrAuthorizationDenied
 	}
@@ -62,6 +66,20 @@ func (s *Store) SetBenchmarkChatTarget(ctx context.Context, actor, target string
 		return err
 	}
 	defer tx.Rollback()
+	state, err := readBenchmarkChatTargetState(ctx, tx, target)
+	if err != nil {
+		return err
+	}
+	if expected != nil && *expected != state.BindingRevision {
+		return ErrBenchmarkChatTargetConflict
+	}
+	if (selector == nil && state.State == "disabled") ||
+		(selector != nil && state.State == "bound" && *selector == state.BenchmarkProfileRef) {
+		return nil
+	}
+	if expected == nil && state.BindingRevision != 0 {
+		return ErrBenchmarkChatTargetConflict
+	}
 	action := "benchmark_chat_target_disabled"
 	summary := target
 	if selector == nil {
@@ -85,6 +103,16 @@ ON CONFLICT(target) DO UPDATE SET profile_key=excluded.profile_key,profile_versi
 		}
 		action = "benchmark_chat_target_set"
 		summary = fmt.Sprintf("%s -> %s@%d", target, selector.Profile, selector.Version)
+	}
+	res, err := tx.ExecContext(ctx, `INSERT INTO benchmark_chat_target_revisions(target,revision) VALUES(?,1)
+ON CONFLICT(target) DO UPDATE SET revision=revision+1 WHERE revision=?`, target, state.BindingRevision)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrBenchmarkChatTargetConflict
 	}
 	if err := recordAudit(tx, AuditEvent{Event: action, Actor: actor, Summary: summary, OccurredAt: now()}); err != nil {
 		return err

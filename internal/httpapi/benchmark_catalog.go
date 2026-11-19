@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -74,7 +75,11 @@ func (s Server) benchmarkProfileVersion(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s Server) benchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
-	ref, err := s.Store.ReadBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"))
+	w.Header().Set("Cache-Control", "no-store")
+	ref, err := s.Store.ReadBenchmarkChatTargetState(r.Context(), s.principal(r), r.PathValue("target"))
+	if err == nil && ref.State == "disabled" && r.URL.Query().Get("include_disabled") != "true" {
+		err = sql.ErrNoRows
+	}
 	if err != nil {
 		benchmarkError(w, err)
 		return

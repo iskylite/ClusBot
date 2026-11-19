@@ -27,7 +27,7 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
 		t.Fatal(err)
 	}
 	taskRun, err := s.Submit(ctx, "existing-task", "已有任务", "bench", "", true)
@@ -72,7 +72,7 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 		if c := RouterBenchmarkSuggestion(call); c == nil || c.Profile.Version != 1 {
 			t.Fatalf("expected known initial candidate: %+v", c)
 		}
-		if err := s.SetBenchmarkChatTarget(call, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
+		if err := setBenchmarkTargetAtCurrent(t, s, call, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
 			t.Fatal(err)
 		}
 		return DelegationResult{Route: &RouteDecision{Kind: "benchmark_preview", BenchmarkTarget: "POD7"}}, nil
@@ -107,13 +107,13 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 		t.Fatalf("cached preview survived grant revocation: %v", err)
 	}
 	exec("UPDATE authorizations SET revoked_at=0 WHERE action='benchmark.execute' AND subject=?", actor)
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
 		t.Fatalf("suggestion silently accepted replaced profile: %v", err)
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
 		t.Fatal(err)
 	}
 	exec("UPDATE runs SET created_at=? WHERE id=?", now()-benchmarkRouterSuggestionLifetime.Milliseconds(), valid.ID)

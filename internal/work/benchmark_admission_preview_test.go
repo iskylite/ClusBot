@@ -100,7 +100,7 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 		t.Fatalf("model uncertainty promoted: %v", err)
 	}
 	if _, err := preview(actor, spoken, func(call context.Context, input BenchmarkAdmissionModelInput, limit int) (string, error) {
-		if err := s.SetBenchmarkChatTarget(call, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
+		if err := setBenchmarkTargetAtCurrent(t, s, call, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
 			t.Fatal(err)
 		}
 		return model(yes)(call, input, limit)
@@ -125,7 +125,7 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 	if _, err := accept(actor, out.PreviewID, confirm, p); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
 		t.Fatalf("moved published binding did not invalidate preview: %v", err)
 	}
-	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := accept(actor, out.PreviewID, confirm, nil); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {

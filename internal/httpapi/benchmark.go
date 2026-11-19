@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"clusbot/internal/work"
 )
@@ -29,21 +30,49 @@ func (s Server) publishBenchmarkProfile(w http.ResponseWriter, r *http.Request) 
 	}
 	jsonResponse(w, http.StatusCreated, map[string]any{"key": p.Key, "version": p.Version})
 }
-func (s Server) setBenchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
-	var selector work.BenchmarkProfileRef
-	if !decode(w, r, &selector) {
+func benchmarkChatTargetError(w http.ResponseWriter, err error) {
+	if errors.Is(err, work.ErrBenchmarkChatTargetConflict) {
+		fail(w, http.StatusConflict, "benchmark_chat_target_conflict", err.Error())
 		return
 	}
-	if err := s.Store.SetBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), &selector); err != nil {
-		benchmarkError(w, err)
+	benchmarkError(w, err)
+}
+
+func (s Server) setBenchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		work.BenchmarkProfileRef
+		ExpectedBindingRevision *int `json:"expected_binding_revision"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	if input.ExpectedBindingRevision != nil && *input.ExpectedBindingRevision < 0 {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	if err := s.Store.UpdateBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), &input.BenchmarkProfileRef, input.ExpectedBindingRevision); err != nil {
+		benchmarkChatTargetError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s Server) clearBenchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.SetBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), nil); err != nil {
-		benchmarkError(w, err)
+	var expected *int
+	if fields, ok := r.URL.Query()["expected_binding_revision"]; ok {
+		if len(fields) != 1 {
+			benchmarkError(w, work.ErrBenchmarkInput)
+			return
+		}
+		revision, err := strconv.Atoi(fields[0])
+		if err != nil || revision < 0 {
+			benchmarkError(w, work.ErrBenchmarkInput)
+			return
+		}
+		expected = &revision
+	}
+	if err := s.Store.UpdateBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), nil, expected); err != nil {
+		benchmarkChatTargetError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -32,6 +32,28 @@ func TestBenchmarkChatTargetAPI(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
+	readState := func(path string, want int) work.BenchmarkChatTargetState {
+		t.Helper()
+		resp, err := a.ts.Client().Do(a.request(http.MethodGet, path, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("state HTTP %d want %d", resp.StatusCode, want)
+		}
+		var state work.BenchmarkChatTargetState
+		if want == http.StatusOK {
+			if err := json.NewDecoder(resp.Body).Decode(&state); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state
+	}
+	if state := readState(target+"?include_disabled=true", http.StatusOK); state.BindingRevision != 0 || state.State != "disabled" || state.Target != "POD7" {
+		t.Fatalf("untouched target %+v", state)
+	}
+
 	if code := call(http.MethodPut, target, selector, false); code != http.StatusUnauthorized {
 		t.Fatalf("anonymous binding: %d", code)
 	}
@@ -45,6 +67,10 @@ func TestBenchmarkChatTargetAPI(t *testing.T) {
 	if code := call(http.MethodPut, target, selector, true); code != http.StatusNoContent {
 		t.Fatalf("activate: %d", code)
 	}
+	if state := readState(target, http.StatusOK); state.BindingRevision != 1 || state.State != "bound" || state.Profile != "full" || state.Version != 1 {
+		t.Fatalf("bound target %+v", state)
+	}
+
 	// The familiar sentence has a local suggestion fallback even with no
 	// configured model or provider, but no longer accepts a real test run.
 	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
@@ -59,9 +85,27 @@ func TestBenchmarkChatTargetAPI(t *testing.T) {
 			t.Fatalf("familiar phrase skipped confirmation or gave no preview path: %d %v", code, out)
 		}
 	}
-	if code := call(http.MethodDelete, target, "", true); code != http.StatusNoContent {
+	if code := call(http.MethodDelete, target, "", true); code != http.StatusConflict {
+		t.Fatalf("legacy clear silently changed an existing binding: %d", code)
+	}
+	if code := call(http.MethodDelete, target+"?expected_binding_revision=1", "", true); code != http.StatusNoContent {
 		t.Fatalf("disable: %d", code)
 	}
+	readState(target, http.StatusNotFound)
+	if state := readState(target+"?include_disabled=true", http.StatusOK); state.BindingRevision != 2 || state.State != "disabled" {
+		t.Fatalf("clear did not retain revision tombstone %+v", state)
+	}
+	resp, err := a.ts.Client().Do(a.request(http.MethodPut, target, `{"profile":"full","version":1,"expected_binding_revision":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conflict map[string]any
+	err = json.NewDecoder(resp.Body).Decode(&conflict)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict || err != nil || conflict["code"] != "benchmark_chat_target_conflict" {
+		t.Fatalf("wrong stale binding error: %d %+v %v", resp.StatusCode, conflict, err)
+	}
+
 	if code, out := a.post("/api/v1/conversations", `{"client_request_id":"benchmark-disabled","text":"跑 POD7 全套基准"}`); code != http.StatusAccepted || out["status"] != "completed" || out["task_id"] != "" {
 		t.Fatalf("unbound direct request: %d %v", code, out)
 	}
