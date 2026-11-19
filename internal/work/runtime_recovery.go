@@ -50,6 +50,7 @@ type RecoveryReport struct {
 	Failure            string
 	PendingResults     int // 未应用结果数
 	ReconciledRuns     int // 核对的未决执行数
+	AppliedTimerEvents int // 已消费的 Timer 到期事件（不等于完成后续工作）
 	DeliveredTimers    int // 投递的到期 Timer 数
 	TriggeredSchedules int // 触发的计划数
 	ReadyUnits         int // 就绪单元数
@@ -108,6 +109,12 @@ AND state='received' AND payload_ref<>''`); err != nil {
 		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
 	}
 	report.DeliveredTimers = deliveredTimers.Delivered
+	report.AppliedTimerEvents, err = s.consumeTimerInbox(ctx, now, 50)
+	if err != nil {
+		report.FailedPhase = PhaseWaitsTimers
+		report.Failure = err.Error()
+		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
+	}
 	triggered, err := scanDueSchedules(s.db, now, 20)
 	if err != nil {
 		report.FailedPhase = PhaseWaitsTimers
@@ -369,6 +376,9 @@ func (l *RuntimeLoop) tick(ctx context.Context) {
 	now := now()
 	// 确定性工作（模型不可用仍推进）：到期 Timer、Schedule、未决核对。
 	if _, err := scanDueTimers(l.store.db, now, 50, 5*time.Second); err != nil {
+		l.recordFailure()
+	}
+	if _, err := l.store.consumeTimerInbox(ctx, now, 50); err != nil {
 		l.recordFailure()
 	}
 	if _, err := scanDueSchedules(l.store.db, now, 20); err != nil {

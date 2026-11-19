@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1250" height="1110" viewBox="0 0 1250 1110" role="img" aria-labelledby="title desc">
+<title id="title">工具调用与作业回程｜O9、J17 和 T42</title><desc id="desc">发起调用、外部接收、结果核验是三个独立状态；Worker 的文字不改写它们。</desc>
+<style>text{font-family:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#18243b}.h{font-size:39px;font-weight:700}.s{font-size:20px;fill:#52647b}.t{font-size:23px;font-weight:700}.b{font-size:18px;fill:#405372}.l{font-size:17px;fill:#405372}.e{fill:none;stroke:#627a9a;stroke-width:2.6;stroke-linejoin:round}.d{stroke-dasharray:6 5}</style>
+<rect width="1250" height="1110" fill="#f7f9fc"/>
+<text x="40" y="62" class="h">工具调用与作业回程｜O9、J17 和 T42</text><text x="40" y="96" class="s">发起调用、外部接收、结果核验是三个独立状态；Worker 的文字不改写它们。</text>
+<rect x="40" y="135" width="655" height="119" rx="16" fill="#def5ec"/>
+<text x="58" y="170" class="t">① Go 固定本次调用并登记 O9</text>
+<text x="58" y="200" class="b">冻结目标、参数、连接和契约；事务内保存 Operation + 待发记录。</text>
+<text x="58" y="225" class="b">网关临发复核授权和现场状态；凭据不进模型上下文。</text>
+<rect x="40" y="300" width="655" height="111" rx="16" fill="#def5ec"/>
+<text x="58" y="335" class="t">② 适配器在事务外提交</text>
+<text x="58" y="365" class="b">内置 / CLI / HTTP / MCP；向已绑定服务提交。</text>
+<text x="58" y="390" class="b">返回 J17 → 保存连接与作业关联 → 建立当前 Wait。</text>
+<rect x="765" y="300" width="445" height="111" rx="16" fill="#fff0de"/>
+<text x="783" y="335" class="t">提交应答丢失</text>
+<text x="783" y="365" class="b">按提交幂等键向同一服务查证。</text>
+<text x="783" y="390" class="b">找不到原作业且效果不明 → 待核实。</text>
+<rect x="40" y="457" width="655" height="118" rx="16" fill="#def5ec"/>
+<text x="58" y="492" class="t">③ 接收推送，或主动查询同一作业</text>
+<text x="58" y="522" class="b">验证来源，持久化并去重；先记账再确认接收。</text>
+<text x="58" y="547" class="b">匹配连接 + J17、O9、T42 步骤和执行代际。</text>
+<rect x="765" y="457" width="445" height="118" rx="16" fill="#fff0de"/>
+<text x="783" y="492" class="t">早到、重复、迟到</text>
+<text x="783" y="522" class="b">未绑定先留存；绑定后重查。</text>
+<text x="783" y="547" class="b">重复不重复推进；旧代际留作证据。</text>
+<rect x="40" y="621" width="655" height="118" rx="16" fill="#def5ec"/>
+<text x="58" y="656" class="t">④ 同一次数据库提交里唤醒</text>
+<text x="58" y="686" class="b">仅当前 Wait 可关闭，保存作业终态并记录后继工作。</text>
+<text x="58" y="711" class="b">下一步是取本次作业的证据，不是把 Task 写为通过。</text>
+<rect x="765" y="621" width="445" height="118" rx="16" fill="#fff0de"/>
+<text x="783" y="656" class="t">先等到超时 / 取消</text>
+<text x="783" y="686" class="b">标对账或取消待确认，不等于已停止。</text>
+<text x="783" y="711" class="b">不能确认远端结束时，不把资源当空闲。</text>
+<rect x="40" y="785" width="655" height="118" rx="16" fill="#def5ec"/>
+<text x="58" y="820" class="t">⑤ 从同一作业取证据，逐项核对</text>
+<text x="58" y="850" class="b">看归属、实测配置、指标和必要证据；执行退出码不是验收。</text>
+<text x="58" y="875" class="b">达标另查配置阈值；缺证据不计为已核实。</text>
+<rect x="765" y="785" width="445" height="118" rx="16" fill="#fff0de"/>
+<text x="783" y="820" class="t">有指标但缺必需原始证据</text>
+<text x="783" y="850" class="b">指标已收到，原始证据缺失。</text>
+<text x="783" y="875" class="b">可给阶段报告，不能写完整或通过。</text>
+<rect x="40" y="949" width="1170" height="111" rx="16" fill="#e8f0ff"/>
+<text x="58" y="984" class="t">⑥ AI 写报告，Go 保存可追溯的结果</text>
+<text x="58" y="1014" class="b">交付用核实数据、证据引用与缺口；区分作业结束、测试跑齐、性能达标和资产验收。</text>
+<path class="e" d="M368 254 L368 300"/>
+<path fill="#627a9a" d="M368 300 L373 289 L363 289 Z"/>
+<path class="e" d="M368 411 L368 457"/>
+<path fill="#627a9a" d="M368 457 L373 446 L363 446 Z"/>
+<path class="e" d="M368 575 L368 621"/>
+<path fill="#627a9a" d="M368 621 L373 610 L363 610 Z"/>
+<path class="e" d="M368 739 L368 785"/>
+<path fill="#627a9a" d="M368 785 L373 774 L363 774 Z"/>
+<path class="e" d="M368 903 L368 949"/>
+<path fill="#627a9a" d="M368 949 L373 938 L363 938 Z"/>
+<path class="e" d="M695 356 L765 356"/>
+<path fill="#627a9a" d="M765 356 L754 351 L754 361 Z"/>
+<path class="e" d="M695 514 L765 514"/>
+<path fill="#627a9a" d="M765 514 L754 509 L754 519 Z"/>
+<path class="e" d="M695 678 L765 678"/>
+<path fill="#627a9a" d="M765 678 L754 673 L754 683 Z"/>
+<path class="e" d="M695 842 L765 842"/>
+<path fill="#627a9a" d="M765 842 L754 837 L754 847 Z"/>
+<text x="40" y="1091" class="l">人工或自动核对拿回原作业后回到③；无法证明副作用是否发生时，不重复提交。</text>
+</svg>

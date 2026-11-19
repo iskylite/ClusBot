@@ -23,25 +23,25 @@ import (
 
 // Operation 是 operations 的一行。
 type Operation struct {
-	OperationID     string
-	TaskID          string
-	StepID          string
-	CapabilityKey   string
+	OperationID       string
+	TaskID            string
+	StepID            string
+	CapabilityKey     string
 	CapabilityVersion int
-	ConnectionID    string
-	TargetRefs      string
-	ParamsDigest    string
-	AuthorizationRef string
-	IdempotencyKey  string
-	State           V3OperationState
-	AttemptCount    int
-	CurrentAttemptID string
-	PredecessorID   string
-	RegisteredAt    int64
-	UpdatedAt       int64
-	CompletedAt     int64
-	EffectRefs      string
-	FailureReason   string
+	ConnectionID      string
+	TargetRefs        string
+	ParamsDigest      string
+	AuthorizationRef  string
+	IdempotencyKey    string
+	State             V3OperationState
+	AttemptCount      int
+	CurrentAttemptID  string
+	PredecessorID     string
+	RegisteredAt      int64
+	UpdatedAt         int64
+	CompletedAt       int64
+	EffectRefs        string
+	FailureReason     string
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,18 @@ func registerOperation(tx *sql.Tx, o Operation, now int64) (Operation, error) {
 	var existingID string
 	err := tx.QueryRow(`SELECT operation_id FROM operations WHERE idempotency_key=?`, o.IdempotencyKey).Scan(&existingID)
 	if err == nil {
-		return readOperation(tx, existingID)
+		existing, err := readOperation(tx, existingID)
+		if err != nil {
+			return Operation{}, err
+		}
+		if existing.TaskID != o.TaskID || existing.StepID != o.StepID ||
+			existing.CapabilityKey != o.CapabilityKey || existing.CapabilityVersion != o.CapabilityVersion ||
+			existing.ConnectionID != o.ConnectionID || existing.TargetRefs != o.TargetRefs ||
+			existing.ParamsDigest != o.ParamsDigest || existing.AuthorizationRef != o.AuthorizationRef ||
+			existing.PredecessorID != o.PredecessorID {
+			return Operation{}, fmt.Errorf("%w：操作幂等键已绑定不同的执行意图", ErrConflict)
+		}
+		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Operation{}, err
@@ -170,14 +181,14 @@ func mapOutcomeUnknownToReconcile(tx *sql.Tx, operationID string, now int64) err
 
 // OperationAttempt 是 operation_attempts 的一行。
 type OperationAttempt struct {
-	AttemptID    string
-	OperationID  string
+	AttemptID     string
+	OperationID   string
 	AttemptNumber int
-	DispatchedAt int64
-	Receipt      string
-	Outcome      string // success/failure/unknown/pending
-	EvidenceRefs string
-	CompletedAt  int64
+	DispatchedAt  int64
+	Receipt       string
+	Outcome       string // success/failure/unknown/pending
+	EvidenceRefs  string
+	CompletedAt   int64
 }
 
 // dispatchOperationAttempt 派发一个尝试（P3-07.3）。
@@ -271,7 +282,7 @@ func recordConflictingReceipt(tx *sql.Tx, operationID, receipt, evidenceRef stri
 		// 终态：保留回执留证（不改写终态）。
 		return recordAudit(tx, AuditEvent{
 			TaskID: o.TaskID, Event: "conflicting_receipt_after_terminal", Actor: "system",
-			Summary: fmt.Sprintf("Operation %s 终态后收到矛盾回执（保留留证）", operationID),
+			Summary:   fmt.Sprintf("Operation %s 终态后收到矛盾回执（保留留证）", operationID),
 			DetailRef: evidenceRef, OccurredAt: now,
 		})
 	}

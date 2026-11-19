@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="830" viewBox="0 0 1200 830" role="img" aria-labelledby="title desc">
+<title id="title">ClusBot V3.1｜从入口到下一步</title><desc id="desc">运行时收到记录，不代表立刻执行；先确认它是在建新任务、续旧任务，还是只更新事实。</desc>
+<style>text{font-family:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#18243b}.h{font-size:39px;font-weight:700}.s{font-size:20px;fill:#52647b}.t{font-size:23px;font-weight:700}.b{font-size:18px;fill:#405372}.l{font-size:17px;fill:#405372}.e{fill:none;stroke:#627a9a;stroke-width:2.6;stroke-linejoin:round}.d{stroke-dasharray:6 5}</style>
+<rect width="1200" height="830" fill="#f7f9fc"/>
+<text x="40" y="62" class="h">ClusBot V3.1｜从入口到下一步</text><text x="40" y="96" class="s">运行时收到记录，不代表立刻执行；先确认它是在建新任务、续旧任务，还是只更新事实。</text>
+<rect x="40" y="132" width="1120" height="112" rx="16" fill="#e8f0ff"/>
+<text x="58" y="167" class="t">对话：交代、追问、修改、停止</text>
+<text x="58" y="197" class="b">Router 理解目标，向 Go 提交新请求或修订已有任务；也可以查状态后直接答复。</text>
+<rect x="40" y="284" width="340" height="100" rx="16" fill="#def5ec"/>
+<text x="58" y="319" class="t">① 周期计划到期</text>
+<text x="58" y="349" class="b">例如：今天 09:00 的发现计划</text>
+<rect x="430" y="284" width="340" height="100" rx="16" fill="#def5ec"/>
+<text x="448" y="319" class="t">② 原任务回执或到期</text>
+<text x="448" y="349" class="b">例如：J17 完成 / T42 等超时</text>
+<rect x="820" y="284" width="340" height="100" rx="16" fill="#def5ec"/>
+<text x="838" y="319" class="t">③ 外部观测</text>
+<text x="838" y="349" class="b">例如：发现工具上报新机器</text>
+<rect x="40" y="425" width="340" height="110" rx="16" fill="#eaf0f7"/>
+<text x="58" y="460" class="t">Go：按计划建新任务</text>
+<text x="58" y="490" class="b">查启用状态、范围和授权</text>
+<text x="58" y="515" class="b">同一次触发只开一件</text>
+<rect x="430" y="425" width="340" height="110" rx="16" fill="#eaf0f7"/>
+<text x="448" y="460" class="t">Go：匹配已有任务</text>
+<text x="448" y="490" class="b">核对作业和当前等待；续 T42</text>
+<text x="448" y="515" class="b">等超时则查证，不自动重跑</text>
+<rect x="820" y="425" width="340" height="110" rx="16" fill="#eaf0f7"/>
+<text x="838" y="460" class="t">领域服务：先保存事实</text>
+<text x="838" y="490" class="b">去重、识别资产或保留候选</text>
+<text x="838" y="515" class="b">有触发设置且获授权才建任务</text>
+<rect x="40" y="590" width="1120" height="103" rx="16" fill="#def5ec"/>
+<text x="58" y="625" class="t">Go 工作运行时：持久推进与执行准入</text>
+<text x="58" y="655" class="b">任务、步骤、操作和等待由 Go 记账。派发前检查有效授权、资产状态与资源占用。</text>
+<rect x="40" y="731" width="340" height="72" rx="16" fill="#def5ec"/>
+<text x="58" y="766" class="t">适配器：CLI / HTTP / MCP</text>
+<rect x="430" y="731" width="340" height="72" rx="16" fill="#eeeafd"/>
+<text x="448" y="766" class="t">上下文：按权限取材料</text>
+<rect x="820" y="731" width="340" height="72" rx="16" fill="#e8f0ff"/>
+<text x="838" y="766" class="t">Worker：按需分析与报告</text>
+<path class="e" d="M211 384 L211 425"/>
+<path fill="#627a9a" d="M211 425 L216 414 L206 414 Z"/>
+<path class="e" d="M600 384 L600 425"/>
+<path fill="#627a9a" d="M600 425 L605 414 L595 414 Z"/>
+<path class="e" d="M990 384 L990 425"/>
+<path fill="#627a9a" d="M990 425 L995 414 L985 414 Z"/>
+<path class="e" d="M210 535 L210 590"/>
+<path fill="#627a9a" d="M210 590 L215 579 L205 579 Z"/>
+<path class="e" d="M600 535 L600 590"/>
+<path fill="#627a9a" d="M600 590 L605 579 L595 579 Z"/>
+<path class="e" d="M990 535 L990 590"/>
+<path fill="#627a9a" d="M990 590 L995 579 L985 579 Z"/>
+<path class="e" d="M57 244 L57 263 L20 263 L20 640 L40 640"/>
+<path fill="#627a9a" d="M40 640 L29 635 L29 645 Z"/>
+<path class="e" d="M210 693 L210 731"/>
+<path fill="#627a9a" d="M210 731 L215 720 L205 720 Z"/>
+<path class="e" d="M600 693 L600 731"/>
+<path fill="#627a9a" d="M600 731 L605 720 L595 720 Z"/>
+<path class="e" d="M770 767 L820 767"/>
+<path fill="#627a9a" d="M820 767 L809 762 L809 772 Z"/>
+<text x="1005" y="570" class="l">仅在已触发时</text>
+</svg>

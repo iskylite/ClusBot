@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1290" height="1020" viewBox="0 0 1290 1020" role="img" aria-labelledby="title desc">
+<title id="title">工作运行时｜记录、分流、原子推进</title><desc id="desc">实线标下一处理步骤。三路共用持久收件和审计，但不共享同一种状态变更。</desc>
+<style>text{font-family:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#18243b}.h{font-size:39px;font-weight:700}.s{font-size:20px;fill:#52647b}.t{font-size:23px;font-weight:700}.b{font-size:18px;fill:#405372}.l{font-size:17px;fill:#405372}.e{fill:none;stroke:#627a9a;stroke-width:2.6;stroke-linejoin:round}.d{stroke-dasharray:6 5}</style>
+<rect width="1290" height="1020" fill="#f7f9fc"/>
+<text x="40" y="62" class="h">工作运行时｜记录、分流、原子推进</text><text x="40" y="96" class="s">实线标下一处理步骤。三路共用持久收件和审计，但不共享同一种状态变更。</text>
+<rect x="40" y="133" width="1210" height="120" rx="16" fill="#eeeafd"/>
+<text x="58" y="168" class="t">入站：先保存可信输入，不直接派发</text>
+<text x="58" y="198" class="b">外部来源验身、格式校验；按来源和事件 ID 去重，同键不同内容隔离。</text>
+<text x="58" y="223" class="b">本地 Timer 到期写入与推进标记需同事务，或具备可重放的等效保障。</text>
+<rect x="40" y="311" width="373" height="127" rx="16" fill="#def5ec"/>
+<text x="58" y="346" class="t">① 周期计划到期</text>
+<text x="58" y="376" class="b">按计划 ID 和 UTC 时点查重</text>
+<text x="58" y="401" class="b">核对当前计划、主体与授权</text>
+<rect x="458" y="311" width="373" height="127" rx="16" fill="#def5ec"/>
+<text x="476" y="346" class="t">② 原任务回执 / 等待到期</text>
+<text x="476" y="376" class="b">匹配连接、作业、执行代际、Wait</text>
+<text x="476" y="401" class="b">未绑定则留待关联；旧代际只留证</text>
+<rect x="876" y="311" width="374" height="127" rx="16" fill="#def5ec"/>
+<text x="894" y="346" class="t">③ 外部观测 / 领域变更</text>
+<text x="894" y="376" class="b">观测给领域服务：身份、来源与状态</text>
+<text x="894" y="401" class="b">未核实先保留候选，不触发写操作</text>
+<rect x="40" y="493" width="373" height="129" rx="16" fill="#eaf0f7"/>
+<text x="58" y="528" class="t">事务：登记本次有限任务</text>
+<text x="58" y="558" class="b">事件处理结果和新任务一起保存</text>
+<text x="58" y="583" class="b">禁用或过期则记原因，不派发</text>
+<rect x="458" y="493" width="373" height="129" rx="16" fill="#eaf0f7"/>
+<text x="476" y="528" class="t">事务：关闭等待、登记后继</text>
+<text x="476" y="558" class="b">同一事务更新 Wait、记操作结果</text>
+<text x="476" y="583" class="b">并登记后继；超时转对账，不判失败</text>
+<rect x="876" y="493" width="374" height="129" rx="16" fill="#eaf0f7"/>
+<text x="894" y="528" class="t">先提交事实，再评估触发</text>
+<text x="894" y="558" class="b">纳管迁移和待发送记录一起提交</text>
+<text x="894" y="583" class="b">有触发配置且授权有效才新建工作</text>
+<rect x="40" y="677" width="1210" height="117" rx="16" fill="#e8f0ff"/>
+<text x="58" y="712" class="t">调度：可执行的工作才领取、派发</text>
+<text x="58" y="742" class="b">检查任务版本、依赖、当前授权、资产和租约；固定步骤不调用 AI。</text>
+<text x="58" y="767" class="b">需要外部效果时先记 Operation + 待发记录，外部调用在事务外；等待释放 Worker。</text>
+<rect x="40" y="845" width="1210" height="125" rx="16" fill="#fff0de"/>
+<text x="58" y="880" class="t">崩溃后：从持久记录恢复，不从聊天猜</text>
+<text x="58" y="910" class="b">重扫到期 Timer、未处理 Inbox、待发记录、在途 Operation 和等待。</text>
+<text x="58" y="935" class="b">已尝试提交但效果未知：先用原操作号对账；不得因重启自动重复副作用。</text>
+<path class="e" d="M226 253 L226 311"/>
+<path fill="#627a9a" d="M226 311 L231 300 L221 300 Z"/>
+<path class="e" d="M644 253 L644 311"/>
+<path fill="#627a9a" d="M644 311 L649 300 L639 300 Z"/>
+<path class="e" d="M1063 253 L1063 311"/>
+<path fill="#627a9a" d="M1063 311 L1068 300 L1058 300 Z"/>
+<path class="e" d="M226 438 L226 493"/>
+<path fill="#627a9a" d="M226 493 L231 482 L221 482 Z"/>
+<path class="e" d="M644 438 L644 493"/>
+<path fill="#627a9a" d="M644 493 L649 482 L639 482 Z"/>
+<path class="e" d="M1063 438 L1063 493"/>
+<path fill="#627a9a" d="M1063 493 L1068 482 L1058 482 Z"/>
+<path class="e" d="M226 622 L226 677"/>
+<path fill="#627a9a" d="M226 677 L231 666 L221 666 Z"/>
+<path class="e" d="M644 622 L644 677"/>
+<path fill="#627a9a" d="M644 677 L649 666 L639 666 Z"/>
+<path class="e" d="M1063 622 L1063 677"/>
+<path fill="#627a9a" d="M1063 677 L1068 666 L1058 666 Z"/>
+<path class="e" d="M645 794 L645 845"/>
+<path fill="#627a9a" d="M645 845 L650 834 L640 834 Z"/>
+<text x="40" y="1001" class="l">只有“建了工作”或“已登记后继”会进入调度；仅记录事实、禁用、旧代际等分支到此为止。</text>
+<text x="241" y="655" class="l">成功创建</text>
+<text x="660" y="655" class="l">有待做工作</text>
+<text x="1078" y="655" class="l">仅在已触发时</text>
+<text x="662" y="825" class="l">若进程重启</text>
+</svg>

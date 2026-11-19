@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,25 +45,25 @@ type ScheduleTemplate struct {
 
 // Schedule 是 schedules 的一行。
 type Schedule struct {
-	ScheduleID       string
-	Kind             string // interval/cron/once
-	IntervalMS       int64
-	Cron             string
-	OnceAt           int64
-	Timezone         string
-	Template         ScheduleTemplate
-	TemplateVersion  int
-	Principal        string
-	ScopeLabel       string
-	Enabled          bool
-	NextAt           int64
-	ExpiresAt        int64
-	MissedPolicy     MissedPolicy
-	CatchupLimit     int
-	GoalID           string
-	Revision         int
-	CreatedAt        int64
-	UpdatedAt        int64
+	ScheduleID      string
+	Kind            string // interval/cron/once
+	IntervalMS      int64
+	Cron            string
+	OnceAt          int64
+	Timezone        string
+	Template        ScheduleTemplate
+	TemplateVersion int
+	Principal       string
+	ScopeLabel      string
+	Enabled         bool
+	NextAt          int64
+	ExpiresAt       int64
+	MissedPolicy    MissedPolicy
+	CatchupLimit    int
+	GoalID          string
+	Revision        int
+	CreatedAt       int64
+	UpdatedAt       int64
 }
 
 // validate 校验计划有效性（P1-09.5：不能用匿名后台超级权限）。
@@ -165,12 +166,12 @@ FROM schedules WHERE schedule_id=?`, scheduleID).
 
 // TriggerResult 是触发结果。
 type TriggerResult struct {
-	Created      bool
-	TaskID       string
+	Created       bool
+	TaskID        string
 	OccurrenceKey string
-	Outcome      string // created/skipped/coalesced/catchup/failed/rejected
-	NextAt       int64
-	Reason       string
+	Outcome       string // created/skipped/coalesced/catchup/failed/rejected
+	NextAt        int64
+	Reason        string
 }
 
 // occurrenceKey 计算一个发生点的稳定唯一键（重启保持稳定身份）。
@@ -183,6 +184,9 @@ func occurrenceKey(scheduleID string, scheduledAt int64) string {
 // 同发生点重复扫描只建一个 Task（occurrence 主键去重）。
 func triggerSchedule(tx *sql.Tx, s Schedule, now int64) (TriggerResult, error) {
 	// 触发前检查计划有效性和执行主体（P1-09.5）。
+	if s.NextAt <= 0 || s.NextAt > now {
+		return TriggerResult{Outcome: "skipped", Reason: "没有到期发生点", NextAt: s.NextAt}, nil
+	}
 	if !s.Enabled {
 		return TriggerResult{Outcome: "skipped", Reason: "计划已停用"}, nil
 	}
@@ -195,7 +199,19 @@ func triggerSchedule(tx *sql.Tx, s Schedule, now int64) (TriggerResult, error) {
 	// 计算发生点（漏触发策略）。
 	scheduledAt, outcome := resolveOccurrence(s, now)
 	if scheduledAt <= 0 {
-		return TriggerResult{Outcome: "skipped", Reason: "按漏触发策略跳过", NextAt: nextOccurrence(s, now)}, nil
+		next := nextOccurrence(s, now)
+		key := occurrenceKey(s.ScheduleID, s.NextAt)
+		const reason = "已错过完整周期，按计划跳过，不补发"
+		if _, err := tx.Exec(`INSERT INTO schedule_occurrences(schedule_id,occurrence_key,scheduled_at,outcome,detail,created_at)
+VALUES(?,?,?,'skipped',?,?) ON CONFLICT(schedule_id,occurrence_key) DO NOTHING`,
+			s.ScheduleID, key, s.NextAt, reason, now); err != nil {
+			return TriggerResult{}, err
+		}
+		if _, err := tx.Exec(`UPDATE schedules SET next_at=?, revision=revision+1, updated_at=? WHERE schedule_id=?`,
+			next, now, s.ScheduleID); err != nil {
+			return TriggerResult{}, err
+		}
+		return TriggerResult{Outcome: "skipped", Reason: reason, OccurrenceKey: key, NextAt: next}, nil
 	}
 	key := occurrenceKey(s.ScheduleID, scheduledAt)
 	// 幂等：同发生点已存在 → 返回原结果（重复扫描只建一个 Task）。
@@ -259,7 +275,10 @@ func resolveOccurrence(s Schedule, now int64) (int64, string) {
 	}
 	switch s.MissedPolicy {
 	case MissedSkip:
-		// 跳过：直接到下一个未来发生点（不补发错过的）。
+		// 一般轮询抖动仍执行当前周期；已跨过完整周期不补发。
+		if s.IntervalMS > 0 && now-s.NextAt >= s.IntervalMS {
+			return 0, "skipped"
+		}
 		return s.NextAt, "created"
 	case MissedCoalesce:
 		// 合并：错过的合并为一次（复用现有停机漏周期合并逻辑）。
@@ -283,12 +302,15 @@ func nextOccurrence(s Schedule, now int64) int64 {
 		if s.IntervalMS <= 0 {
 			return 0
 		}
-		// 推进到下一个未来发生点。
-		next := s.NextAt
-		for next <= now {
-			next += s.IntervalMS
+		// 长时间停机也不逐个遍历旧发生点。
+		if s.NextAt <= 0 || s.NextAt > now {
+			return s.NextAt
 		}
-		return next
+		delta := s.IntervalMS - (now-s.NextAt)%s.IntervalMS
+		if now > math.MaxInt64-delta {
+			return 0
+		}
+		return now + delta
 	case "once":
 		return 0 // 一次性，无下一个
 	default:
@@ -314,7 +336,7 @@ func scanDueSchedules(db *sql.DB, now int64, limit int) (ScanSchedulesResult, er
 		limit = 20
 	}
 	var result ScanSchedulesResult
-	rows, err := db.Query(`SELECT schedule_id FROM schedules WHERE enabled=1 AND next_at<=? AND (expires_at=0 OR expires_at>?) ORDER BY next_at LIMIT ?`,
+	rows, err := db.Query(`SELECT schedule_id FROM schedules WHERE enabled=1 AND next_at>0 AND next_at<=? AND (expires_at=0 OR expires_at>?) ORDER BY next_at,schedule_id LIMIT ?`,
 		now, now, limit)
 	if err != nil {
 		return result, err
@@ -328,7 +350,11 @@ func scanDueSchedules(db *sql.DB, now int64, limit int) (ScanSchedulesResult, er
 		}
 		ids = append(ids, id)
 	}
+	err = rows.Err()
 	rows.Close()
+	if err != nil {
+		return result, err
+	}
 	for _, id := range ids {
 		tx, err := db.Begin()
 		if err != nil {
