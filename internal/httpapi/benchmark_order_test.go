@@ -211,6 +211,29 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 		t.Fatalf("no-model progress missing real manual skip: %+v %v", skipped, err)
 	}
 
+	chatTask, err := a.store.SubmitBenchmarkRun(ctx, actor, work.BenchmarkRunRequest{RequestKey: "execution-control-chat-api", Profile: "full", Version: 1}, benchmarkReadProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	chatCode, chat := a.post("/api/v1/conversations", fmt.Sprintf(`{"client_request_id":"execution-chat-status-api","text":"/benchmark-status %s"}`, chatTask))
+	if chatCode != http.StatusAccepted {
+		t.Fatalf("no chat scope: %d %+v", chatCode, chat)
+	}
+	messagePath := fmt.Sprintf("/api/v1/conversations/%s/messages", chat["conversation_id"])
+	ambiguous := fmt.Sprintf(`{"client_request_id":"execution-chat-request-api","text":"第一项先别跑","benchmark_execution_target":{"task_id":"%s","expected_plan_revision":1}}`, chatTask)
+	if code, d := a.post(messagePath, ambiguous); code != http.StatusBadRequest || d["code"] != "benchmark_execution_clarify" {
+		t.Fatalf("ambiguous request was not clarified: %d %+v", code, d)
+	}
+	direct := strings.Replace(ambiguous, "第一项先别跑", "本次跳过第一项", 1)
+	var previous any
+	for range 2 {
+		code, d := a.post(messagePath, direct)
+		rec, ok := d["benchmark_execution_control"].(map[string]any)
+		if code != http.StatusAccepted || !ok || rec["state"] != "skipped_this_run" || previous != nil && d["run_id"] != previous {
+			t.Fatalf("explicit no-model request did not return a stable operation receipt: %d %+v", code, d)
+		}
+		previous = d["run_id"]
+	}
 }
 
 func TestBenchmarkChatConfirmDoesNotAcceptClientPlan(t *testing.T) {

@@ -241,19 +241,20 @@ type Task struct {
 }
 
 type Run struct {
-	ID                          string                     `json:"id"`
-	ConversationID              string                     `json:"conversation_id"`
-	TaskID                      string                     `json:"task_id,omitempty"`
-	Status                      string                     `json:"status"`
-	Response                    string                     `json:"response"`
-	Error                       string                     `json:"error,omitempty"`
-	ErrorCode                   string                     `json:"error_code,omitempty"`
-	Usage                       *ExecutionUsage            `json:"usage,omitempty"`
-	Generation                  int                        `json:"execution_generation"`
-	FollowupQueued              bool                       `json:"followup_queued,omitempty"`
-	BenchmarkRevisionSuggestion *BenchmarkRevisionTarget   `json:"benchmark_revision_suggestion,omitempty"`
-	BenchmarkSuggestion         *BenchmarkRouterSuggestion `json:"benchmark_suggestion,omitempty"`
-	RouterIntents               *[]RouterIntent            `json:"router_intents,omitempty"`
+	ID                          string                            `json:"id"`
+	ConversationID              string                            `json:"conversation_id"`
+	TaskID                      string                            `json:"task_id,omitempty"`
+	Status                      string                            `json:"status"`
+	Response                    string                            `json:"response"`
+	Error                       string                            `json:"error,omitempty"`
+	ErrorCode                   string                            `json:"error_code,omitempty"`
+	Usage                       *ExecutionUsage                   `json:"usage,omitempty"`
+	Generation                  int                               `json:"execution_generation"`
+	FollowupQueued              bool                              `json:"followup_queued,omitempty"`
+	BenchmarkExecutionControl   *BenchmarkExecutionControlReceipt `json:"benchmark_execution_control,omitempty"`
+	BenchmarkRevisionSuggestion *BenchmarkRevisionTarget          `json:"benchmark_revision_suggestion,omitempty"`
+	BenchmarkSuggestion         *BenchmarkRouterSuggestion        `json:"benchmark_suggestion,omitempty"`
+	RouterIntents               *[]RouterIntent                   `json:"router_intents,omitempty"`
 	admissionOutput             int
 }
 
@@ -1139,17 +1140,20 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 	changesDelivery := delivery.Criteria != nil || delivery.Filename != nil
 
 	var suggestion *BenchmarkRouterSuggestion
-	var isBenchmarkSuggestion bool
+	var isBenchmarkReceipt bool
 	goal := text
 	reply := ""
 	if classification != nil && classification.Route != nil {
 		route := classification.Route
 		switch route.Kind {
+		case "benchmark_execution_skip":
+			isBenchmarkReceipt = true
+			reply = "已跳过该测项，仅对本次生效。原方案和必测要求不变；这不算通过或免测。"
 		case "benchmark_revision_suggestion":
-			isBenchmarkSuggestion = true
+			isBenchmarkReceipt = true
 			reply = "已记录明确标注的基准修订要求。请打开预演核对，当前任务尚未改变。"
 		case "benchmark_preview":
-			isBenchmarkSuggestion = true
+			isBenchmarkReceipt = true
 			actor, err := benchmarkRouterActor(ctx, tx, requestKey)
 			if err != nil {
 				return Run{}, err
@@ -1223,7 +1227,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if _, err = tx.Exec("INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)", r.ConversationID, title(text), now()); err != nil {
 			return Run{}, err
 		}
-		if task && !isBenchmarkSuggestion {
+		if task && !isBenchmarkReceipt {
 			r.TaskID = id()
 			taskID = r.TaskID
 			if err = insertTask(tx, r, goal, scope, delivery); err != nil {
@@ -1234,7 +1238,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if err = checkConversationSubmission(tx, conversationID); err != nil {
 			return Run{}, err
 		}
-		if !isBenchmarkSuggestion {
+		if !isBenchmarkReceipt {
 			existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
 			if findErr == nil {
 				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
@@ -1365,6 +1369,9 @@ func previousSubmission(tx *sql.Tx, requestKey, fingerprint string) (Run, error)
 		}
 		if err == nil {
 			run.BenchmarkRevisionSuggestion, err = readBenchmarkRevisionSuggestion(tx, run.ID)
+		}
+		if err == nil {
+			run.BenchmarkExecutionControl, err = readBenchmarkExecutionChatReceipt(tx, run.ID)
 		}
 		return run, err
 	}

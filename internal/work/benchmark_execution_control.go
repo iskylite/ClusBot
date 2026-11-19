@@ -12,6 +12,7 @@ import (
 
 const benchmarkSkipThisRun = "skip_this_run"
 const benchmarkSkippedThisRun = "skipped_this_run"
+const benchmarkChatControlPrefix = "chat-execution:"
 
 var ErrBenchmarkCaseNotPending = errors.New("测项已不再等待派发，未跳过；请查看当前执行状态")
 
@@ -50,6 +51,22 @@ type BenchmarkExecutionControlReceipt struct {
 // ApplyBenchmarkExecutionControl changes dispatch disposition, not the plan
 // or acceptance requirements. It never calls or releases an external job.
 func (s *Store) ApplyBenchmarkExecutionControl(ctx context.Context, actor, task, step string, in BenchmarkExecutionControlInput) (BenchmarkExecutionControlReceipt, error) {
+	if strings.HasPrefix(in.RequestID, benchmarkChatControlPrefix) {
+		return BenchmarkExecutionControlReceipt{}, ErrBenchmarkInput
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BenchmarkExecutionControlReceipt{}, err
+	}
+	defer tx.Rollback()
+	out, err := applyBenchmarkExecutionControlTx(ctx, tx, actor, task, step, in)
+	if err != nil {
+		return BenchmarkExecutionControlReceipt{}, err
+	}
+	return out, tx.Commit()
+}
+
+func applyBenchmarkExecutionControlTx(ctx context.Context, tx *sql.Tx, actor, task, step string, in BenchmarkExecutionControlInput) (BenchmarkExecutionControlReceipt, error) {
 	if actor == "" {
 		return BenchmarkExecutionControlReceipt{}, sql.ErrNoRows
 	}
@@ -60,11 +77,6 @@ func (s *Store) ApplyBenchmarkExecutionControl(ctx context.Context, actor, task,
 		return BenchmarkExecutionControlReceipt{}, ErrBenchmarkInput
 	}
 	fingerprint := digest(toJSON([]any{step, in.Action, in.ExpectedPlanRevision, in.Reason}))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return BenchmarkExecutionControlReceipt{}, err
-	}
-	defer tx.Rollback()
 
 	var profile, state string
 	var active, profileVersion int
@@ -78,7 +90,7 @@ WHERE b.task_id=? AND b.actor=?`, task, actor).Scan(&profile, &profileVersion, &
 	out := BenchmarkExecutionControlReceipt{TaskID: task, StepID: step,
 		BenchmarkCaseExecutionControl: BenchmarkCaseExecutionControl{Action: in.Action, State: benchmarkSkippedThisRun, PlanRevision: active}}
 	var past string
-	err = tx.QueryRowContext(ctx, `SELECT request_digest,step_id,action,state,plan_revision
+	err := tx.QueryRowContext(ctx, `SELECT request_digest,step_id,action,state,plan_revision
 FROM benchmark_execution_controls WHERE task_id=? AND actor=? AND request_id=?`, task, actor, in.RequestID).
 		Scan(&past, &out.StepID, &out.Action, &out.State, &out.PlanRevision)
 	if err == nil {
@@ -179,5 +191,5 @@ WHERE step_id=? AND task_id=? AND phase='queued' AND operation_id=''`, toJSON(ma
 	if err := finalizeBenchmarkIfSettled(tx, task, stamp); err != nil {
 		return BenchmarkExecutionControlReceipt{}, err
 	}
-	return out, tx.Commit()
+	return out, nil
 }

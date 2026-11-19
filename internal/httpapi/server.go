@@ -37,18 +37,19 @@ type Server struct {
 }
 
 type submission struct {
-	RequestID               string                        `json:"client_request_id"`
-	MessageID               string                        `json:"client_message_id"`
-	Text                    string                        `json:"text"`
-	Scope                   string                        `json:"scope_label"`
-	AttachmentIDs           []string                      `json:"attachment_ids"`
-	ReplaceMaterials        bool                          `json:"replace_materials"`
-	Criteria                *string                       `json:"acceptance_criteria"`
-	Filename                *string                       `json:"required_filename"`
-	Revision                int                           `json:"revision"`
-	BenchmarkRevisionTarget *work.BenchmarkRevisionTarget `json:"benchmark_revision_target"`
-	Read                    *work.TaskReadRequest         `json:"mcp_read"`
-	Reads                   []work.TaskReadRequest        `json:"mcp_reads"`
+	RequestID                string                         `json:"client_request_id"`
+	MessageID                string                         `json:"client_message_id"`
+	Text                     string                         `json:"text"`
+	Scope                    string                         `json:"scope_label"`
+	AttachmentIDs            []string                       `json:"attachment_ids"`
+	ReplaceMaterials         bool                           `json:"replace_materials"`
+	Criteria                 *string                        `json:"acceptance_criteria"`
+	Filename                 *string                        `json:"required_filename"`
+	Revision                 int                            `json:"revision"`
+	BenchmarkExecutionTarget *work.BenchmarkExecutionTarget `json:"benchmark_execution_target"`
+	BenchmarkRevisionTarget  *work.BenchmarkRevisionTarget  `json:"benchmark_revision_target"`
+	Read                     *work.TaskReadRequest          `json:"mcp_read"`
+	Reads                    []work.TaskReadRequest         `json:"mcp_reads"`
 }
 
 func (s Server) Handler(assets fs.FS) http.Handler {
@@ -397,6 +398,30 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				return
 			}
 		}
+		if target := in.BenchmarkExecutionTarget; target != nil {
+			conversation := r.PathValue("id")
+			if task || !validID(conversation) || !validID(target.TaskID) || in.BenchmarkRevisionTarget != nil ||
+				len(in.AttachmentIDs) != 0 || in.Read != nil || len(in.Reads) != 0 || in.Criteria != nil ||
+				in.Filename != nil || in.Revision != 0 || in.ReplaceMaterials {
+				benchmarkError(w, work.ErrBenchmarkInput)
+				return
+			}
+			run, err := s.Store.SubmitBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target)
+			if errors.Is(err, work.ErrBenchmarkExecutionClarify) {
+				fail(w, 400, "benchmark_execution_clarify", err.Error())
+				return
+			}
+			if errors.Is(err, work.ErrBenchmarkCaseNotPending) {
+				fail(w, 409, "benchmark_case_not_pending", err.Error())
+				return
+			}
+			if err != nil {
+				benchmarkError(w, err)
+				return
+			}
+			writeSubmission(w, run)
+			return
+		}
 		if target := in.BenchmarkRevisionTarget; target != nil {
 			conversation := r.PathValue("id")
 			if task || !validID(conversation) || !validID(target.TaskID) || len(in.AttachmentIDs) != 0 ||
@@ -536,6 +561,9 @@ func writeSubmission(w http.ResponseWriter, run work.Run) {
 	response := map[string]any{"task_id": run.TaskID, "conversation_id": run.ConversationID, "run_id": run.ID, "status": run.Status}
 	if run.RouterIntents != nil {
 		response["router_intents"] = run.RouterIntents
+	}
+	if run.BenchmarkExecutionControl != nil {
+		response["benchmark_execution_control"] = run.BenchmarkExecutionControl
 	}
 	if run.BenchmarkRevisionSuggestion != nil {
 		response["benchmark_revision_suggestion"] = run.BenchmarkRevisionSuggestion

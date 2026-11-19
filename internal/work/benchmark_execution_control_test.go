@@ -211,3 +211,115 @@ func TestBenchmarkExecutionSkipVersusDispatch(t *testing.T) {
 		})
 	}
 }
+
+func TestBenchmarkExecutionChatIsAtomicAndOneShot(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "chat-execution.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { s.Close() }()
+	const actor = "user:session"
+	binding := BenchmarkBinding{Connection: "bench-test", Revision: 1, Tool: "test", Validator: benchmarkValidatorV1}
+	g := DomainBenchmarkGrant{Revision: 1, Connection: binding.Connection, Tool: binding.Tool, ExpiresAt: now() + 90000}
+	if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []DomainBenchmarkGrant{g}}}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []BenchmarkCase{
+		{Key: "first", Binding: binding, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}},
+		{Key: "second", Binding: binding, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}},
+	}
+	if err := s.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: "chat", Version: 1, Cases: cases}); err != nil {
+		t.Fatal(err)
+	}
+	p := &benchFixtureProvider{}
+	task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{RequestKey: "chat-exec-task", Profile: "chat", Version: 1}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, _, err := s.SubmitBenchmarkCommand(ctx, "execution-chat-status", actor, "", "/benchmark-status "+task, "", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := s.SubmitBenchmarkCommand(ctx, "other-chat-status", actor, "", "/benchmark-status "+task, "", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := BenchmarkExecutionTarget{TaskID: task, ExpectedPlanRevision: 1}
+	submit := func(key, text string) (Run, error) {
+		return s.SubmitBenchmarkExecutionChat(ctx, key, actor, chat.ConversationID, text, "", target)
+	}
+	for _, says := range []string{"第二项先别跑", "不要本次跳过第二项", "「本次跳过第二项」", "本次跳过第二项？", "本次跳过第2项并停掉第1项", "本次跳过 other", "本次跳过第9项"} {
+		if _, err := submit("chat-no-effect", says); !errors.Is(err, ErrBenchmarkExecutionClarify) {
+			t.Fatalf("unsafe or unknown selector %q: %v", says, err)
+		}
+	}
+	// Dispatch the first case, then verify that an ordinal cannot
+	// silently be reinterpreted against the remaining queued cases.
+	d, worked, err := s.claimBenchmark(ctx, p, now())
+	if err != nil || !worked || d.action != "start" || d.request.Case != "first" {
+		t.Fatalf("unexpected dispatch: %+v %t %v", d, worked, err)
+	}
+	if _, err := submit("cannot-skip-running", "本次跳过第一项"); !errors.Is(err, ErrBenchmarkCaseNotPending) {
+		t.Fatalf("already dispatched ordinal changed another case: %v", err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := s.db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`CREATE TRIGGER fail_chat_receipt BEFORE INSERT ON run_events
+WHEN NEW.kind='benchmark.execution_skipped' BEGIN SELECT RAISE(ABORT,'chat write failed'); END`)
+	const request, text = "persist-chat-execution-request", "本次跳过第二项"
+	if _, err := submit(request, text); err == nil {
+		t.Fatal("chat receipt failure reported success")
+	}
+	baseline, err := s.BenchmarkProgress(ctx, actor, task)
+	if err != nil || baseline.Cases[1].Phase != "queued" || baseline.Cases[0].TargetHolds != 1 {
+		t.Fatalf("failed chat did not roll back control: %+v %v", baseline, err)
+	}
+	exec("DROP TRIGGER fail_chat_receipt")
+	before, err := s.ReadConversationEvents(ctx, actor, chat.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := submit(request, text)
+	if err != nil || out.BenchmarkExecutionControl == nil || out.BenchmarkExecutionControl.StepID != baseline.Cases[1].StepID || out.TaskID != "" {
+		t.Fatalf("no authoritative chat receipt: %+v %v", out, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = reopened
+	replay, err := submit(request, text)
+	if err != nil || replay.ID != out.ID || replay.BenchmarkExecutionControl == nil || *replay.BenchmarkExecutionControl != *out.BenchmarkExecutionControl {
+		t.Fatalf("restart replays another action: %+v %v", replay, err)
+	}
+	if _, err := submit(request, "本次跳过 second"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("different text reused existing receipt: %v", err)
+	}
+	eventPage, err := s.ReadConversationEvents(ctx, actor, chat.ConversationID, before.Cursor)
+	if err != nil || len(eventPage.Events) != 2 || eventPage.Events[1].Kind != benchmarkExecutionSkippedEvent ||
+		eventPage.Events[1].RunID != out.ID || eventPage.Events[1].StepID != baseline.Cases[1].StepID || eventPage.Events[1].PlanRevision != 1 {
+		t.Fatalf("cannot recover actual chat control after restart: %+v %v", eventPage, err)
+	}
+	var count int
+	if err := s.db.QueryRow("SELECT count(*) FROM messages WHERE run_id=?", out.ID).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("expected exactly one user/assistant message: %d %v", count, err)
+	}
+	otherPage, err := s.ReadConversationEvents(ctx, actor, other.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range otherPage.Events {
+		if e.Kind == benchmarkExecutionSkippedEvent {
+			t.Fatal("chat result leaked to a conversation with no source execution")
+		}
+	}
+}

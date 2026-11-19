@@ -13,12 +13,14 @@ var ErrConversationEventCursorReset = errors.New("会话事件游标无法续读
 const conversationEventPageSize = 64
 
 type ConversationEvent struct {
-	ID       string `json:"id"`
-	RunID    string `json:"run_id"`
-	TaskID   string `json:"task_id,omitempty"`
-	Kind     string `json:"kind"`
-	Status   string `json:"status,omitempty"`
-	Revision int    `json:"revision,omitempty"`
+	ID           string `json:"id"`
+	StepID       string `json:"step_id,omitempty"`
+	PlanRevision int    `json:"plan_revision,omitempty"`
+	RunID        string `json:"run_id"`
+	TaskID       string `json:"task_id,omitempty"`
+	Kind         string `json:"kind"`
+	Status       string `json:"status,omitempty"`
+	Revision     int    `json:"revision,omitempty"`
 }
 
 type ConversationEventPage struct {
@@ -33,13 +35,15 @@ type conversationEventCursor struct {
 }
 
 const conversationEventsQuery = `SELECT e.seq,r.id,
- CASE WHEN e.kind='benchmark.admission_queued' AND json_valid(e.data)
+ CASE WHEN e.kind IN ('benchmark.admission_queued','benchmark.execution_skipped') AND json_valid(e.data)
  THEN COALESCE(json_extract(e.data,'$.task_id'),'')
  ELSE COALESCE((SELECT t.id FROM tasks t WHERE t.id=r.task_id AND t.conversation_id=r.conversation_id), '') END,
  e.kind, CASE WHEN e.kind='run.state_changed' AND json_valid(e.data)
   THEN COALESCE(json_extract(e.data,'$.status'),'') ELSE '' END,
  CASE WHEN e.kind='benchmark.revision_applied' AND json_valid(e.data)
-  THEN COALESCE(json_extract(e.data,'$.revision'),0) ELSE 0 END
+  THEN COALESCE(json_extract(e.data,'$.revision'),0) ELSE 0 END,
+ CASE WHEN e.kind='benchmark.execution_skipped' AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.step_id'),'') ELSE '' END,
+ CASE WHEN e.kind='benchmark.execution_skipped' AND json_valid(e.data) THEN COALESCE(json_extract(e.data,'$.plan_revision'),0) ELSE 0 END
 FROM runs r JOIN run_events e INDEXED BY events_by_run ON e.run_id=r.id
 WHERE r.conversation_id=:conversation AND (
  e.kind='run.state_changed'
@@ -52,6 +56,16 @@ WHERE r.conversation_id=:conversation AND (
   WHERE p.actor=:actor AND p.source_run=r.id AND p.source_run<>'' AND p.source_conversation=r.conversation_id AND p.confirmed_at>0
   AND p.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
  ))
+ OR (e.kind='benchmark.execution_skipped' AND EXISTS (
+  SELECT 1 FROM benchmark_execution_controls c JOIN benchmark_runs b ON b.task_id=c.task_id AND b.actor=c.actor
+  WHERE c.actor=:actor AND c.action='skip_this_run' AND c.state='skipped_this_run'
+  AND c.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
+  AND c.step_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.step_id') END
+  AND c.plan_revision=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.plan_revision') END
+ ) AND EXISTS (
+  SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
+  WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=:actor AND sub.run_id=r.id
+ ))
  OR (e.kind IN ('benchmark.revision_suggested','benchmark.revision_preview','benchmark.revision_applied') AND EXISTS (
   SELECT 1 FROM benchmark_runs b WHERE b.actor=:actor
   AND b.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
@@ -61,7 +75,7 @@ WHERE r.conversation_id=:conversation AND (
 func scanConversationEvent(row scanner, conversation string) (ConversationEvent, int64, error) {
 	var e ConversationEvent
 	var seq int64
-	if err := row.Scan(&seq, &e.RunID, &e.TaskID, &e.Kind, &e.Status, &e.Revision); err != nil {
+	if err := row.Scan(&seq, &e.RunID, &e.TaskID, &e.Kind, &e.Status, &e.Revision, &e.StepID, &e.PlanRevision); err != nil {
 		return ConversationEvent{}, 0, err
 	}
 	switch e.Status {
@@ -71,7 +85,13 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 	}
 	// This proof is over the safe event projection, not raw errors, messages,
 	// or material. It detects an unrelated anchor at the same cursor position.
-	if e.Kind == benchmarkAdmissionQueuedEvent {
+	if e.Kind == benchmarkExecutionSkippedEvent {
+		if e.TaskID == "" || e.StepID == "" || e.PlanRevision < 1 {
+			return ConversationEvent{}, 0, ErrState
+		}
+		e.Status = benchmarkSkippedThisRun
+		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status, e.TaskID, e.StepID, e.PlanRevision}))
+	} else if e.Kind == benchmarkAdmissionQueuedEvent {
 		if e.TaskID == "" {
 			return ConversationEvent{}, 0, ErrState
 		}
