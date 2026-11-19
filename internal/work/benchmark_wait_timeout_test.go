@@ -1,6 +1,8 @@
 package work
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -87,6 +89,7 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 		t.Fatal(err)
 	}
 	read(stamp+100, "acknowledged", "open") // no replay
+	var attentionID string
 	for _, subject := range []string{actor, "another:actor"} {
 		page, err := s.ListAttention(ctx, subject, stamp+200, 5, AttentionCursor{})
 		if err != nil {
@@ -95,6 +98,11 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 		if subject == actor {
 			if len(page.Items) != 1 || page.Items[0].Kind != "benchmark_wait" || page.Items[0].State != "result_pending" || page.Items[0].TaskID != task {
 				t.Fatalf("benchmark timeout projection: %+v", page)
+			}
+			attentionID = page.Items[0].ID
+			detail, err := s.ReadAttention(ctx, actor, attentionID, stamp+200)
+			if err != nil || detail.State != "result_pending" || detail.Source.Kind != "verified_timer_receipt" || detail.Source.WaitVersion != 1 {
+				t.Fatalf("benchmark timeout detail: %+v %v", detail, err)
 			}
 		} else if len(page.Items) != 0 {
 			t.Fatalf("foreign benchmark appeared in attention: %+v", page)
@@ -121,5 +129,12 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 	page, err := s.ListAttention(ctx, actor, now(), 5, AttentionCursor{})
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("resolved wait still appears as pending: %+v %v", page, err)
+	}
+	detail, err := s.ReadAttention(ctx, actor, attentionID, now())
+	if err != nil || detail.State != "result_recorded" || detail.Source.OperationState != "succeeded" {
+		t.Fatalf("closed item did not refresh in place: %+v %v", detail, err)
+	}
+	if _, err := s.ReadAttention(ctx, "another:actor", attentionID, now()); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign timeout detail revealed: %v", err)
 	}
 }

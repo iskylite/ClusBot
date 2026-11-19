@@ -50,4 +50,8 @@ func TestAttentionWithoutModelRequiresLogin(t *testing.T) {
 	if got := req(http.MethodGet, "/api/v1/attention?before_id=approval:x", "", cookie).Code; got != http.StatusBadRequest {
 		t.Fatalf("malformed cursor got %d", got)
 	}
+	resp = req(http.MethodGet, "/api/v1/attention/approval:unknown", "", cookie)
+	if resp.Code != http.StatusNotFound || !strings.Contains(resp.Body.String(), "attention_not_found") {
+		t.Fatalf("missing item detail got %d %s", resp.Code, resp.Body)
+	}
 }

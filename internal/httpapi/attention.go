@@ -35,3 +35,17 @@ func (s Server) listAttention(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, http.StatusOK, page)
 }
+
+func (s Server) attentionDetail(w http.ResponseWriter, r *http.Request) {
+	item, err := s.Store.ReadAttention(r.Context(), s.principal(r), r.PathValue("id"), time.Now().UnixMilli())
+	if work.IsAttentionNotFound(err) {
+		fail(w, http.StatusNotFound, "attention_not_found", "未找到待处理事项")
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, http.StatusOK, item)
+}
