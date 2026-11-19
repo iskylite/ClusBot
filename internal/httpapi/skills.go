@@ -104,3 +104,46 @@ func (s Server) setConversationSkillSelection(w http.ResponseWriter, r *http.Req
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func skillDocumentError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, work.ErrSkillDocument):
+		fail(w, http.StatusBadRequest, "invalid_skill_document", err.Error())
+	case errors.Is(err, work.ErrSkillDocumentSource):
+		fail(w, http.StatusConflict, "skill_document_source_changed", err.Error())
+	default:
+		writeError(w, err)
+	}
+}
+
+func (s Server) previewSkillDocument(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.SkillDocumentInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.PreviewSkillDocument(r.Context(), in)
+	if err != nil {
+		skillDocumentError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) importSkillDocument(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in struct {
+		work.SkillDocumentInput
+		ExpectedSourceSHA256 string `json:"expected_source_sha256"`
+		PreviewBinding       string `json:"preview_binding"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.ImportSkillDocument(r.Context(), in.SkillDocumentInput, in.ExpectedSourceSHA256, in.PreviewBinding)
+	if err != nil {
+		skillDocumentError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, out)
+}

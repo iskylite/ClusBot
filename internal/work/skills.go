@@ -11,15 +11,16 @@ import (
 var ErrSkill = errors.New("请选择工作范围并填写方法说明")
 
 type SkillVersion struct {
-	SkillID      string `json:"skill_id"`
-	Scope        string `json:"scope_label"`
-	Revision     int    `json:"revision"`
-	Version      int    `json:"version"`
-	BaseRevision int    `json:"base_revision"`
-	Instructions string `json:"instructions"`
-	Digest       string `json:"sha256"`
-	Active       bool   `json:"active"`
-	ApprovedAt   *int64 `json:"approved_at,omitempty"`
+	SkillID      string               `json:"skill_id"`
+	Scope        string               `json:"scope_label"`
+	Revision     int                  `json:"revision"`
+	Version      int                  `json:"version"`
+	BaseRevision int                  `json:"base_revision"`
+	Instructions string               `json:"instructions"`
+	Digest       string               `json:"sha256"`
+	Active       bool                 `json:"active"`
+	ApprovedAt   *int64               `json:"approved_at,omitempty"`
+	Source       *SkillDocumentSource `json:"source,omitempty"`
 }
 
 func scanSkill(row scanner) (SkillVersion, error) {
@@ -58,6 +59,10 @@ func (s *Store) Skills(ctx context.Context) ([]SkillVersion, error) {
 	rows.Close()
 	for i := range versions {
 		v := &versions[i]
+		v.Source, err = readSkillDocumentSource(tx, v.SkillID, v.Version)
+		if err != nil {
+			return nil, err
+		}
 		if err := verifySkillProposalSources(tx, v.SkillID, v.Version); errors.Is(err, ErrExperienceSource) {
 			v.Instructions = ""
 		} else if err != nil {

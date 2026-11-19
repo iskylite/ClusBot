@@ -111,6 +111,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/skill-proposals/{id}/approve", s.approveSkillProposal)
 	api.HandleFunc("GET /api/v1/skills", s.listSkills)
 	api.HandleFunc("POST /api/v1/skills", s.draftSkill)
+	api.HandleFunc("POST /api/v1/skills/import-preview", s.previewSkillDocument)
+	api.HandleFunc("POST /api/v1/skills/import", s.importSkillDocument)
 	api.HandleFunc("POST /api/v1/skills/{id}/activate", s.activateSkill)
 	api.HandleFunc("POST /api/v1/skills/{id}/disable", s.disableSkill)
 	api.HandleFunc("GET /api/v1/goals", s.listGoals)
