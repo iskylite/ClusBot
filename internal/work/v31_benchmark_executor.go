@@ -24,6 +24,9 @@ func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider
 	if provider == nil {
 		return false, nil
 	}
+	if err := s.applyBenchmarkHints(ctx, now()); err != nil {
+		return false, err
+	}
 	d, worked, err := s.claimBenchmark(ctx, provider, now())
 	if err != nil || !worked || d.action == "" {
 		return worked, err
@@ -205,7 +208,7 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 		}
 	}
 	d.generation++
-	if _, err = tx.Exec(`UPDATE benchmark_cases SET phase=?,operation_id=?,generation=?,next_at=? WHERE step_id=?`, phase, d.operation, d.generation, stamp+benchmarkClaimMS, d.step); err != nil {
+	if _, err = tx.Exec(`UPDATE benchmark_cases SET phase=?,operation_id=?,generation=?,next_at=?,call_until=? WHERE step_id=?`, phase, d.operation, d.generation, stamp+benchmarkClaimMS, stamp+benchmarkClaimMS, d.step); err != nil {
 		return d, false, err
 	}
 	return d, true, tx.Commit()
@@ -224,6 +227,10 @@ func (s *Store) settleBenchmark(ctx context.Context, d benchmarkDispatch, confir
 	if generation != d.generation {
 		return nil
 	}
+	if _, err = tx.Exec("UPDATE benchmark_cases SET call_until=0 WHERE step_id=?", d.step); err != nil {
+		return err
+	}
+
 	if d.action == "cancel" {
 		summary := "已请求停止，等待提供方确认作业终态"
 		if cause != nil {
@@ -406,6 +413,7 @@ type v31BenchReport struct {
 	benchmarkAssessment
 	VerifiedMetrics map[string]map[string]benchmarkMetric `json:"verified_metrics"`
 	RawArtifactIDs  map[string]string                     `json:"raw_artifact_ids,omitempty"`
+	Comparison      *benchmarkComparison                  `json:"comparison,omitempty"`
 }
 
 func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (v31BenchReport, error) {
@@ -436,6 +444,7 @@ func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (
 			x.Metrics[key] = benchmarkMetric(mv)
 		}
 		if raw := m.Raw; raw != nil {
+			x.Raw = &benchmarkRawEvidence{Job: job, Target: m.Target, Check: d.spec.Key}
 			total += len(raw.Bytes)
 			if total <= 8<<20 && len(raw.Bytes) > 0 && len(raw.Ref) <= 256 && raw.Ref != "" && digest(string(raw.Bytes)) == raw.SHA256 {
 				artifactID := digest(toJSON([]string{d.operation, d.job, m.Target, raw.Ref, raw.SHA256}))
@@ -473,5 +482,13 @@ ON CONFLICT(artifact_id) DO NOTHING`, artifactID, d.step, m.Target, raw.Ref, raw
 			out.RawArtifactIDs[o.Target] = o.Raw.Ref
 		}
 	}
+	if out.Complete && len(d.spec.ComparisonKeys) > 0 {
+		comparison, err := previousBenchmarkComparison(tx, d, out.VerifiedMetrics)
+		if err != nil {
+			return out, err
+		}
+		out.Comparison = comparison
+	}
+
 	return out, nil
 }

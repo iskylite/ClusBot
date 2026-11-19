@@ -125,6 +125,19 @@ func benchmarkAsset(tx *sql.Tx, ref string) (OpsAsset, error) {
 }
 
 func (s *Store) SubmitBenchmarkRun(ctx context.Context, actor string, request BenchmarkRunRequest, provider BenchmarkProvider) (string, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	task, err := submitBenchmarkRunTx(tx, actor, request, provider, now())
+	if err != nil {
+		return "", err
+	}
+	return task, tx.Commit()
+}
+
+func submitBenchmarkRunTx(tx *sql.Tx, actor string, request BenchmarkRunRequest, provider BenchmarkProvider, stamp int64) (string, error) {
 	if actor == "" {
 		return "", ErrAuthorizationDenied
 	}
@@ -132,18 +145,14 @@ func (s *Store) SubmitBenchmarkRun(ctx context.Context, actor string, request Be
 		return "", ErrBenchmarkInput
 	}
 	finger := digest(toJSON([]any{request.Profile, request.Version}))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return "", err
-	}
-	defer tx.Rollback()
+
 	var old, key string
-	err = tx.QueryRow(`SELECT task_id,fingerprint FROM benchmark_runs WHERE actor=? AND request_key=?`, actor, request.RequestKey).Scan(&old, &key)
+	err := tx.QueryRow(`SELECT task_id,fingerprint FROM benchmark_runs WHERE actor=? AND request_key=?`, actor, request.RequestKey).Scan(&old, &key)
 	if err == nil {
 		if key != finger {
 			return "", ErrConflict
 		}
-		return old, tx.Commit()
+		return old, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -152,7 +161,6 @@ func (s *Store) SubmitBenchmarkRun(ctx context.Context, actor string, request Be
 	if err != nil {
 		return "", err
 	}
-	stamp := now()
 	taskID, conversation := id(), id()
 	if _, err = tx.Exec(`INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)`, conversation, "基准 "+p.Key, stamp); err != nil {
 		return "", err
@@ -203,7 +211,7 @@ VALUES(?,?,?,?,?,'queued')`, step, taskID, c.Key, toJSON(targets), toJSON(auths)
 			}
 		}
 	}
-	return taskID, tx.Commit()
+	return taskID, nil
 }
 
 func (s *Store) BenchmarkProgress(ctx context.Context, actor, taskID string) (BenchmarkRunProgress, error) {

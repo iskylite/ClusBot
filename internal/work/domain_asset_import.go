@@ -21,6 +21,7 @@ type DomainAssetEntry struct {
 // DomainBenchmarkGrant is an explicit local operator grant, never derived
 // from a published plan, a provider claim, or a user message.
 type DomainBenchmarkGrant struct {
+	Revision   int                 `yaml:"revision" json:"revision"`
 	Connection string              `yaml:"connection" json:"connection"`
 	Tool       string              `yaml:"tool" json:"tool"`
 	Allowed    map[string][]string `yaml:"allowed" json:"allowed"`
@@ -65,7 +66,7 @@ func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEnt
 			return fmt.Errorf("%w：资产 %s 的身份或类型与现有记录不符", ErrConflict, ref)
 		}
 		for _, grant := range entry.Benchmark {
-			if !validBenchKey(grant.Connection) || !validBenchKey(grant.Tool) || grant.ExpiresAt <= stamp || len(grant.Allowed) > 32 {
+			if grant.Revision < 1 || !validBenchKey(grant.Connection) || !validBenchKey(grant.Tool) || grant.ExpiresAt <= stamp || len(grant.Allowed) > 32 {
 				return ErrBenchmarkInput
 			}
 			for k, values := range grant.Allowed {

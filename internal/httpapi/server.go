@@ -32,6 +32,7 @@ type Server struct {
 	WorkspacePath     string
 	TicketProvider    *work.TicketProvider
 	BenchmarkProvider work.BenchmarkProvider
+	BenchmarkEvents   *work.BenchmarkEventReceiver
 	DiscoverySource   work.DiscoveryScanSource
 }
 
@@ -215,6 +216,11 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 			jsonResponse(w, 200, map[string]string{"status": "ok"})
 			return
 		}
+		if r.Method == "POST" && r.URL.Path == "/api/v1/provider/benchmark-events" {
+			s.benchmarkEvent(w, r)
+			return
+		}
+
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 			if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != "http://"+r.Host {
@@ -372,6 +378,15 @@ func (s Server) submit(task bool) http.HandlerFunc {
 		delivery := work.Delivery{Criteria: in.Criteria, Filename: in.Filename, Revision: in.Revision, Read: in.Read, Reads: in.Reads, ReplaceMaterials: in.ReplaceMaterials}
 		if !task && delivery.Criteria == nil && delivery.Filename == nil && delivery.Read == nil &&
 			len(delivery.Reads) == 0 && !delivery.ReplaceMaterials && len(in.AttachmentIDs) == 0 {
+			if run, handled, err := s.Store.SubmitBenchmarkCommand(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, s.BenchmarkProvider); handled {
+				if err != nil {
+					benchmarkError(w, err)
+					return
+				}
+				writeSubmission(w, run)
+				return
+			}
+
 			if ref := work.AssetAcceptanceQueryRef(in.Text); ref != "" {
 				run, err := s.Store.SubmitChatAssetAcceptance(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, ref)
 				if err != nil {

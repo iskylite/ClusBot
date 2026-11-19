@@ -11,6 +11,8 @@ type benchFixtureProvider struct {
 	started, looked, read      int
 	key, job                   string
 	loseReply, missingEvidence bool
+	jobOverride                string
+	valueOverride              float64
 }
 
 func (b *benchFixtureProvider) Supports(binding BenchmarkBinding) bool {
@@ -20,6 +22,9 @@ func (b *benchFixtureProvider) Start(_ context.Context, r BenchmarkJobRequest) (
 	b.started++
 	b.key = r.IdempotencyKey
 	b.job = "job-ID"
+	if b.jobOverride != "" {
+		b.job = b.jobOverride
+	}
 	if b.loseReply {
 		return "", errors.New("response lost after acceptance")
 	}
@@ -37,8 +42,12 @@ func (b *benchFixtureProvider) Get(_ context.Context, r BenchmarkJobRequest, job
 	if r.IdempotencyKey != b.key || job != b.job {
 		return BenchmarkJobResult{}, ErrConflict
 	}
+	value := 100.0
+	if b.valueOverride != 0 {
+		value = b.valueOverride
+	}
 	m := BenchmarkMeasurement{Target: "node-1", Outcome: "measured", ActualConfig: map[string]string{"gpu_count": "40"},
-		Metrics: map[string]BenchmarkMeasuredMetric{"rate": {Value: 100, Unit: "GB/s"}}}
+		Metrics: map[string]BenchmarkMeasuredMetric{"rate": {Value: value, Unit: "GB/s"}}}
 	if !b.missingEvidence {
 		m.Raw = &BenchmarkRawArtifact{Ref: "stdout", Bytes: []byte("test output"), SHA256: digest("test output")}
 	}
@@ -59,7 +68,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { s.Close() })
-			grant := DomainBenchmarkGrant{Connection: "bench-test", Tool: "test", Allowed: map[string][]string{"gpu_count": {"40"}}, ExpiresAt: now() + 120000}
+			grant := DomainBenchmarkGrant{Revision: 1, Connection: "bench-test", Tool: "test", Allowed: map[string][]string{"gpu_count": {"40"}}, ExpiresAt: now() + 120000}
 			if err = s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "inventory-1", Benchmark: []DomainBenchmarkGrant{grant}}}); err != nil {
 				t.Fatal(err)
 			}
@@ -73,6 +82,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 				t.Fatal(err)
 			}
 			p.Cases[0].Parameters = map[string]string{"gpu_count": "72"}
+			p.Cases[0].ActualConfig = map[string]string{"gpu_count": "72"}
 			if err = s.PublishBenchmarkProfile(ctx, actor, p); !errors.Is(err, ErrConflict) {
 				t.Fatalf("published profile overwritten: %v", err)
 			}
@@ -164,7 +174,7 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 	}
 	defer s.Close()
 	actor := "user:session"
-	grant := DomainBenchmarkGrant{Connection: "bench-test", Tool: "test", ExpiresAt: now() + 120000}
+	grant := DomainBenchmarkGrant{Revision: 1, Connection: "bench-test", Tool: "test", ExpiresAt: now() + 120000}
 	if err = s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "inventory-1", Benchmark: []DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}

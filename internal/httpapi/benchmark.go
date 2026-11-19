@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"errors"
+	"io"
 	"net/http"
 
 	"clusbot/internal/work"
@@ -60,4 +61,23 @@ func (s Server) benchmarkEvidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(body)
+}
+
+func (s Server) benchmarkEvent(w http.ResponseWriter, r *http.Request) {
+	if s.BenchmarkEvents == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8192))
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid_event", "作业回执过大或无法读取")
+		return
+	}
+	dup, err := s.BenchmarkEvents.Receive(r.Context(), s.Store, r.Header.Get("X-ClusBot-Timestamp"), r.Header.Get("X-ClusBot-Signature"), body)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]bool{"duplicate": dup})
 }

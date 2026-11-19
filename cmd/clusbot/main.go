@@ -38,11 +38,12 @@ type config struct {
 		HealthCredentialEnv string `yaml:"health_credential_env"`
 	} `yaml:"tickets"`
 	Benchmark struct {
-		BaseURL       string   `yaml:"base_url"`
-		Connection    string   `yaml:"connection"`
-		Revision      int      `yaml:"revision"`
-		Tools         []string `yaml:"tools"`
-		CredentialEnv string   `yaml:"credential_env"`
+		BaseURL        string   `yaml:"base_url"`
+		Connection     string   `yaml:"connection"`
+		Revision       int      `yaml:"revision"`
+		Tools          []string `yaml:"tools"`
+		CredentialEnv  string   `yaml:"credential_env"`
+		EventSecretEnv string   `yaml:"event_secret_env"`
 	} `yaml:"benchmark"`
 	Discovery struct {
 		BaseURL       string   `yaml:"base_url"`
@@ -262,6 +263,7 @@ func run() error {
 		}
 	}
 	var benchmarkProvider work.BenchmarkProvider
+	var benchmarkEvents *work.BenchmarkEventReceiver
 	if cfg.Benchmark.BaseURL != "" {
 		p, err := work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
 			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
@@ -272,6 +274,12 @@ func run() error {
 			return err
 		}
 		benchmarkProvider = p
+		if cfg.Benchmark.EventSecretEnv != "" {
+			benchmarkEvents, err = p.EventReceiver(os.Getenv(cfg.Benchmark.EventSecretEnv))
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	var discoverySource work.DiscoveryScanSource
@@ -287,7 +295,7 @@ func run() error {
 	}
 
 	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider, DiscoverySource: discoverySource,
+		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

@@ -37,6 +37,7 @@ type BenchmarkCase struct {
 	Parameters       map[string]string         `json:"parameters,omitempty"`
 	ActualConfig     map[string]string         `json:"actual_config,omitempty"`
 	RequiredMetrics  map[string]string         `json:"required_metrics"`
+	ComparisonKeys   []string                  `json:"comparison_keys,omitempty"`
 	NeedsRawEvidence bool                      `json:"needs_raw_evidence,omitempty"`
 	Threshold        *BenchmarkMetricThreshold `json:"threshold,omitempty"`
 }
@@ -85,6 +86,20 @@ func validateBenchmarkProfile(p BenchmarkProfile) error {
 				}
 			}
 		}
+		for key, value := range c.Parameters {
+			if c.ActualConfig[key] != value {
+				return fmt.Errorf("%w：测项 %q 必须以实测配置核对参数 %q", ErrBenchmarkInput, c.Key, key)
+			}
+		}
+
+		seenComparison := map[string]bool{}
+		for _, key := range c.ComparisonKeys {
+			if seenComparison[key] || c.ActualConfig[key] == "" {
+				return fmt.Errorf("%w：测项 %q 的比较字段必须是必核对的实测条件", ErrBenchmarkInput, c.Key)
+			}
+			seenComparison[key] = true
+		}
+
 		if th := c.Threshold; th != nil && (c.RequiredMetrics[th.Metric] == "" || !finiteBenchmark(th.Minimum)) {
 			return fmt.Errorf("%w：测项 %q 达标线未引用必测指标", ErrBenchmarkInput, c.Key)
 		}
@@ -182,6 +197,7 @@ var ErrBenchmarkBinding = errors.New("基准绑定不可用")
 // A grant for a different tool or without enumerated values is not a wildcard.
 func benchmarkAuthorization(tx *sql.Tx, actor, target string, c BenchmarkCase, stamp int64) (string, error) {
 	type parameters struct {
+		Revision   int                 `json:"revision"`
 		Connection string              `json:"connection"`
 		Tool       string              `json:"tool"`
 		Allowed    map[string][]string `json:"allowed"`
@@ -201,7 +217,7 @@ AND valid_from<=? AND (expires_at=0 OR expires_at>?) ORDER BY policy_version DES
 		var p parameters
 		dec := json.NewDecoder(strings.NewReader(raw))
 		dec.DisallowUnknownFields()
-		if dec.Decode(&p) != nil || !json.Valid([]byte(raw)) || p.Connection != c.Binding.Connection || p.Tool != c.Binding.Tool || len(p.Allowed) != len(c.Parameters) {
+		if dec.Decode(&p) != nil || !json.Valid([]byte(raw)) || p.Connection != c.Binding.Connection || p.Revision != c.Binding.Revision || p.Tool != c.Binding.Tool || len(p.Allowed) != len(c.Parameters) {
 			continue
 		}
 		match := true
