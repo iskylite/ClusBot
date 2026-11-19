@@ -6,7 +6,7 @@ package work
 // 避免旧计时器唤醒新工作。
 //   - Timer 绑定 wait_id 与版本，在同一等待创建/重设事务记录；
 //   - 扫描到期项时用条件更新标记已投递并创建唯一 Inbox 到期事件；处理事件
-//     再竞争关闭 Wait；
+//     按等待类型关闭时间条件或记录业务超时（不解除等待）；
 //   - 控制面时间统一裁决；不用远端 Worker 墙钟直接判租约/等待；
 //   - 恢复扫描分批处理逾期项，限制每批/每轮耗时，保留水位和最老年龄；
 //   - Timeout 的后续行为由等待策略决定：继续核对、通知或失败收尾，不能一律
@@ -86,7 +86,7 @@ type TimerScanResult struct {
 }
 
 // scanDueTimers 分批扫描到期 Timer，用条件更新标记已投递并创建唯一 Inbox
-// 到期事件（P1-08.2）。处理事件再竞争关闭 Wait（由 Inbox 应用路径完成）。
+// 到期事件（P1-08.2）。Inbox 只关闭纯计时等待；业务到期另行处理。
 // 控制面时间统一裁决（now 由控制面时钟提供，不用远端 Worker 墙钟）。
 func scanDueTimers(db *sql.DB, now int64, batchSize int, maxDuration time.Duration) (TimerScanResult, error) {
 	return scanTimers(db, now, batchSize, maxDuration, false)

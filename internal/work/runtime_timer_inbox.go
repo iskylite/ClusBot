@@ -77,31 +77,49 @@ WHERE timer_id=? AND inbox_event_id=? AND state='delivered'`, timerKeyID(key), k
 		}
 		return false, tx.Commit()
 	}
-	var kind WaitKind
-	var policy string
-	err = tx.QueryRow(`SELECT kind,timeout_policy FROM waits WHERE wait_id=?`, waitID).Scan(&kind, &policy)
+	var current Wait
+	err = tx.QueryRow(`SELECT task_id,kind,timeout_policy,wait_version,state FROM waits WHERE wait_id=?`, waitID).
+		Scan(&current.TaskID, &current.Kind, &current.TimeoutPolicy, &current.WaitVersion, &current.State)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, quarantineTimerEvent(tx, key, "找不到 Timer 绑定的 Wait", stamp)
 	}
 	if err != nil {
 		return false, err
 	}
-	// A business wait timing out is not equivalent to an external job failing,
-	// nor proof that a paused task can run. Record the required disposition.
+	current.WaitID = waitID
 	action := "wait_recheck"
-	if kind != WaitKindTimer {
-		action = "wait_timeout_" + string(timeoutAction(Wait{TimeoutPolicy: policy}))
+	reason := "关闭开放版本"
+	followup := false
+	if current.Kind == WaitKindTimer {
+		res, err := resolveWait(tx, waitID, version, e.Source, e.EventID, action, "", "system", stamp)
+		if err != nil {
+			return false, err
+		}
+		reason, followup = res.Reason, res.Closed
+	} else {
+		// A deadline is not evidence that a dependency, decision or external
+		// operation was resolved. Keep the wait open, so both step eligibility
+		// and a subsequent authentic result still see the same version.
+		action = businessTimeoutAction(current)
+		reason = "等待已到期，仍需实际结果或明确决定"
+		switch {
+		case current.WaitVersion != version:
+			reason = "等待版本已替换，忽略旧计时器"
+		case current.State != "open":
+			reason = "等待已由其他事件关闭，忽略到期"
+		default:
+			followup = true
+		}
+		if _, err := tx.Exec(`INSERT INTO wait_events(wait_id,wait_version,source,event_id,closed_wait,summary,occurred_at)
+VALUES(?,?,?,?,0,?,?) ON CONFLICT(source,event_id,wait_id) DO NOTHING`,
+			waitID, version, e.Source, e.EventID, reason+"："+action, stamp); err != nil {
+			return false, err
+		}
 	}
-	res, err := resolveWait(tx, waitID, version, e.Source, e.EventID, action, "", "system", stamp)
-	if err != nil {
-		return false, err
-	}
-	if res.Closed {
-		// Plain timer waits have a local eligibility recheck consumer.
-		// Business timeouts stay separate and never imply completion.
+	if followup {
 		if err := enqueueOutbox(tx, OutboxCommand{
 			CommandID: e.EventID + ":follow-up", Kind: action, TargetKind: "wait",
-			TargetID: waitID, TargetVersion: version, TaskID: res.Wait.TaskID,
+			TargetID: waitID, TargetVersion: version, TaskID: current.TaskID,
 			PayloadDigest: digest(fmt.Sprintf("%q:%d:%s", waitID, version, action)),
 			Backend:       "runtime-wait", CreatedAt: stamp, NextAttemptAt: stamp,
 		}); err != nil {
@@ -109,8 +127,8 @@ WHERE timer_id=? AND inbox_event_id=? AND state='delivered'`, timerKeyID(key), k
 		}
 	}
 	if err := recordAudit(tx, AuditEvent{
-		TaskID: res.Wait.TaskID, Event: "timer_due_processed", Actor: "system",
-		Summary: res.Reason + "：" + action, OccurredAt: stamp,
+		TaskID: current.TaskID, Event: "timer_due_processed", Actor: "system",
+		Summary: reason + "：" + action, OccurredAt: stamp,
 	}); err != nil {
 		return false, err
 	}
@@ -122,6 +140,20 @@ attempts=attempts+1,failure='',next_retry_at=0 WHERE source='timer' AND event_id
 		return false, err
 	}
 	return true, nil
+}
+
+// Route first by wait class; an external operation is never treated as
+// definitively failed by a wall clock, and a human decision is never supplied
+// by one. The outbox records intent only, not an executed policy or message.
+func businessTimeoutAction(wait Wait) string {
+	switch wait.Kind {
+	case WaitKindExternal:
+		return "wait_timeout_reconcile"
+	case WaitKindInput, WaitKindAcceptance, WaitKindPublication:
+		return "wait_timeout_notify"
+	default:
+		return "wait_timeout_" + string(timeoutAction(wait))
+	}
 }
 
 func timerKeyID(key string) string {

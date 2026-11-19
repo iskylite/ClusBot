@@ -117,8 +117,11 @@ func TestV31TimerBootSucceedsOnceAndDoesNotFailExternalJob(t *testing.T) {
 		}
 	}
 	var disposition, state string
-	if err = s.db.QueryRow("SELECT resolution FROM waits WHERE wait_id='cur'").Scan(&disposition); err != nil || disposition != "wait_timeout_reconcile" {
-		t.Fatalf("disposition=%s, %v", disposition, err)
+	if err = s.db.QueryRow("SELECT state,resolution FROM waits WHERE wait_id='cur'").Scan(&state, &disposition); err != nil || state != "open" || disposition != "" {
+		t.Fatalf("timeout resolved external wait: %s/%s, %v", state, disposition, err)
+	}
+	if err = s.db.QueryRow("SELECT kind FROM outbox_commands WHERE target_id='cur'").Scan(&disposition); err != nil || disposition != "wait_timeout_reconcile" {
+		t.Fatalf("missing reconcile disposition: %s, %v", disposition, err)
 	}
 	if err = s.db.QueryRow("SELECT state FROM waits WHERE wait_id='stale'").Scan(&state); err != nil || state != "open" {
 		t.Fatalf("new wait closed: %s, %v", state, err)
@@ -171,5 +174,74 @@ WHERE w.wait_id='atomic'`).Scan(&wait, &inbox); err != nil || wait != "open" || 
 	exec("DROP TRIGGER follow_up_failure")
 	if n, err := s.consumeTimerInbox(context.Background(), stamp, 2); err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+func TestV31BusinessTimeoutNeverSuppliesEvidenceOrDecision(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		kind   WaitKind
+		policy string
+		want   string
+	}{
+		{"external", WaitKindExternal, "fail", "wait_timeout_reconcile"},
+		{"approval", WaitKindAcceptance, "fail", "wait_timeout_notify"},
+		{"publication", WaitKindPublication, "reconcile", "wait_timeout_notify"},
+		{"dependency", WaitKindDependency, "fail", "wait_timeout_fail"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s, task := setupV3P108(t, tt.name+".sqlite")
+			ctx, stamp := t.Context(), now()
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := openWait(tx, Wait{WaitID: "business", TaskID: task, Kind: tt.kind, OpenedAt: stamp,
+				DeadlineAt: stamp, TimeoutPolicy: tt.policy}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := createTimer(tx, Timer{TimerID: "due", WaitID: "business", WaitVersion: 1, DueAt: stamp}); err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := recoverDueTimers(s.db, stamp, 10); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := s.consumeTimerInbox(ctx, stamp, 10); err != nil || n != 1 {
+				t.Fatalf("applied=%d %v", n, err)
+			}
+			if n, err := s.consumeTimerInbox(ctx, stamp, 10); err != nil || n != 0 {
+				t.Fatalf("reapplied=%d %v", n, err)
+			}
+			if n, err := s.consumeTimerWaitFollowups(ctx, stamp, 10); err != nil || n != 0 {
+				t.Fatalf("plain wake unexpectedly applied=%d %v", n, err)
+			}
+			var kind, state, resolution string
+			var closed int
+			err = s.db.QueryRow(`SELECT c.kind,w.state,w.resolution,e.closed_wait
+FROM outbox_commands c JOIN waits w ON w.wait_id=c.target_id
+JOIN wait_events e ON e.wait_id=w.wait_id AND e.source='timer'
+WHERE c.command_id='timer:due:follow-up'`).Scan(&kind, &state, &resolution, &closed)
+			if err != nil || kind != tt.want || state != "open" || resolution != "" || closed != 0 {
+				t.Fatalf("timer supplied missing result: %s %s %s %d, %v", kind, state, resolution, closed, err)
+			}
+			// The regular caller can still record a genuine result on this same
+			// version. No timer is allowed to usurp the result's close.
+			tx, err = s.db.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			r, err := resolveWait(tx, "business", 1, "verified-result", "late", "resolved", "evidence-ref", "system", stamp+1)
+			if err != nil || !r.Closed {
+				t.Fatalf("late genuine result rejected: %+v %v", r, err)
+			}
+			if err = tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
