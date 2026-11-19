@@ -93,3 +93,84 @@ func TestBenchmarkSharedTargetHolds(t *testing.T) {
 		t.Fatalf("verified release should allow new dispatch: %+v %t %v", d, worked, err)
 	}
 }
+
+func TestLoanAndBenchmarkUseSameTargetOwnership(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "loan-benchmark.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { s.Close() }()
+	const actor = "user:session"
+	b := BenchmarkBinding{Connection: "bench-test", Tool: "test", Revision: 1, Validator: benchmarkValidatorV1}
+	p := &benchFixtureProvider{}
+	stamp := now()
+	for _, node := range []string{"node-held", "node-disjoint"} {
+		grant := DomainBenchmarkGrant{Revision: 1, Connection: b.Connection, Tool: b.Tool, ExpiresAt: stamp + 900000}
+		asset := DomainAssetEntry{ObjectRef: node, Kind: "node", Identity: node, Benchmark: []DomainBenchmarkGrant{grant}}
+		if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{asset}); err != nil {
+			t.Fatal(err)
+		}
+		c := BenchmarkCase{Key: "case", Binding: b, Targets: []string{node}, RequiredMetrics: map[string]string{"rate": "GB/s"}}
+		if err := s.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: node, Version: 1, Cases: []BenchmarkCase{c}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queue := func(node string) string {
+		t.Helper()
+		task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{RequestKey: node, Profile: node, Version: 1}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task
+	}
+	lend := func(node string) (Loan, error) {
+		return s.LendAsset(ctx, node, actor, "borrower", stamp+900000, "")
+	}
+	queue("node-held")
+	stamp = now()
+	d, worked, err := s.claimBenchmark(ctx, p, stamp)
+	if err != nil || !worked || d.action != "start" {
+		t.Fatalf("could not claim target: %+v %t %v", d, worked, err)
+	}
+	if _, err := lend("node-held"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("dispatched target was lendable: %v", err)
+	}
+	disjointTask := queue("node-disjoint")
+	if loan, err := lend("node-disjoint"); err != nil || loan.State != "active" {
+		t.Fatalf("disjoint loan blocked by active benchmark: %+v %v", loan, err)
+	}
+	skipped, worked, err := s.claimBenchmark(ctx, p, now())
+	if err != nil || !worked || skipped.task != disjointTask || skipped.action != "" {
+		t.Fatalf("queued benchmark dispatched against now-lent asset: %+v %t %v", skipped, worked, err)
+	}
+	var phase string
+	if err := s.db.QueryRow("SELECT phase FROM benchmark_cases WHERE task_id=?", disjointTask).Scan(&phase); err != nil || phase != "skipped" {
+		t.Fatalf("disjoint queued case should be stopped by changed asset epoch: %s %v", phase, err)
+	}
+	if err := s.settleBenchmark(ctx, d, "", BenchmarkJobResult{}, errors.New("lost response"), stamp); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = reopened
+	if _, err := s.RecoverV3(ctx, stamp+benchmarkWaitRecheckMS+benchmarkClaimMS); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lend("node-held"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unknown benchmark after restart did not block loan: %v", err)
+	}
+	asset, err := readAsset(s.db, "node-held")
+	if err != nil || asset.FrozenAt != 0 || asset.State == AssetStateLent {
+		t.Fatalf("rejected loan mutated asset: %+v %v", asset, err)
+	}
+	if p.started != 0 || p.looked != 0 || p.read != 0 {
+		t.Fatalf("unexpected provider calls: %+v", p)
+	}
+}

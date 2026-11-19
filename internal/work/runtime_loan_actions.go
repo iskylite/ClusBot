@@ -15,6 +15,16 @@ func (s *Store) LendAsset(ctx context.Context, objectRef, lender, borrower strin
 		return Loan{}, err
 	}
 	defer tx.Rollback()
+	// Like benchmark claim, decide against durable ownership in the same
+	// transaction as the asset write. A missing provider reply, expired local
+	// execution lease or restart does not make a held asset lendable.
+	held, err := targetHasLocalExclusiveHold(tx, objectRef)
+	if err != nil {
+		return Loan{}, err
+	}
+	if held {
+		return Loan{}, fmt.Errorf("%w：资产仍被运行中或待核对的操作占用，不能借出", ErrConflict)
+	}
 	h, err := initiateLoanHandover(tx, LoanHandover{
 		ObjectRef: objectRef, Intent: "lend", Lender: lender, Borrower: borrower,
 		DueAt: dueAt, ReadOnlyScope: readOnlyScope,

@@ -98,17 +98,26 @@ var ErrConflictWritesPending = errors.New("冻结前已派发的冲突写未决"
 // 操作拒绝继续。
 func reconcileConflictWrites(tx *sql.Tx, handoverID string, objectRef string, now int64) (reconciled bool, pending []string, err error) {
 	// 列出冻结前已派发的冲突写（已登记未派发的旧操作拒绝继续）。
-	rows, err := tx.Query(`SELECT operation_id, state FROM operations WHERE task_id IN (SELECT task_id FROM tasks WHERE 1=1) AND state IN ('dispatched','running')`)
+	// Benchmark operations with durable holds are scoped by those exact
+	// identities. Do not relax the fallback for other operation classes that
+	// still lack a shared authoritative hold.
+	rows, err := tx.Query(`SELECT o.operation_id FROM operations o
+WHERE o.task_id IN (SELECT task_id FROM tasks) AND o.state IN ('dispatched','running')
+AND (NOT EXISTS (SELECT 1 FROM benchmark_cases c JOIN benchmark_target_holds h ON h.step_id=c.step_id WHERE c.step_id=o.step_id AND c.operation_id=o.operation_id)
+ OR EXISTS (SELECT 1 FROM benchmark_cases c JOIN benchmark_target_holds h ON h.step_id=c.step_id WHERE c.step_id=o.step_id AND c.operation_id=o.operation_id AND h.target_ref=?))`, objectRef)
 	if err != nil {
 		return false, nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var opID, state string
-		if err := rows.Scan(&opID, &state); err != nil {
+		var opID string
+		if err := rows.Scan(&opID); err != nil {
 			return false, nil, err
 		}
 		pending = append(pending, opID)
+	}
+	if err := rows.Err(); err != nil {
+		return false, nil, err
 	}
 	// 冲突写未决：保持原状态与交接待办。
 	if len(pending) > 0 {
