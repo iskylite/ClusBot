@@ -12,9 +12,10 @@ import (
 const benchmarkRouterEvent = "benchmark.admission_suggested"
 
 type BenchmarkRouterSuggestion struct {
-	Target  string              `json:"target"`
-	Profile BenchmarkProfileRef `json:"profile"`
-	State   string              `json:"state"`
+	Target          string              `json:"target"`
+	Profile         BenchmarkProfileRef `json:"profile"`
+	State           string              `json:"state"`
+	BindingRevision int                 `json:"binding_revision,omitempty"`
 }
 
 type benchmarkRouterKey struct{}
@@ -45,15 +46,16 @@ func benchmarkRouterSuggestionTx(ctx context.Context, tx *sql.Tx, actor, convers
 	if len(tokens) == 0 || len(tokens) > 64 {
 		return nil, nil
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT target,profile_key,profile_version FROM benchmark_chat_targets
-WHERE target IN (SELECT value FROM json_each(?)) ORDER BY target LIMIT 2`, toJSON(tokens))
+	rows, err := tx.QueryContext(ctx, `SELECT t.target,t.profile_key,t.profile_version,r.revision FROM benchmark_chat_targets t
+JOIN benchmark_chat_target_revisions r ON r.target=t.target
+WHERE t.target IN (SELECT value FROM json_each(?)) ORDER BY t.target LIMIT 2`, toJSON(tokens))
 	if err != nil {
 		return nil, err
 	}
 	found := []BenchmarkRouterSuggestion{}
 	for rows.Next() {
 		var v BenchmarkRouterSuggestion
-		if err := rows.Scan(&v.Target, &v.Profile.Profile, &v.Profile.Version); err != nil {
+		if err := rows.Scan(&v.Target, &v.Profile.Profile, &v.Profile.Version, &v.BindingRevision); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -226,7 +228,8 @@ ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&text, &created); err !=
 	if err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
-	if candidate.Target != receipt.Target || candidate.Profile != receipt.Profile {
+	if receipt.BindingRevision < 1 || candidate.Target != receipt.Target || candidate.Profile != receipt.Profile ||
+		candidate.bindingRevision != receipt.BindingRevision {
 		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
 	}
 
@@ -239,14 +242,14 @@ ON CONFLICT(preview_id) DO UPDATE SET source_conversation=excluded.source_conver
 WHERE task_id='' AND source_conversation='' AND source_run=''
  AND actor=excluded.actor AND target=excluded.target AND profile_key=excluded.profile_key AND profile_version=excluded.profile_version AND snapshot_digest=excluded.snapshot_digest`,
 		preview, actor, candidate.Target, candidate.Profile.Profile,
-		candidate.Profile.Version, candidate.inventoryFingerprint, stamp, conversation, run); err != nil {
+		candidate.Profile.Version, candidate.snapshotDigest(), stamp, conversation, run); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	var valid bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM benchmark_admission_previews
 WHERE preview_id=? AND actor=? AND target=? AND profile_key=? AND profile_version=? AND snapshot_digest=?
 AND ((source_conversation=? AND source_run=?) OR (task_id<>'' AND source_conversation='' AND source_run='')))`,
-		preview, actor, candidate.Target, candidate.Profile.Profile, candidate.Profile.Version, candidate.inventoryFingerprint, conversation, run).Scan(&valid); err != nil {
+		preview, actor, candidate.Target, candidate.Profile.Profile, candidate.Profile.Version, candidate.snapshotDigest(), conversation, run).Scan(&valid); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	if !valid {

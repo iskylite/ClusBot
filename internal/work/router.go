@@ -8,22 +8,23 @@ import (
 )
 
 type RouteDecision struct {
-	BenchmarkProfile *BenchmarkProfileRef `json:"benchmark_profile,omitempty"`
-	BenchmarkTarget  string               `json:"benchmark_target,omitempty"`
-	Kind             string               `json:"kind"`
-	TaskID           string               `json:"task_id,omitempty"`
-	AfterTaskID      string               `json:"after_task_id,omitempty"`
-	Goal             string               `json:"goal,omitempty"`
-	Criteria         string               `json:"criteria,omitempty"`
-	Question         string               `json:"question,omitempty"`
-	Revision         int                  `json:"revision,omitempty"`
-	AfterRevision    int                  `json:"after_revision,omitempty"`
-	Priority         string               `json:"priority,omitempty"`
-	PreviousPriority string               `json:"previous_priority,omitempty"`
-	Fragment         string               `json:"fragment,omitempty"`
-	ResolveID        string               `json:"resolve_id,omitempty"`
-	Intents          []RouteDecision      `json:"intents,omitempty"`
-	Issue            string               `json:"issue,omitempty"`
+	BenchmarkProfile         *BenchmarkProfileRef `json:"benchmark_profile,omitempty"`
+	BenchmarkBindingRevision int                  `json:"benchmark_binding_revision,omitempty"`
+	BenchmarkTarget          string               `json:"benchmark_target,omitempty"`
+	Kind                     string               `json:"kind"`
+	TaskID                   string               `json:"task_id,omitempty"`
+	AfterTaskID              string               `json:"after_task_id,omitempty"`
+	Goal                     string               `json:"goal,omitempty"`
+	Criteria                 string               `json:"criteria,omitempty"`
+	Question                 string               `json:"question,omitempty"`
+	Revision                 int                  `json:"revision,omitempty"`
+	AfterRevision            int                  `json:"after_revision,omitempty"`
+	Priority                 string               `json:"priority,omitempty"`
+	PreviousPriority         string               `json:"previous_priority,omitempty"`
+	Fragment                 string               `json:"fragment,omitempty"`
+	ResolveID                string               `json:"resolve_id,omitempty"`
+	Intents                  []RouteDecision      `json:"intents,omitempty"`
+	Issue                    string               `json:"issue,omitempty"`
 }
 
 type RouteCandidate struct {
@@ -77,6 +78,7 @@ func (s *Store) SubmitRoutedChat(ctx context.Context, key, text, scope, conversa
 				return result, errors.New("未核实唯一可用的基准预览目标；没有创建任务")
 			}
 			result.Route.BenchmarkProfile = &suggestion.Profile
+			result.Route.BenchmarkBindingRevision = suggestion.BindingRevision
 		}
 		result.Task = result.Route.Kind == "new_task" || result.Route.Kind == "follow_up"
 		return result, nil
@@ -192,7 +194,7 @@ func validateRoute(route *RouteDecision, candidates []RouteCandidate) error {
 	if route.Kind != "order_tasks" && route.AfterTaskID != "" {
 		return invalid
 	}
-	if route.BenchmarkProfile != nil || route.Kind != "benchmark_preview" && route.BenchmarkTarget != "" {
+	if route.BenchmarkProfile != nil || route.BenchmarkBindingRevision != 0 || route.Kind != "benchmark_preview" && route.BenchmarkTarget != "" {
 		return invalid
 	}
 	switch route.Kind {

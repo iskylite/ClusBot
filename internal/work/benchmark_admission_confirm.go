@@ -73,14 +73,15 @@ FROM benchmark_admission_previews WHERE preview_id=? AND actor=?`, preview, acto
 	if accepted != "" {
 		return out, nil // historic, not a claim about the current task's state
 	}
-	var bound BenchmarkProfileRef
-	err = tx.QueryRowContext(ctx, "SELECT profile_key,profile_version FROM benchmark_chat_targets WHERE target=?", c.Target).Scan(&bound.Profile, &bound.Version)
-	if errors.Is(err, sql.ErrNoRows) || err == nil && bound != c.Profile {
-		return BenchmarkAdmissionConfirmation{}, ErrBenchmarkAdmissionPreviewStale
-	}
+	bound, err := readBenchmarkChatTargetState(ctx, tx, c.Target)
 	if err != nil {
 		return BenchmarkAdmissionConfirmation{}, err
 	}
+	if bound.State != "bound" || bound.BenchmarkProfileRef != c.Profile || bound.BindingRevision < 1 {
+		return BenchmarkAdmissionConfirmation{}, ErrBenchmarkAdmissionPreviewStale
+	}
+	c.bindingRevision = bound.BindingRevision
+
 	current, _, err := benchmarkAdmissionCandidateTx(ctx, tx, actor, c, provider)
 	switch {
 	case errors.Is(err, ErrAuthorizationDenied):
@@ -89,7 +90,7 @@ FROM benchmark_admission_previews WHERE preview_id=? AND actor=?`, preview, acto
 		return BenchmarkAdmissionConfirmation{}, ErrBenchmarkAdmissionPreviewStale
 	case err != nil:
 		return BenchmarkAdmissionConfirmation{}, err
-	case wanted != current.inventoryFingerprint:
+	case wanted != current.snapshotDigest():
 		return BenchmarkAdmissionConfirmation{}, ErrBenchmarkAdmissionPreviewStale
 	}
 	stamp := now()

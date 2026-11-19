@@ -80,6 +80,28 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 	if err != nil || run.Status != "completed" || run.BenchmarkSuggestion != nil || run.TaskID != "" {
 		t.Fatalf("stale published candidate was replaced silently: %+v %v", run, err)
 	}
+	const staleABA = "same-published-rebound-during-router"
+	if _, err := s.AdmitChat(ctx, staleABA, actor, "", natural, "", false, Delivery{}, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	aba, err := s.SubmitRoutedChat(ctx, staleABA, natural, "", "", Delivery{},
+		func(call context.Context, _ string, _ []Message, _ []RouteCandidate, _ int) (DelegationResult, error) {
+			prev := RouterBenchmarkSuggestion(call)
+			if prev == nil || prev.BindingRevision < 1 {
+				t.Fatalf("router did not pin binding: %+v", prev)
+			}
+			if err := setBenchmarkTargetAtCurrent(t, s, call, actor, "POD7", nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := setBenchmarkTargetAtCurrent(t, s, call, actor, "POD7", &prev.Profile); err != nil {
+				t.Fatal(err)
+			}
+			return DelegationResult{Route: &RouteDecision{Kind: "benchmark_preview", BenchmarkTarget: "POD7"}}, nil
+		})
+	if err != nil || aba.TaskID != "" || aba.BenchmarkSuggestion != nil {
+		t.Fatalf("rebound binding was silently adopted after router call: %+v %v", aba, err)
+	}
+
 	valid, handled, err := s.SubmitBenchmarkSuggestionShortcut(ctx, "real-shortcut-receipt", actor, "", "在POD7上跑一下完整的基准测试", "")
 	if err != nil || !handled || valid.BenchmarkSuggestion == nil {
 		t.Fatalf("could not persist valid suggestion: %+v %t %v", valid, handled, err)
@@ -116,6 +138,23 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 2}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("same profile rebind resurrected stale suggestion: %v", err)
+	}
+	valid, handled, err = s.SubmitBenchmarkSuggestionShortcut(ctx, "new-binding-receipt", actor, "", "在POD7上跑一下完整的基准测试", "")
+	if err != nil || !handled || valid.BenchmarkSuggestion == nil {
+		t.Fatalf("fresh suggestion: %+v %t %v", valid, handled, err)
+	}
+	// Simulate an existing event before the server started pinning revisions.
+	legacy, _, err := s.SubmitBenchmarkSuggestionShortcut(ctx, "legacy-binding-receipt", actor, "", "在POD7上跑一下完整的基准测试", "")
+	if err != nil || legacy.BenchmarkSuggestion == nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE run_events SET data=json_remove(data,'$.binding_revision') WHERE run_id=? AND kind=?", legacy.ID, benchmarkRouterEvent)
+	if _, err := open(actor, legacy.ConversationID, legacy.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("legacy suggestion without revision accepted: %v", err)
+	}
+
 	exec("UPDATE runs SET created_at=? WHERE id=?", now()-benchmarkRouterSuggestionLifetime.Milliseconds(), valid.ID)
 	if _, err := open(actor, valid.ConversationID, valid.ID); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
 		t.Fatalf("expired suggestion reopened: %v", err)
@@ -128,6 +167,10 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 	// Reopening an old, unconfirmed preview may bind its source, but only
 	// after this exact owner/conversation/suggestion is verified again.
 	exec("UPDATE runs SET created_at=? WHERE id=?", now(), valid.ID)
+	if _, err := open(actor, valid.ConversationID, valid.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	exec("UPDATE benchmark_admission_previews SET source_conversation='',source_run=''")
 	draft, err := open(actor, valid.ConversationID, valid.ID)
 	if err != nil {

@@ -28,8 +28,16 @@ type BenchmarkAdmissionCandidate struct {
 	Target               string              `json:"target"`
 	Profile              BenchmarkProfileRef `json:"profile"`
 	inventoryFingerprint string
+	bindingRevision      int
 	AssetRefs            []string `json:"visible_asset_refs"`
 }
+
+func (c BenchmarkAdmissionCandidate) snapshotDigest() string {
+	// A pre-revision pending preview has only the inventory fingerprint.
+	// Its unknown binding lifetime cannot be reconstructed from today's state.
+	return digest(toJSON([]any{"selection-revision/v1", c.Target, c.bindingRevision, c.inventoryFingerprint}))
+}
+
 type BenchmarkAdmissionModelInput struct {
 	Text       string                        `json:"text"`
 	Candidates []BenchmarkAdmissionCandidate `json:"candidates"`
@@ -92,7 +100,8 @@ func benchmarkAdmissionVisibleTx(ctx context.Context, tx *sql.Tx, actor, text st
 	}
 	// Resolve operator-maintained names exactly. Refuse ambiguity even if
 	// only one of two named clusters is authorized; never silently choose it.
-	rows, err := tx.QueryContext(ctx, `SELECT p.target,p.profile_key,p.profile_version FROM benchmark_chat_targets p
+	rows, err := tx.QueryContext(ctx, `SELECT p.target,p.profile_key,p.profile_version,r.revision FROM benchmark_chat_targets p
+JOIN benchmark_chat_target_revisions r ON r.target=p.target
 JOIN benchmark_profiles b ON b.profile_key=p.profile_key AND b.version=p.profile_version
 WHERE p.target IN (SELECT value FROM json_each(?)) ORDER BY p.target LIMIT 2`, toJSON(tokens))
 	if err != nil {
@@ -101,7 +110,7 @@ WHERE p.target IN (SELECT value FROM json_each(?)) ORDER BY p.target LIMIT 2`, t
 	var candidates []BenchmarkAdmissionCandidate
 	for rows.Next() {
 		var c BenchmarkAdmissionCandidate
-		if err := rows.Scan(&c.Target, &c.Profile.Profile, &c.Profile.Version); err != nil {
+		if err := rows.Scan(&c.Target, &c.Profile.Profile, &c.Profile.Version, &c.bindingRevision); err != nil {
 			rows.Close()
 			return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
 		}
@@ -167,6 +176,11 @@ func benchmarkAdmissionCandidateTx(ctx context.Context, tx *sql.Tx, actor string
 		}
 		authorizations = append(authorizations, []any{c.Key, grants})
 	}
+	// Include the precise target binding lifetime; never backfill a pre-CAS
+	// pending preview with today's version after a clear/rebind (ABA).
+	if want.bindingRevision < 1 {
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionPreviewStale
+	}
 	want.inventoryFingerprint = digest(toJSON([]any{identity, authorizations, profile}))
 	return want, flight, nil
 }
@@ -219,13 +233,13 @@ func (s *Store) PreviewBenchmarkAdmissionAI(ctx context.Context, actor string, i
 	if err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
-	if before.Target != fresh.Target || before.Profile != fresh.Profile || !slices.Equal(before.AssetRefs, fresh.AssetRefs) || before.inventoryFingerprint != fresh.inventoryFingerprint {
+	if before.Target != fresh.Target || before.Profile != fresh.Profile || !slices.Equal(before.AssetRefs, fresh.AssetRefs) || before.snapshotDigest() != fresh.snapshotDigest() {
 		return BenchmarkAdmissionPreview{}, fmt.Errorf("%w：目标绑定、资产身份或授权已变化，请重新预览", ErrConflict)
 	}
 	out := BenchmarkAdmissionPreview{PreviewID: id(), State: "preview_only", Selection: fresh, Preflight: preflight}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_admission_previews
 (preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at) VALUES(?,?,?,?,?,?,?)`,
-		out.PreviewID, actor, fresh.Target, fresh.Profile.Profile, fresh.Profile.Version, fresh.inventoryFingerprint, now()); err != nil {
+		out.PreviewID, actor, fresh.Target, fresh.Profile.Profile, fresh.Profile.Version, fresh.snapshotDigest(), now()); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	return out, tx.Commit()

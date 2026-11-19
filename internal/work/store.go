@@ -1204,7 +1204,8 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 				return Run{}, err
 			}
 			if suggestion != nil && suggestion.Target == route.BenchmarkTarget && len(materialIDs) == 0 &&
-				(route.BenchmarkProfile == nil || *route.BenchmarkProfile == suggestion.Profile) {
+				(route.BenchmarkProfile == nil || (*route.BenchmarkProfile == suggestion.Profile &&
+					route.BenchmarkBindingRevision == suggestion.BindingRevision)) {
 				reply = "找到 " + suggestion.Target + " 的已发布方案。请明确打开基准受理预览；尚未创建测试任务。"
 			} else {
 				suggestion = nil

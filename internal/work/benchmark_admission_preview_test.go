@@ -128,6 +128,28 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := accept(actor, out.PreviewID, confirm, p); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("identical profile rebind resurrected old preview: %v", err)
+	}
+	out, err = preview(actor, spoken, model(yes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := preview(actor, spoken, model(yes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := s.benchmarkAdmissionVisible(ctx, actor, spoken, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("UPDATE benchmark_admission_previews SET snapshot_digest=? WHERE preview_id=?", state.inventoryFingerprint, legacy.PreviewID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accept(actor, legacy.PreviewID, confirm, p); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("old pending preview with legacy inventory-only digest accepted: %v", err)
+	}
+
 	if _, err := accept(actor, out.PreviewID, confirm, nil); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
 		t.Fatalf("missing current capability could queue: %v", err)
 	}
@@ -174,6 +196,10 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 		}
 		task = result.TaskID
 	}
+	if err := setBenchmarkTargetAtCurrent(t, s, ctx, actor, "POD7", nil); err != nil {
+		t.Fatal(err)
+	}
+
 	if again, err := accept(actor, out.PreviewID, confirm, nil); err != nil || again.TaskID != task {
 		t.Fatalf("stable replay requires no provider: %+v %v", again, err)
 	}

@@ -308,6 +308,32 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatalf("confirmation replay queued another task or started execution: %+v", acceptedAgain)
 	}
 
+	// A second natural shortcut card stays pending while an operator clears
+	// and rebinds the same profile; the first accepted receipt stays durable.
+	var pendingAdmission struct {
+		ConversationID string `json:"conversation_id"`
+		RunID          string `json:"run_id"`
+	}
+	jsonCall(http.MethodPost, "/api/v1/conversations", map[string]string{
+		"client_request_id": "integrated-pendingAdmission-binding-aba", "text": "跑 POD7 全套基准",
+	}, &pendingAdmission, http.StatusAccepted)
+	pendingPath := "/api/v1/conversations/" + pendingAdmission.ConversationID + "/benchmark-suggestions/" + pendingAdmission.RunID + "/preview"
+	var pendingPreview work.BenchmarkAdmissionPreview
+	jsonCall(http.MethodPost, pendingPath, action, &pendingPreview, http.StatusOK)
+	pendingConfirm := admission + "/" + pendingPreview.PreviewID + "/confirm"
+	const targetPath = "/api/v1/domain/benchmark-chat-targets/POD7"
+	jsonCall(http.MethodDelete, targetPath+"?expected_binding_revision=1", nil, nil, http.StatusNoContent)
+	jsonCall(http.MethodPost, pendingPath, action, nil, http.StatusConflict)
+	jsonCall(http.MethodPost, pendingConfirm, accept, nil, http.StatusConflict)
+	jsonCall(http.MethodPut, targetPath, map[string]any{"profile": "full", "version": 1, "expected_binding_revision": 2}, nil, http.StatusNoContent)
+	jsonCall(http.MethodPost, pendingPath, action, nil, http.StatusConflict)
+	jsonCall(http.MethodPost, pendingConfirm, accept, nil, http.StatusConflict)
+	var acceptedReplay work.BenchmarkAdmissionConfirmation
+	jsonCall(http.MethodPost, acceptPath, accept, &acceptedReplay, http.StatusAccepted)
+	if acceptedReplay != accepted || provider.starts.Load() != 0 {
+		t.Fatalf("rebind changed original receipt or triggered operation: %+v", acceptedReplay)
+	}
+
 	savedRun := saved.RunID
 	jsonCall(http.MethodPost, messagePath, message, &saved, http.StatusAccepted)
 	if saved.RunID != savedRun || saved.Suggestion == nil || *saved.Suggestion != target {
