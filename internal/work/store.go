@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 90
+const databaseSchemaVersion = 91
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -603,6 +603,10 @@ func initializeDatabase(db *sql.DB) error {
 			_, err := tx.Exec(runtimeDomainQuerySchema)
 			return err
 		}},
+		{90, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeReadyIndex)
+			return err
+		}},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -641,6 +645,9 @@ func initializeDatabase(db *sql.DB) error {
 	// 新建库必须包含全部当前结构：基础 schema + 各增量模块（P1-02、P1-05 等）。
 	// 与增量迁移保持同一来源，禁止只改一边（P0-05.2）。
 	if _, err := tx.Exec(runtimeRecordsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeReadyIndex); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeInboxSchema); err != nil {

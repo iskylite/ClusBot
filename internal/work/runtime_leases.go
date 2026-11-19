@@ -45,11 +45,11 @@ type Lease struct {
 
 // ClaimRequest 是领取请求。
 type ClaimRequest struct {
-	WorkerID      string
-	Credential    string
-	Kind          WorkUnitKind
-	Scope         string
-	LeaseTTL      int64 // 租约期限（毫秒）
+	WorkerID   string
+	Credential string
+	Kind       WorkUnitKind
+	Scope      string
+	LeaseTTL   int64 // 租约期限（毫秒）
 	// QuotaAvailable 是可用额度（由调用方核对，P2-04 接入持久配额）。
 	QuotaAvailable bool
 }
@@ -77,27 +77,15 @@ func claimWorkUnit(tx *sql.Tx, req ClaimRequest, now int64) (ClaimResult, error)
 	if !req.QuotaAvailable {
 		return ClaimResult{}, fmt.Errorf("%w：无可用额度", ErrQuotaExhausted)
 	}
-	// 2. 选取一个就绪单元（按 ready_at 顺序，核对类型与范围）。
-	// P1-3：跳过已暂停/已取消/终态 Task 的存量就绪单元（设计：暂停停止新领取）。
-	var unit WorkUnit
-	var stepID sql.NullString
-	err = tx.QueryRow(`SELECT w.unit_id,w.task_id,w.step_id,w.kind,w.lease_generation,w.ready_at,w.state,w.input_ref,w.created_at,w.updated_at
-FROM work_units w
-WHERE w.kind=? AND w.state='ready'
-AND NOT EXISTS (
-  SELECT 1 FROM task_states ts WHERE ts.task_id=w.task_id
-  AND ts.state IN ('paused','cancelled','succeeded','failed')
-)
-ORDER BY w.ready_at LIMIT 1`, string(req.Kind)).
-		Scan(&unit.UnitID, &unit.TaskID, &stepID, &unit.Kind, &unit.LeaseGeneration, &unit.ReadyAt,
-			&unit.State, &unit.InputRef, &unit.CreatedAt, &unit.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ClaimResult{}, fmt.Errorf("%w：无就绪单元", sql.ErrNoRows)
-	}
+	// 2. Filter against the persisted task, step and worker scope before claiming.
+	units, err := selectReadyUnits(tx, req.Kind, req.Scope, now, 1)
 	if err != nil {
 		return ClaimResult{}, err
 	}
-	unit.StepID = stepID.String
+	if len(units) == 0 {
+		return ClaimResult{}, fmt.Errorf("%w：无就绪单元", sql.ErrNoRows)
+	}
+	unit := units[0]
 	// 3. 核对 Task/Step 状态与合同（条件更新领取）。
 	newGeneration := unit.LeaseGeneration + 1
 	res, err := tx.Exec(`UPDATE work_units SET state='claimed', lease_generation=?, updated_at=?
@@ -150,6 +138,7 @@ VALUES(?,?,?,?,?,?,?,?,?)`,
 
 // ErrLeaseConflict 是领取竞争失败的错误。
 var ErrLeaseConflict = errors.New("租约竞争失败")
+
 // ErrQuotaExhausted 是额度耗尽的错误（P2-04 接入持久配额）。
 var ErrQuotaExhausted = errors.New("额度耗尽")
 
@@ -199,11 +188,11 @@ FROM work_leases WHERE token_id=? AND state='active'`, tokenID).
 
 // ReclaimResult 是回收结果。
 type ReclaimResult struct {
-	Reclaimed    int
+	Reclaimed int
 	// PendingOps 是回收时发现的已派发未核对操作数（未知外部效果进入核对）。
-	PendingOps   int
+	PendingOps int
 	// Reason 是回收原因。
-	Reason       string
+	Reason string
 }
 
 // reclaimExpiredLeases 回收过期租约（P2-02.5）。

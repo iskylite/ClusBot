@@ -272,55 +272,55 @@ WHERE state IN ('claimed','running') AND kind IN ('deterministic','model')`, now
 
 // computeAllReadyUnits 核对所有任务的就绪单元（依赖与合同版本）。
 func (s *Store) computeAllReadyUnits(ctx context.Context) (int, error) {
-	// 核对各任务的就绪步骤（依赖满足且合同版本有效）。
-	rows, err := s.db.Query(`SELECT DISTINCT task_id, contract_revision FROM steps WHERE state IN ('ready','blocked')`)
+	// Check eligibility and materialize units in one bounded transaction.
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
-	type taskRev struct {
-		taskID string
-		rev    int
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `
+SELECT s.step_id,s.task_id,s.definition_key,s.input_ref
+FROM steps s JOIN tasks t ON t.id=s.task_id
+WHERE `+runnableTask+` AND `+runnableStep+`
+AND NOT EXISTS (
+  SELECT 1 FROM work_units w WHERE w.step_id=s.step_id
+)
+ORDER BY s.created_at,s.step_id LIMIT 50`)
+	if err != nil {
+		return 0, err
 	}
-	var tasks []taskRev
+	var steps []Step
 	for rows.Next() {
-		var tr taskRev
-		if err := rows.Scan(&tr.taskID, &tr.rev); err != nil {
+		var step Step
+		if err := rows.Scan(&step.StepID, &step.TaskID, &step.DefinitionKey, &step.InputRef); err != nil {
 			rows.Close()
 			return 0, err
 		}
-		tasks = append(tasks, tr)
+		steps = append(steps, step)
 	}
+	err = rows.Err()
 	rows.Close()
-	total := 0
-	for _, tr := range tasks {
-		ready, err := computeReadySteps(s.db, tr.taskID, tr.rev)
-		if err != nil {
-			continue
+	if err != nil {
+		return 0, err
+	}
+	stamp := now()
+	for _, step := range steps {
+		kind := WorkUnitModel
+		if _, err := deterministicHandler(step.DefinitionKey); err == nil {
+			kind = WorkUnitDeterministic
 		}
-		for _, r := range ready {
-			tx, err := s.db.BeginTx(ctx, nil)
-			if err != nil {
-				return total, err
-			}
-			var eligible bool
-			err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM steps s WHERE s.step_id=? AND s.state IN ('ready','blocked')
-AND NOT EXISTS(SELECT 1 FROM work_units w WHERE w.step_id=s.step_id AND w.state IN ('ready','claimed','running','completed')))`, r.Step.StepID).Scan(&eligible)
-			if err == nil && eligible {
-				err = insertWorkUnit(tx, r.Unit)
-			}
-			if err != nil {
-				tx.Rollback()
-				return total, err
-			}
-			if err = tx.Commit(); err != nil {
-				return total, err
-			}
-			if eligible {
-				total++
-			}
+		if err := insertWorkUnit(tx, WorkUnit{
+			UnitID: id(), TaskID: step.TaskID, StepID: step.StepID, Kind: kind,
+			InputRef: step.InputRef, State: WorkUnitReady, ReadyAt: stamp,
+			CreatedAt: stamp, UpdatedAt: stamp,
+		}); err != nil {
+			return 0, err
 		}
 	}
-	return total, nil
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(steps), nil
 }
 
 // ---------------------------------------------------------------------------

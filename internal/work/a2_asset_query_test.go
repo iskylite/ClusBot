@@ -151,7 +151,7 @@ func TestA2RestartRecovery(t *testing.T) {
 		// 领取但不完成（模拟执行中断）。
 		executor, _ := s.StartEmbeddedExecutor(context.Background())
 		tx2, _ := s.db.Begin()
-		_, err = claimWorkUnit(tx2, ClaimRequest{WorkerID: executor.workerID, Credential: executor.credential, Kind: WorkUnitDeterministic, LeaseTTL: 60000, QuotaAvailable: true}, nowV)
+		_, err = claimWorkUnit(tx2, ClaimRequest{WorkerID: executor.workerID, Credential: executor.credential, Kind: WorkUnitDeterministic, LeaseTTL: 60000, QuotaAvailable: true}, now())
 		if err != nil {
 			t.Fatal(err)
 		}

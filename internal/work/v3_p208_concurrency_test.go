@@ -53,7 +53,7 @@ func TestV3P208ParallelSteps(t *testing.T) {
 		insertWorkUnit(tx, WorkUnit{UnitID: "unit-a", TaskID: taskID, StepID: stepA.StepID,
 			Kind: WorkUnitModel, ReadyAt: now, State: WorkUnitReady, CreatedAt: now, UpdatedAt: now})
 		insertWorkUnit(tx, WorkUnit{UnitID: "unit-b", TaskID: taskID, StepID: stepB.StepID,
-			Kind: WorkUnitModel, ReadyAt: now + 1, State: WorkUnitReady, CreatedAt: now, UpdatedAt: now})
+			Kind: WorkUnitModel, ReadyAt: now, State: WorkUnitReady, CreatedAt: now, UpdatedAt: now})
 		tx.Commit()
 		// 同时选取多个可并行单元（同一任务的两个独立 Step）。
 		tx, _ = store.db.Begin()

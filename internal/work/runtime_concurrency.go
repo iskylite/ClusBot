@@ -27,51 +27,7 @@ func selectParallelReadyUnits(tx *sql.Tx, kind WorkUnitKind, now int64, limit in
 	if limit < 1 {
 		limit = 10
 	}
-	// 读取所有就绪单元（依赖已满足的）。
-	rows, err := tx.Query(`SELECT unit_id,task_id,step_id,kind,lease_generation,ready_at,state,input_ref,created_at,updated_at
-FROM work_units WHERE state='ready' ORDER BY ready_at LIMIT ?`, limit*3)
-	if err != nil {
-		return nil, err
-	}
-	var units []WorkUnit
-	for rows.Next() {
-		var u WorkUnit
-		var stepID sql.NullString
-		if err := rows.Scan(&u.UnitID, &u.TaskID, &stepID, &u.Kind, &u.LeaseGeneration,
-			&u.ReadyAt, &u.State, &u.InputRef, &u.CreatedAt, &u.UpdatedAt); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		u.StepID = stepID.String
-		// 核对依赖已满足（依赖未满足的步骤不领取）。
-		if u.StepID != "" {
-			steps, err := listSteps(tx, u.TaskID)
-			if err != nil {
-				continue
-			}
-			byID := make(map[string]Step, len(steps))
-			var target Step
-			for _, s := range steps {
-				byID[s.StepID] = s
-				if s.StepID == u.StepID {
-					target = s
-				}
-			}
-			if target.StepID == "" {
-				continue
-			}
-			satisfied, _, err := stepDependenciesSatisfied(tx, target, byID)
-			if err != nil || !satisfied {
-				continue
-			}
-		}
-		units = append(units, u)
-		if len(units) >= limit {
-			break
-		}
-	}
-	rows.Close()
-	return units, rows.Err()
+	return selectReadyUnits(tx, kind, "", now, limit)
 }
 
 // ---------------------------------------------------------------------------
@@ -139,10 +95,10 @@ func invalidateTaskPlans(tx *sql.Tx, taskID string, reason string, now int64) (i
 
 // ObjectConflict 是一次对象冲突协调结果。
 type ObjectConflict struct {
-	ObjectKey  string
-	Allowed    bool
-	Reason     string
-	HeldBy     string // 当前占用者
+	ObjectKey string
+	Allowed   bool
+	Reason    string
+	HeldBy    string // 当前占用者
 }
 
 // coordinateObjectConflict 协调同一对象的冲突动作（P2-08.4）。
@@ -178,10 +134,10 @@ type ChildTaskLink struct {
 	ParentTaskID string
 	ChildTaskID  string
 	// 子 Task 有独立目标和责任（父子控制与 Step 依赖不混成一种状态）。
-	ChildGoal    string
+	ChildGoal     string
 	ChildCriteria string
 	// 父任务取消/修订不自动终止子任务（独立责任）。
-	Independent  bool
+	Independent bool
 }
 
 // linkChildTask 建立父子任务关联（P2-08.5）。
@@ -193,7 +149,7 @@ func linkChildTask(tx *sql.Tx, link ChildTaskLink, now int64) error {
 	// 父子关联记录在 runtime_audit（不混成一种状态）。
 	return recordAudit(tx, AuditEvent{
 		TaskID: link.ChildTaskID, Event: "child_task_linked", Actor: "system",
-		Summary: fmt.Sprintf("子任务 %s 关联父任务 %s（独立目标：%s）", link.ChildTaskID, link.ParentTaskID, link.ChildGoal),
+		Summary:   fmt.Sprintf("子任务 %s 关联父任务 %s（独立目标：%s）", link.ChildTaskID, link.ParentTaskID, link.ChildGoal),
 		DetailRef: link.ParentTaskID, OccurredAt: now,
 	})
 }

@@ -59,7 +59,7 @@ func TestV3P211MultiWorkerRuntimeMilestone(t *testing.T) {
 		stepsC, _ := listSteps(store.db, runC.TaskID)
 		tx, _ = store.db.Begin()
 		insertWorkUnit(tx, WorkUnit{UnitID: "unit-c", TaskID: runC.TaskID, StepID: stepsC[0].StepID,
-			Kind: WorkUnitModel, ReadyAt: now + 1, State: WorkUnitReady, CreatedAt: now, UpdatedAt: now})
+			Kind: WorkUnitModel, ReadyAt: now, State: WorkUnitReady, CreatedAt: now, UpdatedAt: now})
 		tx.Commit()
 		// 两个 Worker 实际并发领取不同单元（B 和 C）。
 		workerA, credA := registerV3P202Worker(t, store, "worker-a", []WorkUnitKind{WorkUnitModel}, "")

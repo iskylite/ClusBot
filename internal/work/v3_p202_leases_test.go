@@ -132,7 +132,7 @@ func TestV3P202LeaseClaimRace(t *testing.T) {
 		resultA, errA := claimWorkUnit(tx, ClaimRequest{WorkerID: workerA, Credential: credA, Kind: WorkUnitModel, LeaseTTL: 60000, QuotaAvailable: true}, now)
 		tx.Commit()
 		tx, _ = store.db.Begin()
-		resultB, errB := claimWorkUnit(tx, ClaimRequest{WorkerID: workerB, Credential: credB, Kind: WorkUnitModel, LeaseTTL: 60000, QuotaAvailable: true}, now)
+		resultB, errB := claimWorkUnit(tx, ClaimRequest{WorkerID: workerB, Credential: credB, Kind: WorkUnitModel, LeaseTTL: 60000, QuotaAvailable: true}, now+1)
 		tx.Commit()
 		if errA != nil || errB != nil {
 			t.Fatalf("separate claims failed: A=%v B=%v", errA, errB)
