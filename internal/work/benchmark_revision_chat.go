@@ -10,6 +10,12 @@ import (
 )
 
 const benchmarkRevisionChatEvent = "benchmark.revision_preview"
+const benchmarkRevisionAppliedEvent = "benchmark.revision_applied"
+
+type benchmarkRevisionAppliedReceipt struct {
+	TaskID   string `json:"task_id"`
+	Revision int    `json:"revision"`
+}
 
 type BenchmarkRevisionChatInput struct {
 	BenchmarkRevisionAIInput

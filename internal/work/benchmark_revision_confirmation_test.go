@@ -157,6 +157,21 @@ func TestBenchmarkChatConfirmationUsesOnlyRecordedProposal(t *testing.T) {
 		t.Fatalf("unconfirmed change was stored: %d %v", n, err)
 	}
 
+	beforeFeed, err := s.ReadConversationEvents(ctx, actor, chat.ConversationID, "")
+	if err != nil || beforeFeed.Cursor == "" {
+		t.Fatalf("cannot capture pre-confirmation cursor: %+v %v", beforeFeed, err)
+	}
+	exec(`CREATE TRIGGER reject_revision_receipt BEFORE INSERT ON run_events
+WHEN NEW.kind='benchmark.revision_applied' BEGIN SELECT RAISE(ABORT,'fixture receipt write failure'); END`)
+	if _, err := call(actor, chat.ConversationID, preview.RunID, confirm, p); err == nil {
+		t.Fatal("failed receipt write still reported success")
+	}
+	unchanged, err := s.ReadBenchmarkRevision(ctx, actor, task, 0)
+	if err != nil || unchanged.Revision != 1 || len(unchanged.Profile.Cases) != 2 {
+		t.Fatalf("receipt failure did not roll back the actual revision: %+v %v", unchanged, err)
+	}
+	exec("DROP TRIGGER reject_revision_receipt")
+
 	outputs := make(chan BenchmarkRevisionChatConfirmation, 2)
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -191,6 +206,28 @@ func TestBenchmarkChatConfirmationUsesOnlyRecordedProposal(t *testing.T) {
 	if err := s.db.QueryRow("SELECT count(*) FROM runtime_audit WHERE task_id=? AND run_id=? AND event='benchmark_task_revised'", task, preview.RunID).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("expected one atomic audit receipt: %d %v", n, err)
 	}
+	feed, err := s.ReadConversationEvents(ctx, actor, chat.ConversationID, beforeFeed.Cursor)
+	if err != nil || len(feed.Events) != 1 {
+		t.Fatalf("concurrent repeats did not produce exactly one recovery receipt: %+v %v", feed, err)
+	}
+	event := feed.Events[0]
+	if event.Kind != benchmarkRevisionAppliedEvent || event.RunID != preview.RunID || event.Revision != 2 || event.Status != "applied" || event.TaskID != "" {
+		t.Fatalf("unexpected conversation confirmation projection: %+v", event)
+	}
+	otherChat, _, err := s.SubmitBenchmarkCommand(ctx, "other-confirmed-chat", actor, "", "/benchmark-status "+task, "", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherFeed, err := s.ReadConversationEvents(ctx, actor, otherChat.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range otherFeed.Events {
+		if e.Kind == benchmarkRevisionAppliedEvent {
+			t.Fatal("confirmation attributed to another conversation that referenced the same task")
+		}
+	}
+
 	if p.started != 0 || p.looked != 0 || p.read != 0 {
 		t.Fatal("confirmation must not itself contact an external provider")
 	}

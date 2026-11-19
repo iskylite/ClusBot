@@ -310,6 +310,13 @@ VALUES(?,?,?,?,?,'queued',?)`, step, task, c.Key, meta.targets, meta.grants, toJ
 	if err := finalizeBenchmarkIfSettled(tx, task, stamp); err != nil {
 		return BenchmarkRevision{}, err
 	}
+	if confirmation != nil {
+		// Only a verified conversation preview supplies a source run. The
+		// idempotent shortcut above cannot emit a second receipt.
+		if err := addEvent(tx, previewRun, benchmarkRevisionAppliedEvent, benchmarkRevisionAppliedReceipt{TaskID: task, Revision: out.Revision}); err != nil {
+			return BenchmarkRevision{}, err
+		}
+	}
 	return out, tx.Commit()
 }
 

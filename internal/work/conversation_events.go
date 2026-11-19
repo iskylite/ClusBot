@@ -13,11 +13,12 @@ var ErrConversationEventCursorReset = errors.New("会话事件游标无法续读
 const conversationEventPageSize = 64
 
 type ConversationEvent struct {
-	ID     string `json:"id"`
-	RunID  string `json:"run_id"`
-	TaskID string `json:"task_id,omitempty"`
-	Kind   string `json:"kind"`
-	Status string `json:"status,omitempty"`
+	ID       string `json:"id"`
+	RunID    string `json:"run_id"`
+	TaskID   string `json:"task_id,omitempty"`
+	Kind     string `json:"kind"`
+	Status   string `json:"status,omitempty"`
+	Revision int    `json:"revision,omitempty"`
 }
 
 type ConversationEventPage struct {
@@ -34,7 +35,9 @@ type conversationEventCursor struct {
 const conversationEventsQuery = `SELECT e.seq,r.id,
  COALESCE((SELECT t.id FROM tasks t WHERE t.id=r.task_id AND t.conversation_id=r.conversation_id), ''),
  e.kind, CASE WHEN e.kind='run.state_changed' AND json_valid(e.data)
-  THEN COALESCE(json_extract(e.data,'$.status'),'') ELSE '' END
+  THEN COALESCE(json_extract(e.data,'$.status'),'') ELSE '' END,
+ CASE WHEN e.kind='benchmark.revision_applied' AND json_valid(e.data)
+  THEN COALESCE(json_extract(e.data,'$.revision'),0) ELSE 0 END
 FROM runs r JOIN run_events e INDEXED BY events_by_run ON e.run_id=r.id
 WHERE r.conversation_id=:conversation AND (
  e.kind='run.state_changed'
@@ -42,7 +45,7 @@ WHERE r.conversation_id=:conversation AND (
   SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
   WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=:actor AND sub.run_id=r.id
  ))
- OR (e.kind IN ('benchmark.revision_suggested','benchmark.revision_preview') AND EXISTS (
+ OR (e.kind IN ('benchmark.revision_suggested','benchmark.revision_preview','benchmark.revision_applied') AND EXISTS (
   SELECT 1 FROM benchmark_runs b WHERE b.actor=:actor
   AND b.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
  ))
@@ -51,7 +54,7 @@ WHERE r.conversation_id=:conversation AND (
 func scanConversationEvent(row scanner, conversation string) (ConversationEvent, int64, error) {
 	var e ConversationEvent
 	var seq int64
-	if err := row.Scan(&seq, &e.RunID, &e.TaskID, &e.Kind, &e.Status); err != nil {
+	if err := row.Scan(&seq, &e.RunID, &e.TaskID, &e.Kind, &e.Status, &e.Revision); err != nil {
 		return ConversationEvent{}, 0, err
 	}
 	switch e.Status {
@@ -61,7 +64,15 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 	}
 	// This proof is over the safe event projection, not raw errors, messages,
 	// or material. It detects an unrelated anchor at the same cursor position.
-	e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status}))
+	if e.Kind == benchmarkRevisionAppliedEvent {
+		if e.Revision < 2 {
+			return ConversationEvent{}, 0, ErrState
+		}
+		e.Status = "applied"
+		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status, e.Revision}))
+	} else {
+		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status}))
+	}
 	return e, seq, nil
 }
 

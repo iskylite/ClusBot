@@ -328,6 +328,15 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatalf("revision confirmation unexpectedly dispatched: %+v", revision)
 	}
 
+	var confirmedFeed work.ConversationEventPage
+	var replayedConfirmation work.BenchmarkRevisionChatConfirmation
+	jsonCall(http.MethodPost, confirmPath, confirm, &replayedConfirmation, http.StatusOK)
+	jsonCall(http.MethodGet, conversationFeed+"?cursor="+afterFeed.Cursor, nil, &confirmedFeed, http.StatusOK)
+	if len(confirmedFeed.Events) != 1 || confirmedFeed.Events[0].Kind != "benchmark.revision_applied" ||
+		confirmedFeed.Events[0].RunID != pending.RunID || confirmedFeed.Events[0].Revision != revision.Revision {
+		t.Fatalf("the same conversation cannot recover the real confirmation exactly once: %+v", confirmedFeed)
+	}
+
 	workerCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); a.store.RunBenchmarks(workerCtx, provider) }()
