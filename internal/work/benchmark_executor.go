@@ -13,6 +13,9 @@ import (
 const benchmarkCallTimeout = 10 * time.Second
 const benchmarkClaimMS = int64(30000)
 
+// This is a one-shot query recheck, not a remote execution limit.
+const benchmarkWaitRecheckMS = int64((5 * time.Minute) / time.Millisecond)
+
 type benchmarkDispatch struct {
 	request                                   BenchmarkJobRequest
 	spec                                      BenchmarkCase
@@ -23,6 +26,9 @@ type benchmarkDispatch struct {
 func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider) (bool, error) {
 	if provider == nil {
 		return false, nil
+	}
+	if err := s.applyBenchmarkTimeouts(ctx, now()); err != nil {
+		return false, err
 	}
 	if err := s.applyBenchmarkHints(ctx, now()); err != nil {
 		return false, err
@@ -190,7 +196,11 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 			return d, false, err
 		}
 		if _, err = openWait(tx, Wait{WaitID: "benchmark:" + d.step, TaskID: d.task, StepID: d.step, Kind: WaitKindExternal,
-			MatchKey: d.operation, WaitVersion: 1, OpenedAt: stamp, TimeoutPolicy: "reconcile"}); err != nil {
+			MatchKey: d.operation, WaitVersion: 1, OpenedAt: stamp, DeadlineAt: stamp + benchmarkWaitRecheckMS, TimeoutPolicy: "reconcile"}); err != nil {
+			return d, false, err
+		}
+		if _, err = createTimer(tx, Timer{TimerID: "benchmark:" + d.step, WaitID: "benchmark:" + d.step,
+			WaitVersion: 1, DueAt: stamp + benchmarkWaitRecheckMS, CreatedAt: stamp}); err != nil {
 			return d, false, err
 		}
 	} else {
@@ -330,6 +340,9 @@ ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec
 		return err
 	}
 	if _, err = resolveWait(tx, "benchmark:"+d.step, 1, "benchmark-provider", d.operation+":terminal", "job_terminal", "", "system", stamp); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("UPDATE timers SET state='cancelled' WHERE wait_id=? AND wait_version=1 AND state='pending'", "benchmark:"+d.step); err != nil {
 		return err
 	}
 	phase := "incomplete"
