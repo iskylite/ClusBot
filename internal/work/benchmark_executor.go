@@ -92,6 +92,9 @@ func (s *Store) claimBenchmarkDue(ctx context.Context, provider BenchmarkProvide
 	var profile, phase, targetsRaw, authsRaw, caseSpec string
 	var version int
 	var stopping, cancelSent bool
+	// Zero means immediately eligible for a queued case, not oldest work in
+	// the database. Sort by its persisted enqueue/revision and prerequisite
+	// settlement times so new submissions cannot overtake due reconciliation.
 	err = tx.QueryRow(`SELECT b.step_id,b.task_id,r.actor,r.profile_key,r.profile_version,b.phase,b.operation_id,b.job_id,b.generation,
 b.case_key,b.frozen_targets,b.authorization_refs,r.stop_requested,b.cancel_sent,b.case_spec FROM benchmark_cases b
 JOIN benchmark_runs r ON r.task_id=b.task_id JOIN tasks t ON t.id=b.task_id
@@ -103,7 +106,11 @@ WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
       WHERE e.step_id=b.step_id AND p.phase NOT IN ('verified','incomplete','skipped')
     ))
   )))
-ORDER BY b.next_at, r.created_at, s.position, b.step_id LIMIT 1`, cutoff).
+ORDER BY CASE WHEN b.phase='queued' AND b.next_at=0 THEN max(s.updated_at, coalesce((
+    SELECT max(dep.updated_at) FROM step_dependencies e JOIN steps dep ON dep.step_id=e.depends_on_step_id
+    WHERE e.step_id=b.step_id
+  ),0)) ELSE b.next_at END,
+  r.created_at, s.position, b.step_id LIMIT 1`, cutoff).
 		Scan(&d.step, &d.task, &d.actor, &profile, &version, &phase, &d.operation, &d.job, &d.generation, &d.request.Case, &targetsRaw, &authsRaw, &stopping, &cancelSent, &caseSpec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, false, nil
