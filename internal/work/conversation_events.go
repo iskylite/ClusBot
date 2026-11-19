@@ -33,7 +33,9 @@ type conversationEventCursor struct {
 }
 
 const conversationEventsQuery = `SELECT e.seq,r.id,
- COALESCE((SELECT t.id FROM tasks t WHERE t.id=r.task_id AND t.conversation_id=r.conversation_id), ''),
+ CASE WHEN e.kind='benchmark.admission_queued' AND json_valid(e.data)
+ THEN COALESCE(json_extract(e.data,'$.task_id'),'')
+ ELSE COALESCE((SELECT t.id FROM tasks t WHERE t.id=r.task_id AND t.conversation_id=r.conversation_id), '') END,
  e.kind, CASE WHEN e.kind='run.state_changed' AND json_valid(e.data)
   THEN COALESCE(json_extract(e.data,'$.status'),'') ELSE '' END,
  CASE WHEN e.kind='benchmark.revision_applied' AND json_valid(e.data)
@@ -44,6 +46,11 @@ WHERE r.conversation_id=:conversation AND (
  OR (e.kind='benchmark.admission_suggested' AND EXISTS (
   SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
   WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=:actor AND sub.run_id=r.id
+ ))
+ OR (e.kind='benchmark.admission_queued' AND EXISTS (
+  SELECT 1 FROM benchmark_admission_previews p JOIN benchmark_runs b ON b.task_id=p.task_id AND b.actor=p.actor
+  WHERE p.actor=:actor AND p.source_run=r.id AND p.source_run<>'' AND p.source_conversation=r.conversation_id AND p.confirmed_at>0
+  AND p.task_id=CASE WHEN json_valid(e.data) THEN json_extract(e.data,'$.task_id') END
  ))
  OR (e.kind IN ('benchmark.revision_suggested','benchmark.revision_preview','benchmark.revision_applied') AND EXISTS (
   SELECT 1 FROM benchmark_runs b WHERE b.actor=:actor
@@ -64,7 +71,13 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 	}
 	// This proof is over the safe event projection, not raw errors, messages,
 	// or material. It detects an unrelated anchor at the same cursor position.
-	if e.Kind == benchmarkRevisionAppliedEvent {
+	if e.Kind == benchmarkAdmissionQueuedEvent {
+		if e.TaskID == "" {
+			return ConversationEvent{}, 0, ErrState
+		}
+		e.Status = "queued"
+		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status, e.TaskID}))
+	} else if e.Kind == benchmarkRevisionAppliedEvent {
 		if e.Revision < 2 {
 			return ConversationEvent{}, 0, ErrState
 		}

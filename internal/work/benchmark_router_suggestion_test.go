@@ -125,4 +125,51 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_runs").Scan(&domainTasks); err != nil || domainTasks != 0 {
 		t.Fatalf("ordinary chat created a domain task: %d %v", domainTasks, err)
 	}
+	// Reopening an old, unconfirmed preview may bind its source, but only
+	// after this exact owner/conversation/suggestion is verified again.
+	exec("UPDATE runs SET created_at=? WHERE id=?", now(), valid.ID)
+	exec("UPDATE benchmark_admission_previews SET source_conversation='',source_run=''")
+	draft, err := open(actor, valid.ConversationID, valid.ID)
+	if err != nil {
+		t.Fatalf("could not verify and retain the exact old source: %v", err)
+	}
+	f := &benchFixtureProvider{}
+	accept := BenchmarkAdmissionConfirmationInput{Action: "accept_benchmark_admission"}
+	confirm := func() (BenchmarkAdmissionConfirmation, error) {
+		return s.ConfirmBenchmarkAdmission(ctx, actor, draft.PreviewID, accept, f)
+	}
+	exec(`CREATE TRIGGER reject_queue_receipt BEFORE INSERT ON run_events
+WHEN NEW.kind='benchmark.admission_queued' BEGIN SELECT RAISE(ABORT,'fixture receipt write failure'); END`)
+	if _, err := confirm(); err == nil {
+		t.Fatal("failed receipt write nevertheless accepted a task")
+	}
+	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_runs").Scan(&domainTasks); err != nil || domainTasks != 0 {
+		t.Fatalf("task enqueue did not roll back: %d %v", domainTasks, err)
+	}
+	exec("DROP TRIGGER reject_queue_receipt")
+	accepted, err := confirm()
+	if err != nil || accepted.TaskID == "" {
+		t.Fatalf("safe confirmation failed: %+v %v", accepted, err)
+	}
+	replay, err := confirm()
+	if err != nil || replay != accepted {
+		t.Fatalf("confirmation replay changed the original receipt: %+v %v", replay, err)
+	}
+	feed, err := s.ReadConversationEvents(ctx, actor, valid.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, item := range feed.Events {
+		if item.Kind == benchmarkAdmissionQueuedEvent {
+			found++
+			if item.TaskID != accepted.TaskID || item.RunID != valid.ID || item.Status != "queued" {
+				t.Fatalf("wrong admission projection: %+v", item)
+			}
+		}
+	}
+	if found != 1 || f.started != 0 || f.looked != 0 || f.read != 0 {
+		t.Fatalf("duplicate or externally dispatched acceptance: %d %+v", found, f)
+	}
+
 }

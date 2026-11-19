@@ -201,6 +201,13 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	if draft.PreviewID == "" || draft.State != "preview_only" || draft.ExecutionStarted || draft.Preflight.FacilityStatus != "not_verified" || provider.starts.Load() != 0 {
 		t.Fatalf("preview started work or invented facility certainty: %+v", draft)
 	}
+	admissionFeed := "/api/v1/conversations/" + suggestion.ConversationID + "/events"
+	var beforeAccept work.ConversationEventPage
+	jsonCall(http.MethodGet, admissionFeed, nil, &beforeAccept, http.StatusOK)
+	if len(beforeAccept.Events) < 1 || beforeAccept.Events[len(beforeAccept.Events)-1].Kind != "benchmark.admission_suggested" {
+		t.Fatalf("preview incorrectly projected receipt before confirmation: %+v", beforeAccept)
+	}
+
 	var accepted work.BenchmarkAdmissionConfirmation
 	acceptPath := admission + "/" + draft.PreviewID + "/confirm"
 	accept := work.BenchmarkAdmissionConfirmationInput{Action: "accept_benchmark_admission"}
@@ -308,6 +315,14 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	if len(afterFeed.Events) != 1 || afterFeed.Events[0].Kind != "benchmark.revision_preview" || afterFeed.Events[0].RunID != pending.RunID {
 		t.Fatalf("reconnect did not catch the real persisted preview event: %+v", afterFeed)
 	}
+
+	var queuedFeed work.ConversationEventPage
+	jsonCall(http.MethodGet, admissionFeed+"?cursor="+beforeAccept.Cursor, nil, &queuedFeed, http.StatusOK)
+	if len(queuedFeed.Events) != 1 || queuedFeed.Events[0].Kind != "benchmark.admission_queued" ||
+		queuedFeed.Events[0].RunID != firstRun || queuedFeed.Events[0].TaskID != accepted.TaskID || queuedFeed.Events[0].Status != "queued" {
+		t.Fatalf("original conversation cannot recover the verified queued task after restart: %+v", queuedFeed)
+	}
+	jsonCall(http.MethodGet, conversationFeed+"?cursor="+queuedFeed.Cursor, nil, nil, http.StatusConflict)
 
 	var reopened work.BenchmarkRevisionChatReceipt
 	jsonCall(http.MethodGet, chatPath+"/"+pending.RunID, nil, &reopened, http.StatusOK)

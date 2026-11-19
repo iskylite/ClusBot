@@ -182,6 +182,11 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 		Scan(&runs, &ops, &audit); err != nil || runs != 1 || ops != 0 || audit != 1 {
 		t.Fatalf("confirmation effects wrong: runs=%d operations=%d audit=%d error=%v", runs, ops, audit, err)
 	}
+	var chatReceipts int
+	if err := s.db.QueryRow("SELECT count(*) FROM run_events WHERE kind=?", benchmarkAdmissionQueuedEvent).Scan(&chatReceipts); err != nil || chatReceipts != 0 {
+		t.Fatalf("standalone admission acquired a fabricated conversation source: %d %v", chatReceipts, err)
+	}
+
 	if p.started != 0 || p.looked != 0 || p.read != 0 {
 		t.Fatal("confirmation dispatched a supplier operation")
 	}

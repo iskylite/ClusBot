@@ -234,15 +234,19 @@ ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&text, &created); err !=
 	// same general preview table and the same transactional admission guard.
 	preview := digest(toJSON([]string{"benchmark-suggestion-preview", actor, conversation, run}))[:32]
 	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_admission_previews
-(preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at) VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(preview_id) DO NOTHING`, preview, actor, candidate.Target, candidate.Profile.Profile,
-		candidate.Profile.Version, candidate.inventoryFingerprint, stamp); err != nil {
+(preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at,source_conversation,source_run) VALUES(?,?,?,?,?,?,?,?,?)
+ON CONFLICT(preview_id) DO UPDATE SET source_conversation=excluded.source_conversation,source_run=excluded.source_run
+WHERE task_id='' AND source_conversation='' AND source_run=''
+ AND actor=excluded.actor AND target=excluded.target AND profile_key=excluded.profile_key AND profile_version=excluded.profile_version AND snapshot_digest=excluded.snapshot_digest`,
+		preview, actor, candidate.Target, candidate.Profile.Profile,
+		candidate.Profile.Version, candidate.inventoryFingerprint, stamp, conversation, run); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	var valid bool
 	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM benchmark_admission_previews
-WHERE preview_id=? AND actor=? AND target=? AND profile_key=? AND profile_version=? AND snapshot_digest=?)`,
-		preview, actor, candidate.Target, candidate.Profile.Profile, candidate.Profile.Version, candidate.inventoryFingerprint).Scan(&valid); err != nil {
+WHERE preview_id=? AND actor=? AND target=? AND profile_key=? AND profile_version=? AND snapshot_digest=?
+AND ((source_conversation=? AND source_run=?) OR (task_id<>'' AND source_conversation='' AND source_run='')))`,
+		preview, actor, candidate.Target, candidate.Profile.Profile, candidate.Profile.Version, candidate.inventoryFingerprint, conversation, run).Scan(&valid); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	if !valid {

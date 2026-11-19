@@ -7,6 +7,25 @@ import (
 )
 
 const benchmarkAdmissionConfirmPrefix = "admission-preview:"
+const benchmarkAdmissionQueuedEvent = "benchmark.admission_queued"
+
+func migrateBenchmarkAdmissionConversationSource(tx *sql.Tx) error {
+	if err := addColumnIfMissing(tx, "benchmark_admission_previews", "source_conversation",
+		`ALTER TABLE benchmark_admission_previews ADD COLUMN source_conversation TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(tx, "benchmark_admission_previews", "source_run",
+		`ALTER TABLE benchmark_admission_previews ADD COLUMN source_run TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS benchmark_admission_preview_sources
+ON benchmark_admission_previews(actor,source_conversation,source_run) WHERE source_run<>''`)
+	return err
+}
+
+type benchmarkAdmissionQueuedReceipt struct {
+	TaskID string `json:"task_id"`
+}
 
 var ErrBenchmarkAdmissionPreviewStale = errors.New("受理预览已失效，请按当前目标状态重新预览")
 
@@ -44,10 +63,10 @@ func (s *Store) ConfirmBenchmarkAdmission(ctx context.Context, actor, preview st
 	}
 	defer tx.Rollback()
 	var c BenchmarkAdmissionCandidate
-	var wanted, accepted string
-	if err := tx.QueryRowContext(ctx, `SELECT target,profile_key,profile_version,snapshot_digest,task_id
+	var wanted, accepted, conversation, sourceRun string
+	if err := tx.QueryRowContext(ctx, `SELECT target,profile_key,profile_version,snapshot_digest,task_id,source_conversation,source_run
 FROM benchmark_admission_previews WHERE preview_id=? AND actor=?`, preview, actor).
-		Scan(&c.Target, &c.Profile.Profile, &c.Profile.Version, &wanted, &accepted); err != nil {
+		Scan(&c.Target, &c.Profile.Profile, &c.Profile.Version, &wanted, &accepted, &conversation, &sourceRun); err != nil {
 		return BenchmarkAdmissionConfirmation{}, err
 	}
 	out := BenchmarkAdmissionConfirmation{PreviewID: preview, TaskID: accepted, State: "accepted"}
@@ -93,6 +112,25 @@ WHERE preview_id=? AND actor=? AND task_id=''`, out.TaskID, stamp, preview, acto
 	if err := recordAudit(tx, AuditEvent{TaskID: out.TaskID, Event: "benchmark_admission_confirmed", Actor: actor,
 		DetailRef: preview, Summary: "确认受理基准任务（未派发）", OccurredAt: stamp}); err != nil {
 		return BenchmarkAdmissionConfirmation{}, err
+	}
+	if conversation != "" && sourceRun != "" {
+		// A preview is independent of conversation deletion, but deleted
+		// or detached source records must not produce a conversation event.
+		var bound bool
+		err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM runs r
+WHERE r.id=? AND r.conversation_id=? AND r.task_id IS NULL AND r.status='completed'
+AND EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.kind=?)
+AND EXISTS(SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
+ WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=? AND sub.run_id=r.id))`,
+			sourceRun, conversation, benchmarkRouterEvent, actor).Scan(&bound)
+		if err != nil {
+			return BenchmarkAdmissionConfirmation{}, err
+		}
+		if bound {
+			if err := addEvent(tx, sourceRun, benchmarkAdmissionQueuedEvent, benchmarkAdmissionQueuedReceipt{TaskID: out.TaskID}); err != nil {
+				return BenchmarkAdmissionConfirmation{}, err
+			}
+		}
 	}
 	return out, tx.Commit()
 }
