@@ -113,6 +113,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/domain/tickets", s.submitDomainTicket)
 	api.HandleFunc("GET /api/v1/domain/ticket-operations/{id}", s.domainTicketProgress)
 	api.HandleFunc("POST /api/v1/domain/benchmark-profiles", s.publishBenchmarkProfile)
+	api.HandleFunc("PUT /api/v1/domain/benchmark-chat-targets/{target}", s.setBenchmarkChatTarget)
+	api.HandleFunc("DELETE /api/v1/domain/benchmark-chat-targets/{target}", s.clearBenchmarkChatTarget)
 	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}", s.benchmarkProgress)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/evidence/{artifact}", s.benchmarkEvidence)

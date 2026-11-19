@@ -29,6 +29,26 @@ func (s Server) publishBenchmarkProfile(w http.ResponseWriter, r *http.Request) 
 	}
 	jsonResponse(w, http.StatusCreated, map[string]any{"key": p.Key, "version": p.Version})
 }
+func (s Server) setBenchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
+	var selector work.BenchmarkProfileRef
+	if !decode(w, r, &selector) {
+		return
+	}
+	if err := s.Store.SetBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), &selector); err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s Server) clearBenchmarkChatTarget(w http.ResponseWriter, r *http.Request) {
+	if err := s.Store.SetBenchmarkChatTarget(r.Context(), s.principal(r), r.PathValue("target"), nil); err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s Server) submitBenchmark(w http.ResponseWriter, r *http.Request) {
 	var req work.BenchmarkRunRequest
 	if !decode(w, r, &req) {
