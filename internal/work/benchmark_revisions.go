@@ -34,14 +34,16 @@ type BenchmarkRevisionInput struct {
 }
 
 type BenchmarkRevision struct {
-	Revision int                 `json:"revision"`
-	Profile  BenchmarkProfile    `json:"profile"`
-	Changes  BenchmarkDraftDelta `json:"changes"`
-	Frozen   []string            `json:"frozen_cases"`
+	Revision    int                           `json:"revision"`
+	Profile     BenchmarkProfile              `json:"profile"`
+	Changes     BenchmarkDraftDelta           `json:"changes"`
+	Frozen      []string                      `json:"frozen_cases"`
+	AssetImpact *BenchmarkRevisionAssetImpact `json:"asset_impact,omitempty"`
 }
 
 type benchmarkRevisionCase struct {
 	step, phase, operation string
+	targets                []ticketTarget
 }
 
 func (s *Store) ReviseBenchmark(ctx context.Context, actor, task string, req BenchmarkRevisionInput, provider BenchmarkProvider, apply bool) (BenchmarkRevision, error) {
@@ -152,6 +154,7 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 			}
 			knownTargets[target.Ref] = target
 		}
+		c.targets = targets
 		existing[key] = c
 	}
 	err = rows.Err()
@@ -184,9 +187,11 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 	// current authorization check before accepting a new task revision.
 	type readyData struct{ targets, grants string }
 	checked := map[string]readyData{}
+	proposedTargets := map[string][]ticketTarget{}
 	stamp := now()
 	for _, c := range proposal.Cases {
 		if row, ok := existing[c.Key]; ok && (row.phase != "queued" || row.operation != "") {
+			proposedTargets[c.Key] = row.targets
 			continue
 		}
 		targets, grants, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
@@ -199,8 +204,13 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 			}
 		}
 		checked[c.Key] = readyData{toJSON(targets), toJSON(grants)}
+		proposedTargets[c.Key] = targets
 	}
 	if !apply {
+		out.AssetImpact, err = readBenchmarkRevisionAssetImpact(ctx, tx, task, active, existing, proposedTargets, out.Changes)
+		if err != nil {
+			return BenchmarkRevision{}, err
+		}
 		return out, nil
 	}
 	ids := map[string]string{}

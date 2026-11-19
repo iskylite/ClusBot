@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -188,9 +189,16 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 	if err != nil || reply.Status != "completed" || reply.TaskID != "" || len(events) != 1 || events[0].Kind != benchmarkRevisionChatEvent {
 		t.Fatalf("chat event or fallback missing: %+v %+v %v", events, reply, err)
 	}
-	if replayed, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, action, nil, nil); err != nil || toJSON(replayed) != toJSON(proposal) {
-		t.Fatalf("completed replay should not need model or provider: %+v %v", replayed, err)
+	if proposal.Proposal.Preview.AssetImpact == nil || len(proposal.Proposal.Preview.AssetImpact.ActualHolds) != 1 ||
+		strings.Contains(events[0].Data, "asset_impact") {
+		t.Fatalf("only live chat response should carry the new snapshot: %+v %+v", proposal, events)
 	}
+	retained := proposal
+	retained.Proposal.Preview.AssetImpact = nil
+	if replayed, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, action, nil, nil); err != nil || toJSON(replayed) != toJSON(retained) {
+		t.Fatalf("completed replay must need no model and omit live assets: %+v %v", replayed, err)
+	}
+
 	reusedKey := action
 	reusedKey.Text = "我要查进度"
 	if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, reusedKey, provider, interpret(answer)); !errors.Is(err, ErrConflict) {
@@ -214,6 +222,14 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 	preview, err := s.ReviseBenchmark(ctx, actor, task, req, provider, false)
 	if err != nil || preview.Revision != 2 || len(preview.Frozen) != 1 || preview.Frozen[0] != "first" {
 		t.Fatalf("preview: %+v %v", preview, err)
+	}
+	impact := preview.AssetImpact
+	if impact == nil || impact.ScopeChanged || impact.ScopeLimit != "within_original_task" || impact.BaseRevision != 1 ||
+		impact.Baseline.TargetCount != 1 || impact.Proposed.TargetCount != 1 || impact.Baseline.TargetRefs[0] != "node-1" ||
+		len(impact.Cases) != 2 || impact.Cases[0].CaseKey != "third" || !slices.Equal(impact.Cases[0].BeforeRefs, []string{"node-1"}) ||
+		len(impact.Cases[0].AfterRefs) != 0 || impact.Cases[1].CaseKey != "second" || !slices.Equal(impact.Cases[1].AfterRefs, []string{"node-1"}) ||
+		len(impact.ActualHolds) != 1 || impact.ActualHolds[0].CaseKey != "first" || !slices.Equal(impact.ActualHolds[0].TargetRefs, []string{"node-1"}) {
+		t.Fatalf("unchanged scope, revised cases and currently held assets must be distinct: %+v", impact)
 	}
 	before, err := s.BenchmarkProgress(ctx, actor, task)
 	if err != nil || before.PlanRevision != 1 || before.AssetScope.Source != "frozen_targets" || before.AssetScope.TargetCount != 1 || len(before.AssetScope.TargetRefs) != 1 || before.AssetScope.TargetRefs[0] != "node-1" || len(before.Cases) != 3 || len(provider.launches) != 1 {
@@ -243,7 +259,7 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		func(_ context.Context, _ BenchmarkRevisionModelInput, _ int) (string, error) {
 			var applyErr error
 			saved, applyErr = s.ReviseBenchmark(ctx, actor, task, req, provider, true)
-			if applyErr != nil || saved.Revision != 2 {
+			if applyErr != nil || saved.Revision != 2 || saved.AssetImpact != nil {
 				t.Fatalf("independent revision applied while model active: %+v %v", saved, applyErr)
 			}
 			return answer, nil
@@ -282,5 +298,45 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 	if err != nil || got.State != "succeeded" || got.PlanRevision != 2 || len(got.Cases) != 2 ||
 		len(provider.launches) != 2 || provider.launches[0].Parameters["gpu_count"] != "40" || provider.launches[1].Parameters["gpu_count"] != "32" {
 		t.Fatalf("bad settled state %+v %+v %v", got, provider.launches, err)
+	}
+}
+
+func TestBenchmarkRevisionAssetScopeMayShrinkWithoutLiveInference(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "revision-asset-scope.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const actor = "user:session"
+	p := &benchFixtureProvider{}
+	binding := BenchmarkBinding{Connection: "bench-test", Revision: 1, Tool: "test", Validator: benchmarkValidatorV1}
+	grant := DomainBenchmarkGrant{Connection: binding.Connection, Revision: 1, Tool: binding.Tool, ExpiresAt: now() + 60000}
+	cases := []BenchmarkCase{}
+	for _, target := range []string{"group-two", "node-one"} {
+		if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: target, Kind: "node", Identity: target, Benchmark: []DomainBenchmarkGrant{grant}}}); err != nil {
+			t.Fatal(err)
+		}
+		cases = append(cases, BenchmarkCase{Key: target, Binding: binding, Targets: []string{target}, RequiredMetrics: map[string]string{"rate": "GB/s"}})
+	}
+	if err := s.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: "two-targets", Version: 1, Cases: cases}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{"two-assets", "two-targets", 1}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{ExpectedRevision: 1, Cases: cases[1:]}, p, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	impact := preview.AssetImpact
+	if impact == nil || !impact.ScopeChanged || !slices.Equal(impact.Baseline.TargetRefs, []string{"group-two", "node-one"}) ||
+		!slices.Equal(impact.Proposed.TargetRefs, []string{"node-one"}) || len(impact.ActualHolds) != 0 ||
+		len(impact.Cases) != 1 || !slices.Equal(impact.Cases[0].BeforeRefs, []string{"group-two"}) || impact.Cases[0].Change != "removed" {
+		t.Fatalf("wrong local scope change: %+v", impact)
+	}
+	if p.started != 0 || p.looked != 0 || p.read != 0 {
+		t.Fatal("preview attempted an external action")
 	}
 }

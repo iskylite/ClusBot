@@ -132,7 +132,11 @@ WHERE b.task_id=? AND b.actor=? AND c.case_key=?`, input.TaskID, actor, proposal
 	if _, err := tx.ExecContext(ctx, "INSERT INTO submissions VALUES(?,?,?)", key, fingerprint, out.RunID); err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
-	if err := addEvent(tx, out.RunID, benchmarkRevisionChatEvent, out); err != nil {
+	// Live asset impact includes the occupancy snapshot. Keep it out of the
+	// durable conversation event and same-key replay payload.
+	recorded := out
+	recorded.Proposal.Preview.AssetImpact = nil
+	if err := addEvent(tx, out.RunID, benchmarkRevisionChatEvent, recorded); err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
 	return out, tx.Commit()
