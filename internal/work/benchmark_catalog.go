@@ -222,14 +222,14 @@ func (s *Store) PreflightBenchmark(ctx context.Context, actor string, ref Benchm
 				return BenchmarkPreflight{}, aerr
 			}
 			if item.InventoryStatus == "eligible" && item.Authorization == "allowed" {
-				var held bool
-				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM benchmark_target_holds WHERE target_ref=?)`, target).Scan(&held); err != nil {
-					return BenchmarkPreflight{}, fmt.Errorf("核对基准占用: %w", err)
+				held, err := targetHasLocalExclusiveHold(tx, target)
+				if err != nil {
+					return BenchmarkPreflight{}, fmt.Errorf("核对本地排他占用: %w", err)
 				}
 				item.Occupancy = "no_local_benchmark_hold"
 				if held {
 					item.Occupancy = "held"
-					entry.Warnings = append(entry.Warnings, BenchmarkPreflightIssue{"asset_busy", target, "本地已有基准占用；可排队，不能立即派发"})
+					entry.Warnings = append(entry.Warnings, BenchmarkPreflightIssue{"asset_busy", target, "本地已有排他占用；可排队，不能立即派发"})
 				}
 			}
 			entry.Targets = append(entry.Targets, item)

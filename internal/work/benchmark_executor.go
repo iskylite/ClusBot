@@ -149,9 +149,9 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				reason = "冻结的执行授权已失效"
 				break
 			}
-			var held bool
-			if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM benchmark_target_holds WHERE target_ref=?)`, target.Ref).Scan(&held); err != nil {
-				return d, false, err
+			held, holdErr := targetHasLocalExclusiveHold(tx, target.Ref)
+			if holdErr != nil {
+				return d, false, holdErr
 			}
 			if held {
 				_, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+1000, d.step)

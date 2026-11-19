@@ -42,23 +42,23 @@ const (
 
 // QuotaReservation 是 quota_reservations 的一行。
 type QuotaReservation struct {
-	ReservationID string
-	Scope         QuotaScope
-	TaskID        string
-	RunID         string
-	StepID        string
-	WorkerID      string
-	TargetRef     string
-	Amount        int64
-	Unit          string
-	State         string // reserved/settled/released/expired
-	SettlementKey string
-	SettledAt     int64
-	CostKnown     bool
-	Exclusive     bool
+	ReservationID  string
+	Scope          QuotaScope
+	TaskID         string
+	RunID          string
+	StepID         string
+	WorkerID       string
+	TargetRef      string
+	Amount         int64
+	Unit           string
+	State          string // reserved/settled/released/expired
+	SettlementKey  string
+	SettledAt      int64
+	CostKnown      bool
+	Exclusive      bool
 	EffectVerified bool
-	ReservedAt    int64
-	ExpiresAt     int64
+	ReservedAt     int64
+	ExpiresAt      int64
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +72,33 @@ func reserveQuota(tx *sql.Tx, r QuotaReservation) (QuotaReservation, error) {
 	if r.Scope == "" || r.Amount <= 0 || r.Unit == "" {
 		return QuotaReservation{}, errors.New("配额预留缺少作用域/数量/单位")
 	}
+	if r.Scope == QuotaTargetHold && r.Exclusive {
+		if r.TargetRef == "" {
+			return QuotaReservation{}, errors.New("排他占用缺少目标引用")
+		}
+		held, err := targetHasLocalExclusiveHold(tx, r.TargetRef)
+		if err != nil {
+			return QuotaReservation{}, err
+		}
+		if held {
+			return QuotaReservation{}, fmt.Errorf("%w：目标 %s 已有本地排他占用", ErrQuotaExhausted, r.TargetRef)
+		}
+		if r.SettlementKey == "" {
+			// Different assets and later verified/released generations are
+			// distinct holds, even for the same task and step.
+			r.SettlementKey = "target-hold:" + id()
+		} else {
+			// Explicit keys must not silently reuse an already released hold.
+			var prior bool
+			if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM quota_reservations WHERE settlement_key=?)", r.SettlementKey).Scan(&prior); err != nil {
+				return QuotaReservation{}, err
+			}
+			if prior {
+				return QuotaReservation{}, ErrConflict
+			}
+		}
+	}
+
 	// 结算键（回报按稳定身份结算）：缺省按预留生成。
 	if r.SettlementKey == "" && r.TaskID != "" {
 		r.SettlementKey = fmt.Sprintf("%s:%s:%s", r.Scope, r.TaskID, r.StepID)
@@ -236,6 +263,17 @@ func releaseModelSlot(tx *sql.Tx, settlementKey string, now int64) error {
 // 占用（资产危险操作；效果未核实前不按 TTL 释放）
 // ---------------------------------------------------------------------------
 
+// targetHasLocalExclusiveHold checks only durable local ownership. A missing
+// hold does not prove the target is free outside this process or database.
+// Enforcers must call this and acquire their hold in the same write transaction.
+func targetHasLocalExclusiveHold(tx *sql.Tx, target string) (bool, error) {
+	var held bool
+	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM benchmark_target_holds WHERE target_ref=?)
+ OR EXISTS(SELECT 1 FROM quota_reservations WHERE target_ref=? AND scope='target_hold'
+ AND exclusive=1 AND state IN ('reserved','settled'))`, target, target).Scan(&held)
+	return held, err
+}
+
 // holdTarget 占用一个目标（P2-04.5）。
 // 外部动作效果未核实前不能仅按 TTL 释放排他占用。
 func holdTarget(tx *sql.Tx, targetRef, workerID, taskID string, now int64) (QuotaReservation, error) {
@@ -258,7 +296,7 @@ func releaseTargetHold(tx *sql.Tx, targetRef string, effectVerified bool, now in
 		return fmt.Errorf("目标 %s 的效果未核实，不能释放排他占用（不能仅按 TTL 释放）", targetRef)
 	}
 	_, err := tx.Exec(`UPDATE quota_reservations SET state='released', effect_verified=1
-WHERE target_ref=? AND exclusive=1 AND state IN ('reserved','settled')`, targetRef)
+WHERE target_ref=? AND scope='target_hold' AND exclusive=1 AND state IN ('reserved','settled')`, targetRef)
 	return err
 }
 
@@ -268,12 +306,12 @@ WHERE target_ref=? AND exclusive=1 AND state IN ('reserved','settled')`, targetR
 
 // QuotaUsage 是一个作用域的占用快照。
 type QuotaUsage struct {
-	Scope         QuotaScope
-	Subject       string
-	Reserved      int64
-	Settled       int64
-	Released      int64
-	ExclusiveHolds int64
+	Scope           QuotaScope
+	Subject         string
+	Reserved        int64
+	Settled         int64
+	Released        int64
+	ExclusiveHolds  int64
 	UnverifiedHolds int64 // 效果未核实的排他占用（不能仅按 TTL 释放）
 }
 
