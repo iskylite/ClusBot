@@ -57,11 +57,11 @@ func (s *Store) claimBenchmark(ctx context.Context, provider BenchmarkProvider, 
 		return d, false, err
 	}
 	defer tx.Rollback()
-	var profile, phase, targetsRaw, authsRaw string
+	var profile, phase, targetsRaw, authsRaw, caseSpec string
 	var version int
 	var stopping, cancelSent bool
 	err = tx.QueryRow(`SELECT b.step_id,b.task_id,r.actor,r.profile_key,r.profile_version,b.phase,b.operation_id,b.job_id,b.generation,
-b.case_key,b.frozen_targets,b.authorization_refs,r.stop_requested,b.cancel_sent FROM benchmark_cases b
+b.case_key,b.frozen_targets,b.authorization_refs,r.stop_requested,b.cancel_sent,b.case_spec FROM benchmark_cases b
 JOIN benchmark_runs r ON r.task_id=b.task_id JOIN tasks t ON t.id=b.task_id
 JOIN task_states ts ON ts.task_id=b.task_id JOIN steps s ON s.step_id=b.step_id
 WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
@@ -72,24 +72,30 @@ WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
     ))
   )))
 ORDER BY b.next_at, r.created_at, s.position, b.step_id LIMIT 1`, stamp).
-		Scan(&d.step, &d.task, &d.actor, &profile, &version, &phase, &d.operation, &d.job, &d.generation, &d.request.Case, &targetsRaw, &authsRaw, &stopping, &cancelSent)
+		Scan(&d.step, &d.task, &d.actor, &profile, &version, &phase, &d.operation, &d.job, &d.generation, &d.request.Case, &targetsRaw, &authsRaw, &stopping, &cancelSent, &caseSpec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, false, nil
 	}
 	if err != nil {
 		return d, false, err
 	}
-	p, err := readBenchmarkProfile(tx, profile, version)
-	if err != nil {
-		return d, false, err
-	}
-	for _, c := range p.Cases {
-		if c.Key == d.request.Case {
-			d.spec = c
-			break
+	if caseSpec != "" {
+		if err := json.Unmarshal([]byte(caseSpec), &d.spec); err != nil {
+			return d, false, err
+		}
+	} else {
+		p, err := readBenchmarkProfile(tx, profile, version)
+		if err != nil {
+			return d, false, err
+		}
+		for _, c := range p.Cases {
+			if c.Key == d.request.Case {
+				d.spec = c
+				break
+			}
 		}
 	}
-	if d.spec.Key == "" {
+	if d.spec.Key == "" || d.spec.Key != d.request.Case {
 		return d, false, ErrState
 	}
 	d.request.Binding, d.request.Targets, d.request.Parameters = d.spec.Binding, d.spec.Targets, d.spec.Parameters
@@ -359,17 +365,22 @@ func finishBenchmarkCase(tx *sql.Tx, d benchmarkDispatch, phase string, report a
 	if err = recordAudit(tx, AuditEvent{TaskID: d.task, StepID: d.step, Event: "benchmark_case_" + phase, Actor: "system", OccurredAt: stamp}); err != nil {
 		return err
 	}
+	return finalizeBenchmarkIfSettled(tx, d.task, stamp)
+}
+
+func finalizeBenchmarkIfSettled(tx *sql.Tx, task string, stamp int64) error {
+	var err error
 	var unfinished, bad, stopping bool
 	var revision int
 	var legacy string
 	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('queued','submitting','following')),
-EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplete','skipped')),t.status,r.stop_requested,(SELECT max(revision) FROM task_revisions rev WHERE rev.task_id=t.id) FROM tasks t JOIN benchmark_runs r ON r.task_id=t.id WHERE t.id=?`, d.task).Scan(&unfinished, &bad, &legacy, &stopping, &revision); err != nil {
+EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplete','skipped')),t.status,r.stop_requested,(SELECT max(revision) FROM task_revisions rev WHERE rev.task_id=t.id) FROM tasks t JOIN benchmark_runs r ON r.task_id=t.id WHERE t.id=?`, task).Scan(&unfinished, &bad, &legacy, &stopping, &revision); err != nil {
 		return err
 	}
 	if unfinished {
 		return nil
 	}
-	cur, err := readTaskState(tx, d.task)
+	cur, err := readTaskState(tx, task)
 	if err != nil {
 		return err
 	}
@@ -377,7 +388,7 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplet
 		return nil
 	}
 	transition := func(event TaskEvent, result V3TaskState) error {
-		_, e := transitionTaskState(tx, d.task, event, TaskGuard{ExpectedStorageRevision: cur.StorageRevision, Actor: "system", FinalState: result, AcceptanceEvidence: true}, stamp)
+		_, e := transitionTaskState(tx, task, event, TaskGuard{ExpectedStorageRevision: cur.StorageRevision, Actor: "system", FinalState: result, AcceptanceEvidence: true}, stamp)
 		cur.StorageRevision++
 		return e
 	}
@@ -405,7 +416,7 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplet
 	if err = transition(EventFinalized, final); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE tasks SET status=?,status_reason='benchmark_result',reason=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=?`, legacyTo, reason, stamp, stamp, d.task)
+	_, err = tx.Exec(`UPDATE tasks SET status=?,status_reason='benchmark_result',reason=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=?`, legacyTo, reason, stamp, stamp, task)
 	return err
 }
 

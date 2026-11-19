@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -43,6 +44,13 @@ func editTaskTx(ctx context.Context, tx *sql.Tx, taskID string, edit TaskEdit) (
 	task, err := scanTask(tx.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id=?", taskID))
 	if err != nil {
 		return Task{}, err
+	}
+	var benchmark bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
+		return Task{}, err
+	}
+	if benchmark {
+		return Task{}, fmt.Errorf("%w：基准任务须使用基准方案修订接口", ErrState)
 	}
 	if task.Revision != edit.Revision {
 		return Task{}, ErrTaskRevision

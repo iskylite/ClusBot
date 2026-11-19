@@ -1,0 +1,138 @@
+package work
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"path/filepath"
+	"testing"
+)
+
+type revisionFixtureProvider struct {
+	benchFixtureProvider
+	launches []BenchmarkJobRequest
+}
+
+func (p *revisionFixtureProvider) Start(ctx context.Context, r BenchmarkJobRequest) (string, error) {
+	p.launches = append(p.launches, r)
+	p.jobOverride = "job-" + r.Case
+	return p.benchFixtureProvider.Start(ctx, r)
+}
+
+func (p *revisionFixtureProvider) Get(ctx context.Context, r BenchmarkJobRequest, id string) (BenchmarkJobResult, error) {
+	result, err := p.benchFixtureProvider.Get(ctx, r, id)
+	if err == nil {
+		result.Measurements[0].ActualConfig = r.Parameters
+	}
+	return result, err
+}
+
+func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "revision.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	const actor = "user:session"
+	provider := &revisionFixtureProvider{}
+	required := map[string]string{"rate": "GB/s"}
+	binding := BenchmarkBinding{"bench-test", 1, "test", benchmarkValidatorV1}
+	caseFor := func(key, size string, deps ...string) BenchmarkCase {
+		params := map[string]string{"gpu_count": size}
+		return BenchmarkCase{Key: key, Binding: binding, Targets: []string{"node-1"}, Parameters: params, ActualConfig: params,
+			RequiredMetrics: required, DependsOn: deps}
+	}
+	first, second, third := caseFor("first", "40"), caseFor("second", "40", "first"), caseFor("third", "40", "first")
+	base := BenchmarkProfile{Key: "full", Version: 1, Cases: []BenchmarkCase{first, second, third}}
+	if err := s.PublishBenchmarkProfile(ctx, actor, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "serial-1", Benchmark: []DomainBenchmarkGrant{{
+		Connection: "bench-test", Revision: 1, Tool: "test", Allowed: map[string][]string{"gpu_count": {"40", "32"}}, ExpiresAt: now() + 120000,
+	}}}}); err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{"launch-key", "full", 1}, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func() {
+		t.Helper()
+		if ok, err := s.runBenchmarkOnce(ctx, provider); err != nil || !ok {
+			t.Fatalf("advance: %v %v", ok, err)
+		}
+	}
+	advanceClock := func() {
+		t.Helper()
+		if _, err := s.db.Exec("UPDATE benchmark_cases SET next_at=0 WHERE task_id=?", task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run() // first case is now "following"
+	changed := caseFor("second", "32", "first")
+	req := BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "change-key", Cases: []BenchmarkCase{first, changed}}
+	preview, err := s.ReviseBenchmark(ctx, actor, task, req, provider, false)
+	if err != nil || preview.Revision != 2 || len(preview.Frozen) != 1 || preview.Frozen[0] != "first" {
+		t.Fatalf("preview: %+v %v", preview, err)
+	}
+	before, err := s.BenchmarkProgress(ctx, actor, task)
+	if err != nil || before.PlanRevision != 1 || len(before.Cases) != 3 || len(provider.launches) != 1 {
+		t.Fatalf("preview changed state: %+v %v", before, err)
+	}
+	try := func(cases ...BenchmarkCase) error {
+		t.Helper()
+		_, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "rejected-edit", Cases: cases}, provider, true)
+		return err
+	}
+	if err := try(caseFor("first", "32"), changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("edited frozen case: %v", err)
+	}
+	if err := try(first, caseFor("second", "32", "third")); !errors.Is(err, ErrBenchmarkInput) {
+		t.Fatalf("deleted dependency: %v", err)
+	}
+	if err := try(first, caseFor("second", "72", "first")); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("allowed unapproved parameters: %v", err)
+	}
+	other := changed
+	other.Targets = []string{"node-outside"}
+	if err := try(first, other); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("allowed scope expansion: %v", err)
+	}
+	saved, err := s.ReviseBenchmark(ctx, actor, task, req, provider, true)
+	if err != nil || saved.Revision != 2 {
+		t.Fatalf("revision apply: %+v %v", saved, err)
+	}
+	if _, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "other-edit", Cases: req.Cases}, provider, true); !errors.Is(err, ErrTaskRevision) {
+		t.Fatalf("accepted concurrent stale edit: %v", err)
+	}
+	if _, err := s.ReadBenchmarkRevision(ctx, "other", task, 0); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("exposed another actor's plan: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ReviseBenchmark(ctx, actor, task, req, provider, true)
+	if err != nil || toJSON(again) != toJSON(saved) {
+		t.Fatalf("replay changed version: %+v %v", again, err)
+	}
+	baseRevision, err := s.ReadBenchmarkRevision(ctx, actor, task, 1)
+	if err != nil || toJSON(baseRevision.Profile) != toJSON(base) {
+		t.Fatalf("old version changed: %+v %v", baseRevision, err)
+	}
+	advanceClock()
+	run() // completes the original job against its original parameters
+	run() // starts revised case with newly frozen parameters
+	advanceClock()
+	run()
+	got, err := s.BenchmarkProgress(ctx, actor, task)
+	if err != nil || got.State != "succeeded" || got.PlanRevision != 2 || len(got.Cases) != 2 ||
+		len(provider.launches) != 2 || provider.launches[0].Parameters["gpu_count"] != "40" || provider.launches[1].Parameters["gpu_count"] != "32" {
+		t.Fatalf("bad settled state %+v %+v %v", got, provider.launches, err)
+	}
+}

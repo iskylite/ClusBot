@@ -92,11 +92,12 @@ type BenchmarkRunRequest struct {
 	Version    int    `json:"version"`
 }
 type BenchmarkRunProgress struct {
-	TaskID  string                  `json:"task_id"`
-	Profile string                  `json:"profile"`
-	Version int                     `json:"version"`
-	State   string                  `json:"state"`
-	Cases   []BenchmarkCaseProgress `json:"cases"`
+	TaskID       string                  `json:"task_id"`
+	Profile      string                  `json:"profile"`
+	Version      int                     `json:"version"`
+	PlanRevision int                     `json:"plan_revision"`
+	State        string                  `json:"state"`
+	Cases        []BenchmarkCaseProgress `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
 	Key    string          `json:"key"`
@@ -177,21 +178,9 @@ VALUES(?,?,?,?,'基准测试','active','queued','方案已受理',?)`, taskID, c
 	}
 	ids := map[string]string{}
 	for i, c := range p.Cases {
-		if provider == nil || !provider.Supports(c.Binding) {
-			return "", fmt.Errorf("%w：测项 %s 没有可用连接及工具", ErrBenchmarkBinding, c.Key)
-		}
-		targets, auths := []ticketTarget{}, map[string]string{}
-		for _, ref := range c.Targets {
-			a, err := benchmarkAsset(tx, ref)
-			if err != nil {
-				return "", err
-			}
-			aid, err := benchmarkAuthorization(tx, actor, ref, c, stamp)
-			if err != nil {
-				return "", err
-			}
-			targets = append(targets, ticketTarget{Ref: ref, Revision: a.Revision, Epoch: a.OwnershipEpoch})
-			auths[ref] = aid
+		targets, auths, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
+		if err != nil {
+			return "", err
 		}
 		step := id()
 		ids[c.Key] = step
@@ -214,15 +203,40 @@ VALUES(?,?,?,?,?,'queued')`, step, taskID, c.Key, toJSON(targets), toJSON(auths)
 	return taskID, nil
 }
 
+func freezeBenchmarkCase(tx *sql.Tx, actor string, c BenchmarkCase, provider BenchmarkProvider, stamp int64) ([]ticketTarget, map[string]string, error) {
+	if provider == nil || !provider.Supports(c.Binding) {
+		return nil, nil, fmt.Errorf("%w：测项 %s 没有可用连接及工具", ErrBenchmarkBinding, c.Key)
+	}
+	targets, auths := []ticketTarget{}, map[string]string{}
+	for _, ref := range c.Targets {
+		a, err := benchmarkAsset(tx, ref)
+		if err != nil {
+			return nil, nil, err
+		}
+		aid, err := benchmarkAuthorization(tx, actor, ref, c, stamp)
+		if err != nil {
+			return nil, nil, err
+		}
+		targets = append(targets, ticketTarget{Ref: ref, Revision: a.Revision, Epoch: a.OwnershipEpoch})
+		auths[ref] = aid
+	}
+	return targets, auths, nil
+}
+
 func (s *Store) BenchmarkProgress(ctx context.Context, actor, taskID string) (BenchmarkRunProgress, error) {
 	var p BenchmarkRunProgress
-	p.TaskID = taskID
-	err := s.db.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id
-WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return p, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id
+	defer tx.Rollback()
+	p.TaskID = taskID
+	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id
+WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision)
+	if err != nil {
+		return p, err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id
 WHERE b.task_id=? ORDER BY s.position`, taskID)
 	if err != nil {
 		return p, err

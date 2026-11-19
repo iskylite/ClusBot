@@ -23,7 +23,7 @@ JOIN benchmark_cases before ON before.task_id=prior.task_id AND before.case_key=
 AND before.frozen_targets=current.frozen_targets AND before.phase='verified'
 JOIN task_states ts ON ts.task_id=before.task_id AND ts.state='succeeded'
 JOIN tasks t ON t.id=before.task_id
-WHERE current.step_id=? AND before.task_id<>current.task_id
+WHERE current.step_id=? AND before.task_id<>current.task_id AND active.plan_revision=1 AND prior.plan_revision=1
 ORDER BY t.completed_at DESC,before.task_id DESC LIMIT 1`, d.step).Scan(&task, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
