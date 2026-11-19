@@ -110,7 +110,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if err != nil || len(queued.Cases) != 1 {
 				t.Fatalf("queued snapshot: %+v %v", queued, err)
 			}
-			if c := queued.Cases[0]; c.Phase != "queued" || c.StepID == "" || c.Operation != nil || c.Wait != nil || c.TargetHolds != 0 {
+			if c := queued.Cases[0]; len(c.Targets) != 1 || c.Targets[0].Ref != "node-1" || c.Targets[0].FrozenRevision < 1 || c.Targets[0].LocalHold != "not_locally_held" || c.Phase != "queued" || c.StepID == "" || c.Operation != nil || c.Wait != nil || c.TargetHolds != 0 {
 				t.Fatalf("queued case: %+v", c)
 			}
 			run := func() {
@@ -125,7 +125,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 				t.Fatalf("in-flight snapshot: %+v %v", inFlight, err)
 			}
 			if c := inFlight.Cases[0]; c.Phase != "submitting" || c.Operation == nil || c.Operation.State != "reconcile" ||
-				c.Wait == nil || c.Wait.State != "open" || c.Wait.Version != 1 || c.Wait.RecheckAt <= 0 || c.TargetHolds != 1 {
+				c.Wait == nil || c.Wait.State != "open" || c.Wait.Version != 1 || c.Wait.RecheckAt <= 0 || c.TargetHolds != 1 || len(c.Targets) != 1 || c.Targets[0].LocalHold != "held_by_case" {
 				t.Fatalf("unknown effect must keep open wait and hold: %+v operation=%+v wait=%+v", c, c.Operation, c.Wait)
 			}
 			if provider.started != 1 {
@@ -155,7 +155,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if err != nil || len(got.Cases) != 1 || got.Cases[0].Phase != name || got.Cases[0].JobID != "job-ID" {
 				t.Fatalf("progress %+v %v: want %s", got, err, name)
 			}
-			if c := got.Cases[0]; c.Operation == nil || c.Wait == nil || c.Wait.State != "closed" || c.TargetHolds != 0 {
+			if c := got.Cases[0]; c.Operation == nil || c.Wait == nil || c.Wait.State != "closed" || c.TargetHolds != 0 || len(c.Targets) != 1 || c.Targets[0].LocalHold != "not_locally_held" {
 				t.Fatalf("terminal case: %+v operation=%+v wait=%+v", c, c.Operation, c.Wait)
 			}
 			if provider.started != 1 || provider.looked != 1 || provider.read != 1 {

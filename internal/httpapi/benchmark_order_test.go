@@ -104,7 +104,7 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if res.Header.Get("Cache-Control") != "no-store" || out.TaskID != id || out.State != "pending" || out.StopRequested || len(out.Cases) != 1 || out.Cases[0].Phase != "queued" || out.Cases[0].StepID == "" {
+	if res.Header.Get("Cache-Control") != "no-store" || out.TaskID != id || out.State != "pending" || out.StopRequested || out.AssetScope.TargetCount != 1 || len(out.AssetScope.TargetRefs) != 1 || out.AssetScope.TargetRefs[0] != "node-1" || len(out.Cases) != 1 || out.Cases[0].Phase != "queued" || out.Cases[0].StepID == "" {
 		t.Fatalf("wrong read-only snapshot: %+v", out)
 	}
 	get(id+"/report", false, http.StatusUnauthorized)

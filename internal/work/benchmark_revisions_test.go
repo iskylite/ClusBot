@@ -216,7 +216,7 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		t.Fatalf("preview: %+v %v", preview, err)
 	}
 	before, err := s.BenchmarkProgress(ctx, actor, task)
-	if err != nil || before.PlanRevision != 1 || len(before.Cases) != 3 || len(provider.launches) != 1 {
+	if err != nil || before.PlanRevision != 1 || before.AssetScope.Source != "frozen_targets" || before.AssetScope.TargetCount != 1 || len(before.AssetScope.TargetRefs) != 1 || before.AssetScope.TargetRefs[0] != "node-1" || len(before.Cases) != 3 || len(provider.launches) != 1 {
 		t.Fatalf("preview changed state: %+v %v", before, err)
 	}
 	try := func(cases ...BenchmarkCase) error {

@@ -54,6 +54,11 @@ func TestBenchmarkSharedTargetHolds(t *testing.T) {
 	if err != nil || !pre.CanQueue || pre.Cases[0].Targets[0].Occupancy != "held" {
 		t.Fatalf("preflight must show local conflict without forbidding queue: %+v %v", pre, err)
 	}
+	held, err := s.BenchmarkProgress(ctx, actor, same)
+	if err != nil || len(held.Cases) != 1 || held.Cases[0].TargetHolds != 0 || len(held.Cases[0].Targets) != 1 || held.Cases[0].Targets[0].LocalHold != "held_elsewhere" {
+		t.Fatalf("foreign generic holder not distinguished from this case: %+v %v", held, err)
+	}
+
 	stamp := now()
 	update("UPDATE benchmark_cases SET next_at=1 WHERE task_id=?", same)
 	update("UPDATE benchmark_cases SET next_at=2 WHERE task_id=?", disjoint)
