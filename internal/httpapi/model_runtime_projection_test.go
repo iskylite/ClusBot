@@ -34,3 +34,15 @@ func TestModelRuntimeProjectionRequiresSession(t *testing.T) {
 		t.Fatalf("wrong no-config model projection: %+v, %d, %v", projection, res.StatusCode, err)
 	}
 }
+
+func TestModelProfilesAPIDoesNotReadOrAcceptPlainKey(t *testing.T) {
+	a := setupA1(t, filepath.Join(t.TempDir(), "profiles-model-api.sqlite"))
+	defer a.close()
+	const path = "/api/v1/settings/model/profiles"
+	if status, result := a.post(path, `{"name":"x","protocol":"responses","base_url":"https://fixture.invalid","model_id":"test","api_key":"secret"}`); status != http.StatusBadRequest {
+		t.Fatalf("plaintext secret accepted by profile API: %d %+v", status, result)
+	}
+	if status, result := a.post(path, `{"name":"x","protocol":"responses","base_url":"https://fixture.invalid","model_id":"test","api_key_ref":"env:FIXTURE_INACTIVE_KEY"}`); status != http.StatusCreated || result["api_key_ref"] != nil || result["api_key"] != nil {
+		t.Fatalf("sanitized profile create: %d %+v", status, result)
+	}
+}

@@ -120,6 +120,10 @@ func (s *Settings) Test(ctx context.Context, draft SettingsInput) (time.Duration
 	if value.Protocol == "" {
 		value.Protocol = stored.Protocol
 	}
+	return s.testModelConfig(ctx, value)
+}
+
+func (s *Settings) testModelConfig(ctx context.Context, value work.ModelSettings) (time.Duration, error) {
 	if err := validateSettings(value); err != nil {
 		return 0, err
 	}
