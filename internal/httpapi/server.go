@@ -995,6 +995,8 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 502, "classification_failed", err.Error())
 	case errors.Is(err, work.ErrConversationBindingConflict):
 		fail(w, 409, "conversation_binding_conflict", err.Error())
+	case errors.Is(err, work.ErrDiscoveryRecoveryUnsupported):
+		fail(w, 409, "discovery_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrBenchmarkRecoveryUnsupported):
 		fail(w, 409, "benchmark_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrApprovalExpired):

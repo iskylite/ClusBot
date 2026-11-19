@@ -123,6 +123,25 @@ func (s *Store) resumeTask(ctx context.Context, taskID, requestKey string, revis
 
 var ErrBenchmarkRecoveryUnsupported = errors.New("基准任务不能用普通助手继续、重试或重新分派；请查看原作业对账，或另行提交新的基准任务")
 
+var ErrDiscoveryRecoveryUnsupported = errors.New("定时资产发现不能用普通助手继续、重试或重新分派；请检查发现计划和来源授权，等待下一次有效扫描")
+
+func discoveryOccurrenceTask(q recordsQuerier, taskID string) (bool, error) {
+	var exists bool
+	err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM discovery_occurrences WHERE task_id=?)", taskID).Scan(&exists)
+	return exists, err
+}
+
+func requireNotDiscoveryRecovery(q recordsQuerier, taskID string) error {
+	discovery, err := discoveryOccurrenceTask(q, taskID)
+	if err != nil {
+		return err
+	}
+	if discovery {
+		return ErrDiscoveryRecoveryUnsupported
+	}
+	return nil
+}
+
 func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
 	var benchmark bool
 	if err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
@@ -131,7 +150,7 @@ func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
 	if benchmark {
 		return ErrBenchmarkRecoveryUnsupported
 	}
-	return nil
+	return requireNotDiscoveryRecovery(q, taskID)
 }
 
 // CheckGenericTaskRecovery lets the HTTP entry point explain the domain guard

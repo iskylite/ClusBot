@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 117
+const databaseSchemaVersion = 118
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -639,6 +639,7 @@ func initializeDatabase(db *sql.DB) error {
 		{114, migrateIsolatedReplies},
 		{115, migrateBenchmarkChatTargetRevisions},
 		{116, migrateSkillDocumentSources},
+		{117, migrateDiscoveryTaskLookup},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -875,6 +876,9 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if err := migrateSkillDocumentSources(tx); err != nil {
+		return err
+	}
+	if err := migrateDiscoveryTaskLookup(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
@@ -1222,6 +1226,10 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 			}
 			switch route.Kind {
 			case "follow_up":
+				if err := requireNotDiscoveryRecovery(tx, target.ID); err != nil {
+					return Run{}, err
+				}
+
 				if target.Revision != route.Revision {
 					return Run{}, ErrTaskRevision
 				}
@@ -1283,7 +1291,17 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 		}
 		if !withoutTaskContinuation {
 			existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
+			discovery := false
 			if findErr == nil {
+				discovery, err = discoveryOccurrenceTask(tx, existing.ID)
+				if err != nil {
+					return Run{}, err
+				}
+				if discovery && (task || changesDelivery || len(reads) > 0 || delivery.ReplaceMaterials) {
+					return Run{}, ErrDiscoveryRecoveryUnsupported
+				}
+			}
+			if findErr == nil && !discovery {
 				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
 					return Run{}, err
 				}
@@ -1306,7 +1324,7 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 status='active',status_reason='queued',reason='补充要求已受理',requirements_changed=0,completed_at=NULL,revision=revision+1,updated_at=? WHERE id=?`, delivery.Criteria, delivery.Filename, now(), r.TaskID); err != nil {
 					return Run{}, err
 				}
-			} else if !errors.Is(findErr, sql.ErrNoRows) {
+			} else if findErr != nil && !errors.Is(findErr, sql.ErrNoRows) {
 				return Run{}, findErr
 			} else if task && !delivery.ReplaceMaterials {
 				r.TaskID = id()
@@ -1583,11 +1601,23 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 	if err := enrichMessageTaskRefs(tx, key, d.Messages); err != nil {
 		return d, err
 	}
+	var discoveryTask string
+	if isTask {
+		isDiscovery, err := discoveryOccurrenceTask(tx, d.Task.ID)
+		if err != nil {
+			return d, err
+		}
+		if isDiscovery {
+			discoveryTask = d.Task.ID
+		}
+	}
+
 	// Keep existing conversation-linked receipts visible in task detail, but
 	// an explicitly standalone reply must not look like the Task's active run.
 	r, err := scanRun(tx.QueryRow("SELECT "+runColumns+` FROM runs WHERE conversation_id=?
 AND (NOT ? OR NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=runs.id))
-ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask))
+AND (?='' OR task_id=?)
+ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask, discoveryTask, discoveryTask))
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, err
 	}

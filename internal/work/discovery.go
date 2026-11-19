@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS discovery_admissions (
 
 func migrateV31Discovery(tx *sql.Tx) error { _, err := tx.Exec(v31DiscoverySchema); return err }
 
+func migrateDiscoveryTaskLookup(tx *sql.Tx) error {
+	_, err := tx.Exec("CREATE INDEX IF NOT EXISTS discovery_occurrences_by_task ON discovery_occurrences(task_id) WHERE task_id IS NOT NULL")
+	return err
+}
+
 type DiscoveryScanSource interface {
 	AllowsDiscovery(id, scope string) bool
 	ScanDiscovery(ctx context.Context, id, scope string) ([]DiscoveryObservation, error)

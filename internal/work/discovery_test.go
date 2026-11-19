@@ -197,3 +197,89 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 		t.Fatalf("revoked grant made a new task: %v %v", ok, err)
 	}
 }
+
+func TestDiscoveryInterruptedCannotBecomeGenericRun(t *testing.T) {
+	for _, through := range []string{"resume", "reassign", "chat"} {
+		t.Run(through, func(t *testing.T) {
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "discovery-recovery.sqlite")
+			s, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if s != nil {
+					s.Close()
+				}
+			}()
+			f := discoveryFixture{}
+			const actor = "user:session"
+			stamp := now() + 1000
+			auth, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: stamp + 120000}, f)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "fixture-scan", Source: "inventory-1", Scope: "POD7", PeriodSeconds: 60, FirstAt: stamp}, f); err != nil {
+				t.Fatal(err)
+			}
+			d, ok, err := s.claimDiscovery(ctx, f, stamp)
+			if err != nil || !ok || d.task == "" {
+				t.Fatalf("claim %+v %t %v", d, ok, err)
+			}
+			if through == "reassign" {
+				if err := s.RevokeAuthorizationByID(ctx, auth, actor); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := s.DisableDiscoveryPlan(ctx, actor, d.plan); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.settleDiscovery(ctx, d, []DiscoveryObservation{{"fixture", "192.0.2.9"}}, nil, stamp+1); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.RecoverV3(ctx, stamp+5000); err != nil {
+				t.Fatal(err)
+			}
+			before, err := s.Detail(d.task, true)
+			if err != nil || before.Task.Status != "interrupted" || before.Run != nil {
+				t.Fatalf("not a retired discovery task: %+v %v", before, err)
+			}
+			var run Run
+			switch through {
+			case "resume":
+				run, err = s.Resume(ctx, d.task, "direct-resume", before.Task.Revision)
+			case "reassign":
+				run, err = s.ReassignTask(ctx, d.task, "direct-reassign", before.Task.Revision)
+			default:
+				run, err = s.SubmitRoutedChat(ctx, "discussion", "这次扫描为什么停下了？", "", before.Conversation.ID, Delivery{},
+					func(context.Context, string, []Message, []RouteCandidate, int) (DelegationResult, error) {
+						t.Fatal("discussion cannot classify this domain task for execution")
+						return DelegationResult{}, nil
+					})
+			}
+			if through == "chat" {
+				if err != nil || run.ID == "" || run.TaskID != "" {
+					t.Errorf("historical discussion was not independent of discovery: %+v %v", run, err)
+				}
+			} else if !errors.Is(err, ErrDiscoveryRecoveryUnsupported) || run.ID != "" {
+				t.Errorf("interrupted discovery acquired ordinary run: %+v %v", run, err)
+			}
+			after, err := s.Detail(d.task, true)
+			if err != nil || after.Run != nil || after.Task.Revision != before.Task.Revision || after.Task.Status != "interrupted" {
+				t.Fatalf("discovery detail claimed an ordinary run or state change: %+v %v", after, err)
+			}
+
+			var domainRuns, observations int
+			if err := s.db.QueryRow("SELECT (SELECT count(*) FROM runs WHERE task_id=?),(SELECT count(*) FROM discovery_observations)", d.task).
+				Scan(&domainRuns, &observations); err != nil || domainRuns != 0 || observations != 0 {
+				t.Errorf("late observation or generic Run persisted: %d %d %v", domainRuns, observations, err)
+			}
+		})
+	}
+}
