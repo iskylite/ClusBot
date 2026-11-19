@@ -128,3 +128,13 @@ func (s Server) connectionEvidence(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(content)
 }
+
+func (s Server) runMCPBindings(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	out, err := s.Store.ReadRunMCPBindings(r.Context(), s.principal(r), r.PathValue("id"))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

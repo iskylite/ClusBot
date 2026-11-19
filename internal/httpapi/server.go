@@ -182,6 +182,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/conversations/{id}/task", s.submit(true))
 	api.HandleFunc("GET /api/v1/runs/{id}", s.runRecord(false))
 	api.HandleFunc("GET /api/v1/runs/{id}/skill-binding", s.runSkillBinding)
+	api.HandleFunc("GET /api/v1/runs/{id}/mcp-bindings", s.runMCPBindings)
 	api.HandleFunc("GET /api/v1/runs/{id}/events", s.stream)
 	api.HandleFunc("GET /api/v1/artifacts", func(w http.ResponseWriter, r *http.Request) {
 		filter := r.URL.Query()
