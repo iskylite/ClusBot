@@ -52,8 +52,10 @@ FROM runs r LEFT JOIN tasks t ON t.id=r.task_id WHERE r.id=?`, now(), run.ID); e
 	}
 	_, err := tx.Exec(`INSERT INTO input_deliveries
 SELECT e.message_seq,?,? FROM input_events e JOIN messages m ON m.seq=e.message_seq
-WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHERE d.message_seq=e.message_seq)`,
-		run.ID, run.Generation, run.ConversationID)
+WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHERE d.message_seq=e.message_seq)
+AND (m.run_id=? OR (NOT EXISTS (SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=?)
+AND NOT EXISTS (SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=m.run_id)))`,
+		run.ID, run.Generation, run.ConversationID, run.ID, run.ID)
 	return err
 }
 
@@ -110,6 +112,10 @@ func (s *Store) withManifestRecorder(ctx context.Context, run Run) context.Conte
 					return err
 				}
 			}
+			if _, _, err := readIsolatedReplyPin(tx, run); err != nil {
+				return err
+			}
+
 			var skillGoal string
 			if len(manifest.Skills) != 0 {
 				if err := tx.QueryRowContext(ctx, "SELECT goal FROM tasks WHERE id=?", run.TaskID).Scan(&skillGoal); err != nil {
@@ -214,7 +220,9 @@ func cancelConversationInputs(tx *sql.Tx, conversation, run string) error {
 	_, err := tx.Exec(`INSERT INTO input_dispositions
 SELECT e.message_seq,r.id,r.execution_generation,'cancelled',?
 FROM input_events e JOIN messages m ON m.seq=e.message_seq JOIN runs r ON r.id=?
-WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHERE d.message_seq=e.message_seq)`,
+WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHERE d.message_seq=e.message_seq)
+AND (m.run_id=r.id OR (NOT EXISTS (SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=r.id)
+AND NOT EXISTS (SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=m.run_id)))`,
 		now(), run, conversation)
 	return err
 }

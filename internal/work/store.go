@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 114
+const databaseSchemaVersion = 115
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -635,6 +635,7 @@ func initializeDatabase(db *sql.DB) error {
 		{111, migrateBenchmarkExecutionModelRole},
 		{112, migrateConversationBindingRevisions},
 		{113, migrateModelReceipts},
+		{114, migrateIsolatedReplies},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -862,6 +863,9 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if err := migrateModelReceipts(tx); err != nil {
+		return err
+	}
+	if err := migrateIsolatedReplies(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {
@@ -1154,6 +1158,10 @@ func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope,
 }
 
 func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text, scope, conversationID string, task bool, delivery Delivery, classification *submissionClassification, materialIDs []string) (Run, error) {
+	return submitWorkTxWithMode(ctx, tx, requestKey, fingerprint, text, scope, conversationID, task, delivery, classification, materialIDs, false)
+}
+
+func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text, scope, conversationID string, task bool, delivery Delivery, classification *submissionClassification, materialIDs []string, standaloneReply bool) (Run, error) {
 	var err error
 	reads := delivery.Reads
 	if delivery.Read != nil {
@@ -1162,23 +1170,23 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 	changesDelivery := delivery.Criteria != nil || delivery.Filename != nil
 
 	var suggestion *BenchmarkRouterSuggestion
-	isBenchmarkReceipt := delivery.TaskRef != nil
+	withoutTaskContinuation := standaloneReply || delivery.TaskRef != nil
 	goal := text
 	reply := ""
 	if classification != nil && classification.Route != nil {
 		route := classification.Route
 		switch route.Kind {
 		case "benchmark_execution_suggestion":
-			isBenchmarkReceipt = true
+			withoutTaskContinuation = true
 			reply = "我找到一个可能要跳过的测项。还没有执行；请核对后明确确认。"
 		case "benchmark_execution_skip":
-			isBenchmarkReceipt = true
+			withoutTaskContinuation = true
 			reply = "已跳过该测项，仅对本次生效。原方案和必测要求不变；这不算通过或免测。"
 		case "benchmark_revision_suggestion":
-			isBenchmarkReceipt = true
+			withoutTaskContinuation = true
 			reply = "已记录明确标注的基准修订要求。请打开预演核对，当前任务尚未改变。"
 		case "benchmark_preview":
-			isBenchmarkReceipt = true
+			withoutTaskContinuation = true
 			actor, err := benchmarkRouterActor(ctx, tx, requestKey)
 			if err != nil {
 				return Run{}, err
@@ -1252,7 +1260,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if _, err = tx.Exec("INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)", r.ConversationID, title(text), now()); err != nil {
 			return Run{}, err
 		}
-		if task && !isBenchmarkReceipt {
+		if task && !withoutTaskContinuation {
 			r.TaskID = id()
 			taskID = r.TaskID
 			if err = insertTask(tx, r, goal, scope, delivery); err != nil {
@@ -1263,7 +1271,7 @@ func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text
 		if err = checkConversationSubmission(tx, conversationID); err != nil {
 			return Run{}, err
 		}
-		if !isBenchmarkReceipt {
+		if !withoutTaskContinuation {
 			existing, findErr := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE conversation_id=?", conversationID))
 			if findErr == nil {
 				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
@@ -1565,7 +1573,11 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 	if err := enrichMessageTaskRefs(tx, key, d.Messages); err != nil {
 		return d, err
 	}
-	r, err := scanRun(tx.QueryRow("SELECT "+runColumns+" FROM runs WHERE conversation_id=? ORDER BY memory_command,rowid DESC LIMIT 1", key))
+	// Keep existing conversation-linked receipts visible in task detail, but
+	// an explicitly standalone reply must not look like the Task's active run.
+	r, err := scanRun(tx.QueryRow("SELECT "+runColumns+` FROM runs WHERE conversation_id=?
+AND (NOT ? OR NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=runs.id))
+ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask))
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, err
 	}

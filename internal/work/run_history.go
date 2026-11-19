@@ -111,7 +111,8 @@ FROM runs r WHERE r.id=?`, runID).Scan(&record.CreatedAt, &record.EventAfter); e
 	if record.TaskID != "" && (len(record.Messages) == 0 || record.Messages[0].Role != "user") {
 		// A fresh Task retry can reuse the last input without inserting a message.
 		previous, err := queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages WHERE conversation_id=? AND role='user'
-AND run_id IN (SELECT id FROM runs WHERE conversation_id=? AND memory_command=0 AND rowid<(SELECT rowid FROM runs WHERE id=?))
+AND run_id IN (SELECT id FROM runs WHERE conversation_id=? AND memory_command=0 AND rowid<(SELECT rowid FROM runs WHERE id=?)
+AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=runs.id))
 ORDER BY seq DESC LIMIT 1`, record.ConversationID, record.ConversationID, runID)
 		if err != nil {
 			return RunRecord{}, err

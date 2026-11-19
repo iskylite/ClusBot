@@ -341,6 +341,8 @@ func (s *Store) execute(ctx context.Context, provider Provider, run Run, limits 
 	go s.watchControl(controlled, run.ID, started, cancel)
 
 	var input []Message
+	var isolated IsolatedReplyPin
+	var isolatedStream Provider
 	err := checkpointErr
 	var release func()
 	if err == nil {
@@ -351,7 +353,10 @@ func (s *Store) execute(ctx context.Context, provider Provider, run Run, limits 
 		err = ErrOutputBudget
 	}
 	if err == nil {
-		input, err = s.modelMessagesForRun(controlled, run.ConversationID, run.ID)
+		isolated, input, err = s.isolatedReplyInput(controlled, run)
+		if err == nil && isolated.ProfileID == "" {
+			input, err = s.modelMessagesForRun(controlled, run.ConversationID, run.ID)
+		}
 	}
 	var request *Message
 	for i := len(input) - 1; i >= 0; i-- {
@@ -445,7 +450,7 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			}
 		}
 	}
-	if err == nil && (automatic || len(reads) == 0 || reads[0].Status == "reused") {
+	if err == nil && isolated.ProfileID == "" && (automatic || len(reads) == 0 || reads[0].Status == "reused") {
 		if native, ok := provider.(textCheckpointProvider); ok {
 			checkpointStream, providerBinding, err = native.TextRunProvider(controlled, run.TaskID != "")
 		}
@@ -467,6 +472,17 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 	var remainingOutput int
 	if err == nil {
 		switch {
+		case isolated.ProfileID != "":
+			var native isolatedReplyProvider
+			native, _ = provider.(isolatedReplyProvider)
+			if native == nil {
+				err = ErrIsolatedReplyUnavailable
+			} else if _, err = s.prepareRunRequest(controlled, run.ID, time.Since(started), "", false); err == nil {
+				isolatedStream, err = native.IsolatedReplyProvider(controlled, isolated)
+				if err == nil && isolatedStream == nil {
+					err = ErrIsolatedReplyUnavailable
+				}
+			}
 		case checkpointed:
 			remainingOutput, err = s.prepareReadCheckpoint(controlled, run, input, request, query, providerBinding, limits, automatic)
 		case run.Generation > 0:
@@ -490,6 +506,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			return s.delta(modelCtx, run.ID, text)
 		}
 		switch {
+		case isolatedStream != nil:
+			answer, err = streamAnswer(controlled, isolatedStream, input, false, limits.OutputTokens, limits.ModelTimeout, emit)
 		case automatic:
 			answer, err = s.streamWithAutomaticTools(controlled, run.ID, started, automaticModel, input, tools, reads, remainingOutput, limits, emit)
 		case checkpointReadModel != nil:
@@ -551,6 +569,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			reason, accounting.errorCode = "读取未完成，请检查工具状态并重新提交", "tool_read_failed"
 		case ctx.Err() != nil:
 			reason, accounting.errorCode = "运行已中断", "process_interrupted"
+		case errors.Is(err, ErrIsolatedReplyUnavailable):
+			status, reason, accounting.errorCode = "failed", ErrIsolatedReplyUnavailable.Error(), "isolated_reply_unavailable"
 		case errors.Is(err, ErrReadCheckpoint):
 			reason, accounting.errorCode = ErrReadCheckpoint.Error(), "read_checkpoint_unavailable"
 		case checkpointed:

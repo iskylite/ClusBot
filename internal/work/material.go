@@ -221,9 +221,10 @@ func (s *Store) modelMessagesForRun(ctx context.Context, conversationID, runID s
 	}
 	defer tx.Rollback()
 	items, err := queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages
-WHERE conversation_id=? AND (
-  seq IN (SELECT seq FROM messages WHERE conversation_id=? AND run_id NOT IN
-    (SELECT id FROM runs WHERE memory_command=1) ORDER BY seq DESC LIMIT 50)
+WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=messages.run_id) AND (
+  seq IN (SELECT seq FROM messages recent WHERE recent.conversation_id=? AND recent.run_id NOT IN
+    (SELECT id FROM runs WHERE memory_command=1)
+    AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=recent.run_id) ORDER BY seq DESC LIMIT 50)
   OR seq IN (SELECT message_seq FROM input_deliveries WHERE run_id=? AND generation=?
     EXCEPT SELECT message_seq FROM input_dispositions)
 )`, conversationID, conversationID, runID, executionGeneration(ctx))

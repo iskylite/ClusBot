@@ -85,7 +85,8 @@ func (s *Store) chatSubmissionContext(ctx context.Context, requestKey, fingerpri
 		return Run{}, nil, err
 	}
 	rows, err := tx.Query(`SELECT role,substr(text,1,1200) FROM (SELECT seq,role,text FROM messages
-WHERE conversation_id=? ORDER BY seq DESC LIMIT 6) ORDER BY seq`, conversationID)
+WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=messages.run_id)
+ORDER BY seq DESC LIMIT 6) ORDER BY seq`, conversationID)
 	if err != nil {
 		return Run{}, nil, err
 	}

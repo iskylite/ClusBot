@@ -306,7 +306,7 @@ func TestModelReceiptMigrationAndImmutableHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var version int
-	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 114 {
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != databaseSchemaVersion {
 		t.Fatalf("receipt migration version %d: %v", version, err)
 	}
 	base, err := s.RunRecord(ctx, run.ID, "")

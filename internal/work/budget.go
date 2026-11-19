@@ -74,6 +74,10 @@ last_input_tokens=coalesce(?,last_input_tokens) WHERE id=?`,
 }
 
 func (s *Store) prepareModelRequest(ctx context.Context, runID string, elapsed time.Duration, query string) ([]Memory, error) {
+	return s.prepareRunRequest(ctx, runID, elapsed, query, true)
+}
+
+func (s *Store) prepareRunRequest(ctx context.Context, runID string, elapsed time.Duration, query string, includeMemories bool) ([]Memory, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -90,6 +94,9 @@ WHERE id=? AND status='running' AND control='' AND model_requests=admission_requ
 	}
 	if changed != 1 {
 		return nil, ErrState
+	}
+	if !includeMemories {
+		return nil, tx.Commit()
 	}
 	items, err := listMemories(ctx, tx)
 	if err != nil {

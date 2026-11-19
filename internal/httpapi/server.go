@@ -213,6 +213,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/conversations/{id}/resume", s.resumeConversation)
 	api.HandleFunc("POST /api/v1/conversations/{id}/task", s.submit(true))
 	api.HandleFunc("GET /api/v1/runs/{id}", s.runRecord(false))
+	api.HandleFunc("POST /api/v1/conversations/{id}/isolated-replies", s.submitIsolatedReply)
 	api.HandleFunc("GET /api/v1/runs/{id}/skill-binding", s.runSkillBinding)
 	api.HandleFunc("GET /api/v1/runs/{id}/mcp-bindings", s.runMCPBindings)
 	api.HandleFunc("GET /api/v1/runs/{id}/events", s.stream)
