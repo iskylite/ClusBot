@@ -86,7 +86,7 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 		return ConversationEvent{}, 0, err
 	}
 	switch e.Status {
-	case "queued", "running", "completed", "interrupted", "cancelled":
+	case "queued", "running", "completed", "interrupted", "cancelled", "input_required":
 	default:
 		e.Status = ""
 	}
@@ -114,7 +114,13 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 		e.Status = "applied"
 		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status, e.Revision}))
 	} else {
-		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, e.Status}))
+		proofStatus := e.Status
+		if e.Kind == "run.state_changed" && e.Status == "input_required" {
+			// Older clients received an empty state for these rows. Keep
+			// their durable cursor valid now that the typed state is visible.
+			proofStatus = ""
+		}
+		e.ID = digest(toJSON([]any{conversation, seq, e.RunID, e.Kind, proofStatus}))
 	}
 	return e, seq, nil
 }

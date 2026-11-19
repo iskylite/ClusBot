@@ -41,6 +41,17 @@ BEGIN SELECT RAISE(ABORT,'question write failed'); END`); err != nil {
 	if err != nil || current.Task.Status != "waiting_user" || current.Run.Status != "input_required" || current.Run.Response != answer.question {
 		t.Fatalf("waiting Task: %+v, %v", current, err)
 	}
+	events, err := store.ReadConversationEvents(ctx, "user:session", run.ConversationID, "")
+	if err != nil || len(events.Events) == 0 || events.Events[len(events.Events)-1].Status != "input_required" {
+		t.Fatalf("real waiting state not available for reconnect: %+v %v", events, err)
+	}
+	var sequence int64
+	if err := store.db.QueryRow("SELECT max(seq) FROM run_events WHERE run_id=? AND kind='run.state_changed'", run.ID).Scan(&sequence); err != nil {
+		t.Fatal(err)
+	}
+	if got, legacy := events.Events[len(events.Events)-1].ID, digest(toJSON([]any{run.ConversationID, sequence, run.ID, "run.state_changed", ""})); got != legacy {
+		t.Fatalf("published status unexpectedly invalidated old cursors: %s != %s", got, legacy)
+	}
 	entry, err := store.RunRecord(ctx, run.ID, run.TaskID)
 	if err != nil || len(entry.Artifacts) != 0 || len(entry.Messages) != 2 || entry.Messages[1].Role != "assistant" || entry.Messages[1].Text != answer.question {
 		t.Fatalf("clarification Run: %+v, %v", entry, err)
