@@ -92,18 +92,37 @@ type BenchmarkRunRequest struct {
 	Version    int    `json:"version"`
 }
 type BenchmarkRunProgress struct {
-	TaskID       string                  `json:"task_id"`
-	Profile      string                  `json:"profile"`
-	Version      int                     `json:"version"`
-	PlanRevision int                     `json:"plan_revision"`
-	State        string                  `json:"state"`
-	Cases        []BenchmarkCaseProgress `json:"cases"`
+	TaskID        string                  `json:"task_id"`
+	Profile       string                  `json:"profile"`
+	Version       int                     `json:"version"`
+	PlanRevision  int                     `json:"plan_revision"`
+	State         string                  `json:"state"`
+	StopRequested bool                    `json:"stop_requested"`
+	Cases         []BenchmarkCaseProgress `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
-	Key    string          `json:"key"`
-	Phase  string          `json:"phase"`
-	JobID  string          `json:"job_id,omitempty"`
-	Report json.RawMessage `json:"report,omitempty"`
+	Key         string                      `json:"key"`
+	Phase       string                      `json:"phase"`
+	JobID       string                      `json:"job_id,omitempty"`
+	Report      json.RawMessage             `json:"report,omitempty"`
+	StepID      string                      `json:"step_id"`
+	StepState   string                      `json:"step_state"`
+	Operation   *BenchmarkOperationProgress `json:"operation,omitempty"`
+	Wait        *BenchmarkWaitProgress      `json:"wait,omitempty"`
+	TargetHolds int                         `json:"target_holds"`
+}
+
+type BenchmarkOperationProgress struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+type BenchmarkWaitProgress struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+	State   string `json:"state"`
+	// RecheckAt is a control-plane recheck schedule, not a remote job deadline.
+	RecheckAt int64 `json:"recheck_at,omitempty"`
 }
 
 func benchmarkAsset(tx *sql.Tx, ref string) (OpsAsset, error) {
@@ -231,13 +250,19 @@ func (s *Store) BenchmarkProgress(ctx context.Context, actor, taskID string) (Be
 	}
 	defer tx.Rollback()
 	p.TaskID = taskID
-	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id
-WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision)
+	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision,r.stop_requested FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id
+WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision, &p.StopRequested)
 	if err != nil {
 		return p, err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id
-WHERE b.task_id=? ORDER BY s.position`, taskID)
+	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
+o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
+(SELECT count(*) FROM benchmark_target_holds h WHERE h.step_id=b.step_id)
+FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id AND s.task_id=b.task_id
+LEFT JOIN operations o ON o.operation_id=b.operation_id AND o.task_id=b.task_id AND o.step_id=b.step_id
+LEFT JOIN waits w ON w.wait_id='benchmark:'||b.step_id AND w.task_id=b.task_id AND w.step_id=b.step_id
+ AND w.kind='external' AND w.match_key=o.operation_id
+WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	if err != nil {
 		return p, err
 	}
@@ -245,11 +270,20 @@ WHERE b.task_id=? ORDER BY s.position`, taskID)
 	for rows.Next() {
 		var c BenchmarkCaseProgress
 		var raw string
-		if err := rows.Scan(&c.Key, &c.Phase, &c.JobID, &raw); err != nil {
+		var opID, opState, waitID, waitState sql.NullString
+		var waitRev, waitDeadline sql.NullInt64
+		if err := rows.Scan(&c.Key, &c.Phase, &c.JobID, &raw, &c.StepID, &c.StepState,
+			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &c.TargetHolds); err != nil {
 			return p, err
 		}
 		if raw != "" {
 			c.Report = json.RawMessage(raw)
+		}
+		if opID.Valid {
+			c.Operation = &BenchmarkOperationProgress{ID: opID.String, State: opState.String}
+		}
+		if waitID.Valid {
+			c.Wait = &BenchmarkWaitProgress{ID: waitID.String, Version: int(waitRev.Int64), State: waitState.String, RecheckAt: waitDeadline.Int64}
 		}
 		p.Cases = append(p.Cases, c)
 	}

@@ -62,7 +62,8 @@ func (s Server) submitBenchmark(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusAccepted, map[string]string{"task_id": id})
 }
 func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
-	p, err := s.Store.BenchmarkProgress(r.Context(), "user:session", r.PathValue("id"))
+	w.Header().Set("Cache-Control", "no-store")
+	p, err := s.Store.BenchmarkProgress(r.Context(), s.principal(r), r.PathValue("id"))
 	if err != nil {
 		benchmarkError(w, err)
 		return

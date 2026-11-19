@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,16 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if again, err := s.SubmitBenchmarkRun(ctx, actor, request, provider); err != nil || again != task {
 				t.Fatalf("duplicate created %q: %v", again, err)
 			}
+			if _, err := s.BenchmarkProgress(ctx, "another-actor", task); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("foreign task read: %v", err)
+			}
+			queued, err := s.BenchmarkProgress(ctx, actor, task)
+			if err != nil || len(queued.Cases) != 1 {
+				t.Fatalf("queued snapshot: %+v %v", queued, err)
+			}
+			if c := queued.Cases[0]; c.Phase != "queued" || c.StepID == "" || c.Operation != nil || c.Wait != nil || c.TargetHolds != 0 {
+				t.Fatalf("queued case: %+v", c)
+			}
 			run := func() {
 				t.Helper()
 				if ok, e := s.runBenchmarkOnce(ctx, provider); !ok || e != nil {
@@ -109,6 +120,14 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 				}
 			}
 			run()
+			inFlight, err := s.BenchmarkProgress(ctx, actor, task)
+			if err != nil || len(inFlight.Cases) != 1 {
+				t.Fatalf("in-flight snapshot: %+v %v", inFlight, err)
+			}
+			if c := inFlight.Cases[0]; c.Phase != "submitting" || c.Operation == nil || c.Operation.State != "reconcile" ||
+				c.Wait == nil || c.Wait.State != "open" || c.Wait.Version != 1 || c.Wait.RecheckAt <= 0 || c.TargetHolds != 1 {
+				t.Fatalf("unknown effect must keep open wait and hold: %+v operation=%+v wait=%+v", c, c.Operation, c.Wait)
+			}
 			if provider.started != 1 {
 				t.Fatalf("got %d starts", provider.started)
 			}
@@ -130,6 +149,9 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			got, err := s.BenchmarkProgress(ctx, actor, task)
 			if err != nil || len(got.Cases) != 1 || got.Cases[0].Phase != name || got.Cases[0].JobID != "job-ID" {
 				t.Fatalf("progress %+v %v: want %s", got, err, name)
+			}
+			if c := got.Cases[0]; c.Operation == nil || c.Wait == nil || c.Wait.State != "closed" || c.TargetHolds != 0 {
+				t.Fatalf("terminal case: %+v operation=%+v wait=%+v", c, c.Operation, c.Wait)
 			}
 			if provider.started != 1 || provider.looked != 1 || provider.read != 1 {
 				t.Fatalf("unexpected remote calls %+v", provider)
@@ -205,7 +227,7 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 		t.Fatalf("released hold before stop confirmed: %d %v", holds, err)
 	}
 	pg, err := s.BenchmarkProgress(ctx, actor, task)
-	if err != nil || pg.State != "finalizing" {
+	if err != nil || pg.State != "finalizing" || !pg.StopRequested || len(pg.Cases) != 1 || pg.Cases[0].TargetHolds != 1 || pg.Cases[0].Wait == nil || pg.Cases[0].Wait.State != "open" {
 		t.Fatalf("stop still pending: %+v, %v", pg, err)
 	}
 	if _, err = s.db.Exec("UPDATE benchmark_cases SET next_at=0 WHERE task_id=?", task); err != nil {
@@ -214,7 +236,7 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 	provider.terminal = true
 	run()
 	pg, err = s.BenchmarkProgress(ctx, actor, task)
-	if err != nil || pg.State != "cancelled" || provider.cancellations != 1 {
+	if err != nil || pg.State != "cancelled" || provider.cancellations != 1 || !pg.StopRequested || len(pg.Cases) != 1 || pg.Cases[0].TargetHolds != 0 || pg.Cases[0].Wait == nil || pg.Cases[0].Wait.State != "closed" {
 		t.Fatalf("wrong stop outcome: %+v / %d, %v", pg, provider.cancellations, err)
 	}
 }
