@@ -119,4 +119,12 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 		t.Fatalf("wrong no-model report: %+v", report)
 	}
 
+	get(id+"/evidence", false, http.StatusUnauthorized)
+	get("missing/evidence", true, http.StatusNotFound)
+	res = get(id+"/evidence", true, http.StatusOK)
+	var page work.BenchmarkEvidencePage
+	if err := json.NewDecoder(res.Body).Decode(&page); err != nil || page.TaskID != id || page.Items == nil || len(page.Items) != 0 || res.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("wrong empty no-model inventory: %+v %v", page, err)
+	}
+
 }

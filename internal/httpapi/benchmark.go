@@ -81,6 +81,26 @@ func (s Server) benchmarkReport(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, report)
 }
 
+func (s Server) benchmarkEvidenceInventory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	limit, err := benchmarkQueryInt(r, "limit", 25)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	after := r.URL.Query()["after"]
+	if len(after) > 1 || (len(after) == 1 && after[0] == "") {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	page, err := s.Store.ListBenchmarkEvidence(r.Context(), s.principal(r), r.PathValue("id"), r.URL.Query().Get("after"), limit)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, page)
+}
+
 func (s Server) benchmarkEvidence(w http.ResponseWriter, r *http.Request) {
 	body, err := s.Store.ReadBenchmarkEvidence(r.Context(), "user:session", r.PathValue("id"), r.PathValue("artifact"))
 	if err != nil {

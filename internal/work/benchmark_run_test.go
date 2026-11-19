@@ -184,6 +184,50 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 				t.Fatalf("foreign actor read metrics: %v", err)
 			}
 
+			page, err := s.ListBenchmarkEvidence(ctx, actor, task, "", 1)
+			if err != nil || page.TaskID != task || (missing && len(page.Items) != 0) || (!missing && len(page.Items) != 1) {
+				t.Fatalf("inventory %+v: %v", page, err)
+			}
+			if _, err := s.ListBenchmarkEvidence(ctx, "other", task, "", 1); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("foreign evidence inventory exists: %v", err)
+			}
+			if !missing {
+				item := page.Items[0]
+				if !item.AssessmentLinked || item.CaseKey != "single-node" || item.StepID != got.Cases[0].StepID ||
+					item.OperationID != got.Cases[0].Operation.ID || item.ProviderJobID != "job-ID" || item.Connection != "bench-test" ||
+					item.SHA256 != digest("test output") || item.SizeBytes != int64(len("test output")) {
+					t.Fatalf("untrusted inventory metadata: %+v", item)
+				}
+				if bytes, err := s.ReadBenchmarkEvidence(ctx, actor, task, item.ID); err != nil || string(bytes) != "test output" {
+					t.Fatalf("original bytes changed: %q %v", bytes, err)
+				}
+				if _, err := s.ReadBenchmarkEvidence(ctx, "other", task, item.ID); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("foreign evidence exposed: %v", err)
+				}
+				extra := digest("extra test artifact")
+				if _, err := s.db.Exec("INSERT INTO benchmark_evidence VALUES(?,?,?,?,?,?)", extra, item.StepID, item.Target, "outside-assessment", digest("extra"), []byte("extra")); err != nil {
+					t.Fatal(err)
+				}
+				page, err = s.ListBenchmarkEvidence(ctx, actor, task, "", 1)
+				if err != nil || len(page.Items) != 1 || page.NextAfter != page.Items[0].ID {
+					t.Fatalf("missing first page boundary: %+v %v", page, err)
+				}
+				second, err := s.ListBenchmarkEvidence(ctx, actor, task, page.NextAfter, 1)
+				if err != nil || len(second.Items) != 1 || second.Items[0].ID == page.Items[0].ID || second.NextAfter != "" {
+					t.Fatalf("wrong second page: %+v %v", second, err)
+				}
+				if extraItem := append(page.Items, second.Items...); (extraItem[0].ID == extra && extraItem[0].AssessmentLinked) || (extraItem[1].ID == extra && extraItem[1].AssessmentLinked) {
+					t.Fatalf("unassessed captured bytes promoted: %+v", extraItem)
+				}
+				if _, err := s.db.Exec("DELETE FROM benchmark_evidence WHERE artifact_id IN (?,?)", item.ID, extra); err != nil {
+					t.Fatal(err)
+				}
+				empty, err := s.ListBenchmarkEvidence(ctx, actor, task, "", 1)
+				if err != nil || len(empty.Items) != 0 {
+					t.Fatalf("no longer present artifacts still visible: %+v %v", empty, err)
+				}
+			}
+
 			var holds int
 			if err = s.db.QueryRow("SELECT count(*) FROM benchmark_target_holds").Scan(&holds); err != nil || holds != 0 {
 				t.Fatalf("holds %d %v", holds, err)
