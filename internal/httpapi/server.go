@@ -181,6 +181,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)
 	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false))
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview", s.benchmarkRevisionChat)
+	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}", s.benchmarkRevisionRequestState)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}", s.reopenBenchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}/confirm", s.confirmBenchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/resume", s.resumeConversation)

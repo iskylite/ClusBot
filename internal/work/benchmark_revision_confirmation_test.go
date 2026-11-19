@@ -11,7 +11,8 @@ import (
 
 func TestBenchmarkChatConfirmationUsesOnlyRecordedProposal(t *testing.T) {
 	ctx := t.Context()
-	s, err := Open(filepath.Join(t.TempDir(), "confirmed-preview.sqlite"))
+	path := filepath.Join(t.TempDir(), "confirmed-preview.sqlite")
+	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +49,70 @@ func TestBenchmarkChatConfirmationUsesOnlyRecordedProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if status, err := s.ReadBenchmarkRevisionRequestState(ctx, actor, chat.ConversationID, "confirmed-preview"); err != nil ||
+		status.State != "completed" || status.RunID != preview.RunID || status.CanRestart {
+		t.Fatalf("completed request status: %+v %v", status, err)
+	}
+	makeRequest := func(key string) BenchmarkRevisionChatInput {
+		return BenchmarkRevisionChatInput{
+			BenchmarkRevisionAIInput: BenchmarkRevisionAIInput{BenchmarkRevisionProposalInput: BenchmarkRevisionProposalInput{ExpectedRevision: 1, Text: spoken}},
+			Action:                   "preview_benchmark_revision", TaskID: task, RequestID: key,
+		}
+	}
+	checkInterrupted := func(key string) {
+		t.Helper()
+		status, err := s.ReadBenchmarkRevisionRequestState(ctx, actor, chat.ConversationID, key)
+		if err != nil || status.State != "interrupted" || !status.CanRestart || status.RunID != "" {
+			t.Fatalf("interrupted request not recoverable: %+v %v", status, err)
+		}
+		if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, makeRequest(key), p,
+			func(context.Context, BenchmarkRevisionModelInput, int) (string, error) {
+				t.Fatal("interrupted idempotency key was sent to the model again")
+				return "", nil
+			}); !errors.Is(err, ErrBenchmarkRevisionRequestInterrupted) {
+			t.Fatalf("interrupted repeat had no explicit state: %v", err)
+		}
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	if _, err := s.SubmitBenchmarkRevisionChat(cancelled, actor, chat.ConversationID, makeRequest("intent-cancelled"), p,
+		func(call context.Context, _ BenchmarkRevisionModelInput, _ int) (string, error) {
+			cancel()
+			<-call.Done()
+			return "", call.Err()
+		}); !errors.Is(err, ErrBenchmarkRevisionModel) {
+		t.Fatalf("cancelled model attempt produced a result: %v", err)
+	}
+	checkInterrupted("intent-cancelled")
+	if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, makeRequest("intent-restarted"), p,
+		func(_ context.Context, _ BenchmarkRevisionModelInput, _ int) (string, error) {
+			// Represent a process exit after the provider may have accepted
+			// the call, but before the original transaction saved a result.
+			reopened, err := Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			status, err := reopened.ReadBenchmarkRevisionRequestState(ctx, actor, chat.ConversationID, "intent-restarted")
+			if err != nil || status.State != "running" || status.CanRestart {
+				t.Fatalf("missing durable pre-model boundary: %+v %v", status, err)
+			}
+			for _, count := range []int{1, 0} {
+				report, err := reopened.RecoverV3(ctx, now())
+				if err != nil || report.InterruptedBenchmarkPreviews != count {
+					t.Fatalf("restart recovery not idempotent: %+v %v", report, err)
+				}
+			}
+			// A synthetic late receipt must not be able to overwrite the
+			// recovery decision even if the former worker remains alive.
+			return `{"action":"remove_case","case_key":"second","quote":"第二个测试先别跑"}`, nil
+		}); !errors.Is(err, ErrBenchmarkRevisionRequestInterrupted) {
+		t.Fatalf("late result overrode crash recovery: %v", err)
+	}
+	checkInterrupted("intent-restarted")
+	if _, err := s.ReadBenchmarkRevisionRequestState(ctx, "other", chat.ConversationID, "intent-restarted"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign actor saw interrupted idempotency state: %v", err)
+	}
+
 	confirm := BenchmarkRevisionChatConfirmInput{Action: "apply_benchmark_revision", ExpectedRevision: 1}
 	call := func(subject, c, r string, in BenchmarkRevisionChatConfirmInput, provider BenchmarkProvider) (BenchmarkRevisionChatConfirmation, error) {
 		return s.ConfirmBenchmarkRevisionChat(ctx, subject, c, r, in, provider)

@@ -79,6 +79,10 @@ func (s Server) benchmarkRevisionChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.Store.SubmitBenchmarkRevisionChat(r.Context(), s.principal(r), r.PathValue("id"), input, s.BenchmarkProvider, s.Settings.InterpretBenchmarkRevision)
+	if errors.Is(err, work.ErrBenchmarkRevisionRequestInterrupted) {
+		fail(w, http.StatusConflict, "benchmark_revision_request_interrupted", err.Error())
+		return
+	}
 	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
 		fail(w, http.StatusBadGateway, "benchmark_revision_model_failed", err.Error())
 		return
@@ -125,6 +129,21 @@ func (s Server) confirmBenchmarkRevisionChat(w http.ResponseWriter, r *http.Requ
 		fail(w, http.StatusConflict, "benchmark_revision_preview_stale", err.Error())
 		return
 	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) benchmarkRevisionRequestState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	conversation, request := r.PathValue("id"), r.PathValue("request_id")
+	if !validID(conversation) || len(request) < 8 || len(request) > 128 {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	out, err := s.Store.ReadBenchmarkRevisionRequestState(r.Context(), s.principal(r), conversation, request)
 	if err != nil {
 		benchmarkError(w, err)
 		return

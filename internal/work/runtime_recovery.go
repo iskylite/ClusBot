@@ -44,17 +44,18 @@ const (
 
 // RecoveryReport 是恢复报告（每步幂等的证据）。
 type RecoveryReport struct {
-	Phase              RecoveryPhase
-	CompletedPhases    []RecoveryPhase
-	FailedPhase        RecoveryPhase
-	Failure            string
-	PendingResults     int // 未应用结果数
-	ReconciledRuns     int // 核对的未决执行数
-	AppliedTimerEvents int // 已消费的 Timer 到期事件（不等于完成后续工作）
-	DeliveredTimers    int // 投递的到期 Timer 数
-	TriggeredSchedules int // 触发的计划数
-	ExpiredApprovals   int // 已持久记录的到期审批，不是人工拒绝
-	ReadyUnits         int // 就绪单元数
+	Phase                        RecoveryPhase
+	CompletedPhases              []RecoveryPhase
+	FailedPhase                  RecoveryPhase
+	Failure                      string
+	PendingResults               int // 未应用结果数
+	ReconciledRuns               int // 核对的未决执行数
+	AppliedTimerEvents           int // 已消费的 Timer 到期事件（不等于完成后续工作）
+	DeliveredTimers              int // 投递的到期 Timer 数
+	TriggeredSchedules           int // 触发的计划数
+	ExpiredApprovals             int // 已持久记录的到期审批，不是人工拒绝
+	InterruptedBenchmarkPreviews int
+	ReadyUnits                   int // 就绪单元数
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,12 @@ AND state='received' AND payload_ref<>''`); err != nil {
 	}
 
 	// 步骤 3：未决执行核对（替换旧粗粒度恢复：能确定安全的继续，不明的保留核对）。
+	report.InterruptedBenchmarkPreviews, err = s.interruptBenchmarkRevisionRequests(ctx, "", now)
+	if err != nil {
+		report.FailedPhase = PhaseReconcileRunning
+		report.Failure = err.Error()
+		return report, err
+	}
 	reconciled, err := s.reconcileRunningRuns(ctx)
 	if err != nil {
 		report.FailedPhase = PhaseReconcileRunning

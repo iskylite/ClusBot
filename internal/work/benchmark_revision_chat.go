@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 const benchmarkRevisionChatEvent = "benchmark.revision_preview"
@@ -43,15 +44,12 @@ WHERE r.conversation_id=? AND r.id=? AND e.kind=?`, actor, conversation, run, be
 func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversation string, input BenchmarkRevisionChatInput,
 	provider BenchmarkProvider, interpret BenchmarkRevisionModel) (BenchmarkRevisionChatReceipt, error) {
 	if input.Action != "preview_benchmark_revision" || input.TaskID == "" || conversation == "" ||
-		len(input.RequestID) < 8 || len(input.RequestID) > 128 {
+		len(input.RequestID) < 8 || len(input.RequestID) > 128 || input.ExpectedRevision < 1 ||
+		strings.TrimSpace(input.Text) == "" || len(input.Text) > 4096 {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
 	}
-	key := "benchmark-revision-preview:" + digest(input.RequestID)
+	key := benchmarkRevisionChatKey(input.RequestID)
 	fingerprint := digest(toJSON([]any{actor, conversation, input}))
-	if _, loaded := s.benchmarkPreviewFlights.LoadOrStore(key, struct{}{}); loaded {
-		return BenchmarkRevisionChatReceipt{}, ErrActive
-	}
-	defer s.benchmarkPreviewFlights.Delete(key)
 	prior := func() (BenchmarkRevisionChatReceipt, error) {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -65,11 +63,45 @@ func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversa
 		if existing.ID != "" {
 			return readBenchmarkRevisionChat(tx, actor, conversation, existing.ID)
 		}
-		return BenchmarkRevisionChatReceipt{}, checkConversationSubmission(tx, conversation)
+		var state, before string
+		err = tx.QueryRowContext(ctx, "SELECT state,fingerprint FROM benchmark_revision_requests WHERE request_key=?", key).Scan(&state, &before)
+		if err == nil {
+			if before != fingerprint {
+				return BenchmarkRevisionChatReceipt{}, ErrConflict
+			}
+			if state == "running" {
+				return BenchmarkRevisionChatReceipt{}, ErrActive
+			}
+			return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionRequestInterrupted
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BenchmarkRevisionChatReceipt{}, err
+		}
+		if err := checkConversationSubmission(tx, conversation); err != nil {
+			return BenchmarkRevisionChatReceipt{}, err
+		}
+		var active int
+		if err := tx.QueryRowContext(ctx, "SELECT plan_revision FROM benchmark_runs WHERE task_id=? AND actor=?", input.TaskID, actor).Scan(&active); err != nil {
+			return BenchmarkRevisionChatReceipt{}, err
+		}
+		if active != input.ExpectedRevision {
+			return BenchmarkRevisionChatReceipt{}, ErrTaskRevision
+		}
+		stamp := now()
+		if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_revision_requests VALUES(?,?,?,?,?,'running',?,?)`, key, fingerprint, actor, conversation, input.TaskID, stamp, stamp); err != nil {
+			return BenchmarkRevisionChatReceipt{}, err
+		}
+		return BenchmarkRevisionChatReceipt{}, tx.Commit()
 	}
 	if previous, err := prior(); err != nil || previous.RunID != "" {
 		return previous, err
 	}
+	completed := false
+	defer func() {
+		if !completed {
+			s.interruptBenchmarkRevisionRequestOnExit(ctx, key)
+		}
+	}()
 	proposal, err := s.ProposeBenchmarkRevisionAI(ctx, actor, input.TaskID, input.BenchmarkRevisionAIInput, provider, interpret)
 	if err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
@@ -88,6 +120,17 @@ func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversa
 	if err := checkConversationSubmission(tx, conversation); err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
+	res, err := tx.ExecContext(ctx, `UPDATE benchmark_revision_requests SET state='completed',updated_at=?
+WHERE request_key=? AND fingerprint=? AND state='running'`, now(), key, fingerprint)
+	if err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	} else if n != 1 {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionRequestInterrupted
+	}
+
 	// The selected case may cross dispatch even without a plan revision.
 	// Recheck both the version and the dispatch boundary before recording.
 	var active int
@@ -139,7 +182,11 @@ WHERE b.task_id=? AND b.actor=? AND c.case_key=?`, input.TaskID, actor, proposal
 	if err := addEvent(tx, out.RunID, benchmarkRevisionChatEvent, recorded); err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
-	return out, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	completed = true
+	return out, nil
 }
 
 var ErrBenchmarkRevisionPreviewStale = errors.New("预演已失效，请按当前任务状态重新生成预演")
