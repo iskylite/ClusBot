@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"clusbot/internal/work"
@@ -62,4 +63,22 @@ func (s Server) publishBenchmarkDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, draft)
+}
+
+func (s Server) previewBenchmarkDraftParameter(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.BenchmarkDraftParameterInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.PreviewBenchmarkDraftParameter(r.Context(), s.principal(r), r.PathValue("key"), in, s.Settings.InterpretBenchmarkDraftParameter)
+	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
+		fail(w, http.StatusBadGateway, "benchmark_draft_model_failed", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
 }
