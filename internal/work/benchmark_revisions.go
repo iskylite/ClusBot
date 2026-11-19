@@ -63,6 +63,7 @@ func (s *Store) reviseBenchmark(ctx context.Context, actor, task string, req Ben
 		return BenchmarkRevision{}, err
 	}
 	defer tx.Rollback()
+	var archivedConfirmation bool
 	if confirmation != nil {
 		recorded, err := checkedRecordedBenchmarkPreview(tx, actor, confirmation.conversation, confirmation.run)
 		if err != nil {
@@ -71,12 +72,8 @@ func (s *Store) reviseBenchmark(ctx context.Context, actor, task string, req Ben
 		if confirmation.expected != recorded.Proposal.ExpectedRevision {
 			return BenchmarkRevision{}, ErrBenchmarkRevisionPreviewStale
 		}
-		var archived bool
-		if err := tx.QueryRowContext(ctx, "SELECT archived FROM conversations WHERE id=?", confirmation.conversation).Scan(&archived); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT archived FROM conversations WHERE id=?", confirmation.conversation).Scan(&archivedConfirmation); err != nil {
 			return BenchmarkRevision{}, err
-		}
-		if archived {
-			return BenchmarkRevision{}, ErrConversationArchived
 		}
 
 		task = recorded.TaskID
@@ -116,6 +113,11 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 		if !errors.Is(err, sql.ErrNoRows) {
 			return BenchmarkRevision{}, err
 		}
+	}
+	// A matching committed receipt is historical; archive only blocks a
+	// first submission. Exact scope, base and fingerprint were checked above.
+	if archivedConfirmation {
+		return BenchmarkRevision{}, ErrConversationArchived
 	}
 	if stopping || (state != "pending" && state != "running" && state != "paused") {
 		return BenchmarkRevision{}, fmt.Errorf("%w：任务已停止或进入收尾，不能修订", ErrState)

@@ -172,6 +172,37 @@ WHEN NEW.kind='benchmark.revision_applied' BEGIN SELECT RAISE(ABORT,'fixture rec
 	}
 	exec("DROP TRIGGER reject_revision_receipt")
 
+	unsubmitted, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, makeRequest("archived-unsubmitted"), p,
+		func(context.Context, BenchmarkRevisionModelInput, int) (string, error) {
+			return `{"action":"remove_case","case_key":"second","quote":"第二个测试先别跑"}`, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conversationRevision int
+	if err := s.db.QueryRow("SELECT revision FROM conversations WHERE id=?", chat.ConversationID).Scan(&conversationRevision); err != nil {
+		t.Fatal(err)
+	}
+	setArchive := func(archive bool) {
+		t.Helper()
+		c, err := s.ChangeConversation(ctx, chat.ConversationID, conversationRevision, nil, &archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conversationRevision = c.Revision
+	}
+	setArchive(true)
+	if out, err := call(actor, chat.ConversationID, unsubmitted.RunID, confirm, p); !errors.Is(err, ErrConversationArchived) ||
+		out != (BenchmarkRevisionChatConfirmation{}) {
+		t.Fatalf("archived, uncommitted confirmation passed: %+v %v", out, err)
+	}
+	setArchive(false)
+	// Exclude the second preview itself from the confirmation checkpoint.
+	beforeFeed, err = s.ReadConversationEvents(ctx, actor, chat.ConversationID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	outputs := make(chan BenchmarkRevisionChatConfirmation, 2)
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -199,6 +230,40 @@ WHEN NEW.kind='benchmark.revision_applied' BEGIN SELECT RAISE(ABORT,'fixture rec
 	if err != nil || replay.Revision != 2 {
 		t.Fatalf("repeat should return minimal committed receipt: %+v %v", replay, err)
 	}
+	setArchive(true)
+	if archived, err := call(actor, chat.ConversationID, preview.RunID, confirm, nil); err != nil || archived != replay {
+		t.Fatalf("cannot recover the original minimal receipt after archive: %+v %v", archived, err)
+	}
+	if out, err := call(actor, chat.ConversationID, unsubmitted.RunID, confirm, p); !errors.Is(err, ErrConversationArchived) ||
+		out != (BenchmarkRevisionChatConfirmation{}) {
+		t.Fatalf("another archived preview inherited the committed receipt: %+v %v", out, err)
+	}
+	if out, err := call("other", chat.ConversationID, preview.RunID, confirm, nil); !errors.Is(err, sql.ErrNoRows) ||
+		out != (BenchmarkRevisionChatConfirmation{}) {
+		t.Fatalf("archived receipt visible to foreign actor: %+v %v", out, err)
+	}
+	wrongBase := confirm
+	wrongBase.ExpectedRevision++
+	if out, err := call(actor, chat.ConversationID, preview.RunID, wrongBase, nil); !errors.Is(err, ErrBenchmarkRevisionPreviewStale) ||
+		out != (BenchmarkRevisionChatConfirmation{}) {
+		t.Fatalf("archived receipt replay accepted the wrong revision: %+v %v", out, err)
+	}
+
+	// Corrupted/mismatched stored fingerprints must not be treated as a
+	// historical success just because a row uses the confirmation key.
+	key := benchmarkChatConfirmationPrefix + preview.RunID
+	var fingerprint string
+	if err := s.db.QueryRow("SELECT request_digest FROM benchmark_run_revisions WHERE task_id=? AND request_key=?",
+		task, key).Scan(&fingerprint); err != nil {
+		t.Fatal(err)
+	}
+	exec("UPDATE benchmark_run_revisions SET request_digest=? WHERE task_id=? AND request_key=?", "different-fingerprint", task, key)
+	if out, err := call(actor, chat.ConversationID, preview.RunID, confirm, nil); !errors.Is(err, ErrBenchmarkRevisionPreviewStale) ||
+		out != (BenchmarkRevisionChatConfirmation{}) {
+		t.Fatalf("archived receipt replay bypassed the request fingerprint: %+v %v", out, err)
+	}
+	exec("UPDATE benchmark_run_revisions SET request_digest=? WHERE task_id=? AND request_key=?", fingerprint, task, key)
+
 	plan, err := s.ReadBenchmarkRevision(ctx, actor, task, 0)
 	if err != nil || plan.Revision != 2 || len(plan.Profile.Cases) != 1 || plan.Profile.Cases[0].Key != "first" || plan.AssetImpact != nil {
 		t.Fatalf("unexpected revision applied: %+v %v", plan, err)
