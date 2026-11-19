@@ -169,6 +169,41 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		t.Fatalf("stale/foreign sent to model: %v (%d calls vs %d)", err, modelCalls, callsBefore)
 	}
 
+	chat, handled, err := s.SubmitBenchmarkCommand(ctx, "status-before-change", actor, "", "/benchmark-status "+task, "", provider)
+	if err != nil || !handled || chat.ConversationID == "" {
+		t.Fatalf("create selected-task chat: %+v %t %v", chat, handled, err)
+	}
+	action := BenchmarkRevisionChatInput{BenchmarkRevisionAIInput: modelInput, Action: "preview_benchmark_revision", TaskID: task, RequestID: "chat-ai-preview"}
+	proposal, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, action, provider,
+		func(call context.Context, payload BenchmarkRevisionModelInput, limit int) (string, error) {
+			if _, err := s.SubmitBenchmarkRevisionChat(call, actor, chat.ConversationID, action, provider, interpret(answer)); !errors.Is(err, ErrActive) {
+				t.Fatalf("simultaneous repeat launched a second interpretation: %v", err)
+			}
+			return interpret(answer)(call, payload, limit)
+		})
+	if err != nil || proposal.TaskID != task || proposal.RunID == "" || proposal.Proposal.State != "preview_only" {
+		t.Fatalf("wrong durable chat action result: %+v %v", proposal, err)
+	}
+	events, reply, err := s.Events(proposal.RunID, 0)
+	if err != nil || reply.Status != "completed" || reply.TaskID != "" || len(events) != 1 || events[0].Kind != benchmarkRevisionChatEvent {
+		t.Fatalf("chat event or fallback missing: %+v %+v %v", events, reply, err)
+	}
+	if replayed, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, action, nil, nil); err != nil || toJSON(replayed) != toJSON(proposal) {
+		t.Fatalf("completed replay should not need model or provider: %+v %v", replayed, err)
+	}
+	reusedKey := action
+	reusedKey.Text = "我要查进度"
+	if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, reusedKey, provider, interpret(answer)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed request reused action key: %v", err)
+	}
+	reusedKey.Action = "progress"
+	if _, err := s.SubmitBenchmarkRevisionChat(ctx, actor, chat.ConversationID, reusedKey, provider, interpret(answer)); !errors.Is(err, ErrBenchmarkInput) {
+		t.Fatalf("query intercepted as mutation proposal: %v", err)
+	}
+	if _, err := s.SubmitBenchmarkRevisionChat(ctx, "other", chat.ConversationID, action, provider, interpret(answer)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("foreign actor got access to draft replay: %v", err)
+	}
+
 	var savedRevisions int
 	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_run_revisions WHERE task_id=?", task).Scan(&savedRevisions); err != nil || savedRevisions != 0 {
 		t.Fatalf("preview persisted a revision: %d %v", savedRevisions, err)

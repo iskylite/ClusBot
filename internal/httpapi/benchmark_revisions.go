@@ -67,3 +67,25 @@ func (s Server) proposeBenchmarkRevisionAI(w http.ResponseWriter, r *http.Reques
 	}
 	jsonResponse(w, http.StatusOK, result)
 }
+
+func (s Server) benchmarkRevisionChat(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var input work.BenchmarkRevisionChatInput
+	if !decode(w, r, &input) {
+		return
+	}
+	if !validID(r.PathValue("id")) || !validID(input.TaskID) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	out, err := s.Store.SubmitBenchmarkRevisionChat(r.Context(), s.principal(r), r.PathValue("id"), input, s.BenchmarkProvider, s.Settings.InterpretBenchmarkRevision)
+	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
+		fail(w, http.StatusBadGateway, "benchmark_revision_model_failed", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

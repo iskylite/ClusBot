@@ -201,23 +201,24 @@ var (
 )
 
 type Store struct {
-	db               *sql.DB // 写连接（单写职责），由 writer 持有
-	writer           *writerDB
-	readPool         *readPool
-	workspace        *workspace
-	materials        *workspace
-	uploads          *os.Root
-	publicationMu    sync.Mutex
-	connectionKey    []byte
-	finalizationMu   sync.Mutex
-	finalizations    map[runFinalizationKey]*runFinalization
-	admissionMu      sync.Mutex
-	admissions       map[string]*admissionFlight
-	runtimeMu        sync.Mutex
-	modelConcurrency int
-	modelActive      int
-	modelAvailable   chan struct{}
-	admissionLimits  RunLimits
+	db                      *sql.DB // 写连接（单写职责），由 writer 持有
+	writer                  *writerDB
+	readPool                *readPool
+	workspace               *workspace
+	materials               *workspace
+	uploads                 *os.Root
+	publicationMu           sync.Mutex
+	connectionKey           []byte
+	finalizationMu          sync.Mutex
+	finalizations           map[runFinalizationKey]*runFinalization
+	admissionMu             sync.Mutex
+	benchmarkPreviewFlights sync.Map
+	admissions              map[string]*admissionFlight
+	runtimeMu               sync.Mutex
+	modelConcurrency        int
+	modelActive             int
+	modelAvailable          chan struct{}
+	admissionLimits         RunLimits
 }
 
 type Task struct {
