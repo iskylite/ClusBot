@@ -16,6 +16,7 @@ package work
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -58,6 +59,9 @@ next_query_at,state,query_generation,created_at,updated_at FROM operation_jobs W
 			&existing.RetentionContract, &existing.NextQueryAt, &existing.State, &existing.QueryGeneration,
 			&existing.CreatedAt, &existing.UpdatedAt)
 	if err == nil {
+		if existing.QueryKey != queryKey || existing.RetentionContract != retentionContract {
+			return OperationJob{}, fmt.Errorf("%w：作业查询或保留契约不匹配", ErrConflict)
+		}
 		return existing, nil // 找回原 Job（不创建新 Job）
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -94,7 +98,7 @@ type OperationReceipt struct {
 	QueryGeneration int
 	PayloadDigest   string
 	Receipt         string
-	Source          string // callback/poll
+	Source          string // callback/poll; adapters normalize the payload digest across sources
 	ReceivedAt      int64
 	State           string // received/applied/stale/quarantined
 }
@@ -104,33 +108,73 @@ type OperationReceipt struct {
 // 未知关联隔离；推送与轮询进入同一去重/核对路径；无可靠顺序不按到达时间
 // 覆盖，必要时 Get 当前状态。
 func receiveOperationReceipt(tx *sql.Tx, r OperationReceipt, now int64) (ReceiveResult, error) {
-	if r.OperationID == "" || r.PayloadDigest == "" {
-		return ReceiveResult{}, errors.New("回执缺少操作/摘要")
+	if r.OperationID == "" || r.PayloadDigest == "" || r.AttemptID == "" || r.TargetRef == "" ||
+		r.ExternalVersion < 1 || r.QueryGeneration < 1 || (r.Source != "callback" && r.Source != "poll") {
+		return ReceiveResult{}, errors.New("回执缺少有效的操作、尝试、目标、版本、摘要或来源")
 	}
-	// 绑定 operation/attempt/目标/外部版本/代际。
-	if r.AttemptID == "" || r.TargetRef == "" {
-		return ReceiveResult{}, errors.New("回执缺少 attempt/目标")
+	op, err := readOperation(tx, r.OperationID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return quarantineOperationReceipt(tx, Operation{OperationID: r.OperationID}, "未知 Operation 回执", now)
 	}
-	// 未知关联隔离：核对 operation 存在。
-	var exists bool
-	if err := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM operations WHERE operation_id=?)", r.OperationID).Scan(&exists); err != nil {
+	if err != nil {
 		return ReceiveResult{}, err
 	}
-	if !exists {
-		// 未知关联隔离。
-		if err := recordAudit(tx, AuditEvent{
-			Event: "unknown_receipt_quarantined", Actor: "system",
-			Summary: fmt.Sprintf("未知 Operation 回执 %s 已隔离", r.OperationID), OccurredAt: now,
-		}); err != nil {
+	var attemptMatches, targetMatches bool
+	if err := tx.QueryRow(`SELECT
+EXISTS(SELECT 1 FROM operation_attempts WHERE operation_id=? AND attempt_id=?),
+EXISTS(SELECT 1 FROM operation_jobs WHERE operation_id=? AND provider_job_id=?)`,
+		r.OperationID, r.AttemptID, r.OperationID, r.TargetRef).Scan(&attemptMatches, &targetMatches); err != nil {
+		return ReceiveResult{}, err
+	}
+	if !attemptMatches {
+		return quarantineOperationReceipt(tx, op, "回执的尝试不属于原操作", now)
+	}
+	var targets []struct{ Ref string }
+	if !targetMatches {
+		if err := json.Unmarshal([]byte(op.TargetRefs), &targets); err != nil {
+			return quarantineOperationReceipt(tx, op, "无法读取原操作目标快照", now)
+		}
+		for _, target := range targets {
+			if target.Ref == r.TargetRef {
+				targetMatches = true
+				break
+			}
+		}
+		if !targetMatches {
+			return quarantineOperationReceipt(tx, op, "回执目标不在原操作的作业或目标快照中", now)
+		}
+	}
+	var previous OperationReceipt
+	err = tx.QueryRow(`SELECT receipt_id,query_generation,payload_digest,state FROM operation_receipts
+WHERE operation_id=? AND attempt_id=? AND target_ref=? AND external_version=? AND source=?`,
+		r.OperationID, r.AttemptID, r.TargetRef, r.ExternalVersion, r.Source).
+		Scan(&previous.ReceiptID, &previous.QueryGeneration, &previous.PayloadDigest, &previous.State)
+	if err == nil {
+		if previous.PayloadDigest != r.PayloadDigest {
+			if _, err := tx.Exec(`UPDATE operation_receipts SET state='quarantined' WHERE receipt_id=? AND state='received'`, previous.ReceiptID); err != nil {
+				return ReceiveResult{}, err
+			}
+			return quarantineOperationReceipt(tx, op, "相同来源与版本的回执内容冲突", now)
+		}
+		if previous.State != "stale" || r.QueryGeneration <= previous.QueryGeneration {
+			return ReceiveResult{Duplicate: true, Event: InboxEvent{EventID: previous.ReceiptID}}, nil
+		}
+		// Same verified content read again after an obsolete poll may be
+		// considered in the new generation; the old application stays inert.
+		if _, err := tx.Exec(`UPDATE operation_receipts SET query_generation=?, state='received' WHERE receipt_id=? AND state='stale'`,
+			r.QueryGeneration, previous.ReceiptID); err != nil {
 			return ReceiveResult{}, err
 		}
-		return ReceiveResult{Quarantined: true}, nil
+		return ReceiveResult{Event: InboxEvent{EventID: previous.ReceiptID}}, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return ReceiveResult{}, err
 	}
 	// 先入 Inbox（回调认证后）。
 	r.ReceiptID = id()
 	r.State = "received"
 	r.ReceivedAt = now
-	_, err := tx.Exec(`INSERT INTO operation_receipts(receipt_id,operation_id,attempt_id,target_ref,
+	_, err = tx.Exec(`INSERT INTO operation_receipts(receipt_id,operation_id,attempt_id,target_ref,
 external_version,query_generation,payload_digest,receipt,source,received_at,state)
 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		r.ReceiptID, r.OperationID, r.AttemptID, r.TargetRef, r.ExternalVersion,
@@ -139,6 +183,14 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		return ReceiveResult{}, err
 	}
 	return ReceiveResult{Event: InboxEvent{EventID: r.ReceiptID}}, nil
+}
+
+func quarantineOperationReceipt(tx *sql.Tx, op Operation, reason string, stamp int64) (ReceiveResult, error) {
+	if err := recordAudit(tx, AuditEvent{TaskID: op.TaskID, DetailRef: op.OperationID,
+		Event: "unknown_receipt_quarantined", Actor: "system", Summary: reason, OccurredAt: stamp}); err != nil {
+		return ReceiveResult{}, err
+	}
+	return ReceiveResult{Quarantined: true}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -172,13 +224,62 @@ query_generation,payload_digest,state FROM operation_receipts WHERE receipt_id=?
 		result.Reason = "回执已应用（重复不重复推进）"
 		return result, nil
 	}
-	// 旧代际回执：留证但不推进。
-	if r.QueryGeneration < currentGeneration {
+	if r.State != "received" {
+		result.Reason = "回执已隔离或只留证"
+		return result, nil
+	}
+	var attemptID string
+	if err := tx.QueryRow(`SELECT coalesce(current_attempt_id,'') FROM operations WHERE operation_id=?`, r.OperationID).Scan(&attemptID); err != nil {
+		return result, err
+	}
+	if r.QueryGeneration > currentGeneration {
+		op, err := readOperation(tx, r.OperationID)
+		if err != nil {
+			return result, err
+		}
+		if _, err := tx.Exec(`UPDATE operation_receipts SET state='quarantined' WHERE receipt_id=?`, receiptID); err != nil {
+			return result, err
+		}
+		reason := "回执代际超前，隔离不推进"
+		_, err = quarantineOperationReceipt(tx, op, reason, now)
+		result.Reason = reason
+		return result, err
+	}
+	if r.QueryGeneration < currentGeneration || r.AttemptID != attemptID {
 		if _, err := tx.Exec(`UPDATE operation_receipts SET state='stale' WHERE receipt_id=?`, receiptID); err != nil {
 			return result, err
 		}
-		result.Reason = fmt.Sprintf("旧代际回执（%d < %d），留证不推进", r.QueryGeneration, currentGeneration)
+		result.Reason = "旧代际或旧尝试回执，留证不推进"
 		return result, nil
+	}
+	// Source is provenance, not a separate stream of business truth. Compare
+	// semantic digests only after the adapter has canonicalized the result.
+	var newerVersion int
+	var earlierDigest string
+	err = tx.QueryRow(`SELECT external_version,payload_digest FROM operation_receipts
+WHERE operation_id=? AND attempt_id=? AND target_ref=? AND state='applied' AND external_version>=?
+ORDER BY external_version DESC LIMIT 1`, r.OperationID, r.AttemptID, r.TargetRef, r.ExternalVersion).
+		Scan(&newerVersion, &earlierDigest)
+	if err == nil {
+		state := "stale"
+		result.Reason = "相同或更新版本已应用，留证不重复推进"
+		result.Duplicate = newerVersion == r.ExternalVersion && earlierDigest == r.PayloadDigest
+		if newerVersion == r.ExternalVersion && earlierDigest != r.PayloadDigest {
+			state = "quarantined"
+			result.Reason = "相同版本的回执内容不一致，隔离不推进"
+			op, err := readOperation(tx, r.OperationID)
+			if err != nil {
+				return result, err
+			}
+			if _, err := quarantineOperationReceipt(tx, op, result.Reason, now); err != nil {
+				return result, err
+			}
+		}
+		_, err := tx.Exec(`UPDATE operation_receipts SET state=? WHERE receipt_id=? AND state='received'`, state, receiptID)
+		return result, err
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return result, err
 	}
 	// 应用回执（条件更新，只一次）。
 	res, err := tx.Exec(`UPDATE operation_receipts SET state='applied' WHERE receipt_id=? AND state='received'`,
@@ -247,3 +348,23 @@ var (
 	_ = errors.Is
 	_ = fmt.Sprintf
 )
+
+// migrateOperationReceiptKeys preserves historical receipt IDs while giving each
+// operation attempt and target its own provider version sequence.
+func migrateOperationReceiptKeys(tx *sql.Tx) error {
+	if _, err := tx.Exec(`ALTER TABLE operation_receipts RENAME TO operation_receipts_old;
+DROP INDEX IF EXISTS receipts_by_operation`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(runtimeOperationJobsSchema); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO operation_receipts(
+receipt_id,operation_id,attempt_id,target_ref,external_version,query_generation,payload_digest,receipt,source,received_at,state)
+SELECT receipt_id,operation_id,attempt_id,target_ref,external_version,query_generation,payload_digest,receipt,source,received_at,state
+FROM operation_receipts_old`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`DROP TABLE operation_receipts_old`)
+	return err
+}

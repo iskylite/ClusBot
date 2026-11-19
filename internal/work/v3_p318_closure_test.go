@@ -179,20 +179,32 @@ func TestV3P318OperationFailureMatrix(t *testing.T) {
 		store, taskID := setupV3P318(t, "f03.db")
 		now := v3P102Now()
 		tx, _ := store.db.Begin()
-		op, _ := registerOperation(tx, v3P307Operation(taskID, "idem-f03"), now)
-		tx.Commit()
-		// F03 回执冲突：同 operation 同 external_version 不同内容隔离。
-		tx, _ = store.db.Begin()
-		receipt1 := OperationReceipt{OperationID: op.OperationID, AttemptID: "a1", TargetRef: "asset-1", ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("A"), Source: "callback"}
-		receiveOperationReceipt(tx, receipt1, now)
-		tx.Commit()
-		// 同 operation 同 version 不同内容：冲突（按唯一约束处理）。
-		var count int
-		if err := store.db.QueryRow("SELECT COUNT(*) FROM operation_receipts WHERE operation_id=? AND external_version=1", op.OperationID).Scan(&count); err != nil {
+		op, err := registerOperation(tx, v3P307Operation(taskID, "idem-f03"), now)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if count != 1 {
-			t.Errorf("F03 conflict receipts = %d (回执冲突隔离)", count)
+		attempt := dispatchV3P309Attempt(t, tx, op.OperationID, now)
+		receipt1 := OperationReceipt{OperationID: op.OperationID, AttemptID: attempt, TargetRef: "asset-1", ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("A"), Source: "callback"}
+		first, err := receiveOperationReceipt(tx, receipt1, now)
+		if err != nil || first.Quarantined {
+			t.Fatalf("first receipt not accepted: %+v, %v", first, err)
+		}
+		receipt2 := receipt1
+		receipt2.PayloadDigest = digest("B")
+		conflict, err := receiveOperationReceipt(tx, receipt2, now)
+		if err != nil || !conflict.Quarantined {
+			t.Fatalf("conflicting receipt accepted: %+v, %v", conflict, err)
+		}
+		apply, err := applyOperationReceipt(tx, first.Event.EventID, 1, now)
+		if err != nil || apply.Applied {
+			t.Fatalf("receipt previously contradicted must not progress: %+v, %v", apply, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+		var count int
+		if err := store.db.QueryRow("SELECT COUNT(*) FROM operation_receipts WHERE operation_id=? AND external_version=1 AND state='quarantined'", op.OperationID).Scan(&count); err != nil || count != 1 {
+			t.Fatalf("F03 conflict quarantine=%d, err=%v", count, err)
 		}
 	})
 
@@ -200,18 +212,22 @@ func TestV3P318OperationFailureMatrix(t *testing.T) {
 		store, taskID := setupV3P318(t, "f04.db")
 		now := v3P102Now()
 		tx, _ := store.db.Begin()
-		op, _ := registerOperation(tx, v3P307Operation(taskID, "idem-f04"), now)
-		tx.Commit()
-		// F04 旧代际：留证不推进。
-		tx, _ = store.db.Begin()
-		receipt := OperationReceipt{OperationID: op.OperationID, AttemptID: "a1", TargetRef: "asset-1", ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("旧"), Source: "poll"}
-		result, _ := receiveOperationReceipt(tx, receipt, now)
-		tx.Commit()
-		tx, _ = store.db.Begin()
-		applyResult, _ := applyOperationReceipt(tx, result.Event.EventID, 2, now) // 当前代际 2
-		tx.Commit()
-		if applyResult.Applied {
-			t.Error("F04: stale generation applied (旧代际留证不推进)")
+		op, err := registerOperation(tx, v3P307Operation(taskID, "idem-f04"), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt := dispatchV3P309Attempt(t, tx, op.OperationID, now)
+		receipt := OperationReceipt{OperationID: op.OperationID, AttemptID: attempt, TargetRef: "asset-1", ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("旧"), Source: "poll"}
+		result, err := receiveOperationReceipt(tx, receipt, now)
+		if err != nil || result.Quarantined {
+			t.Fatalf("stale observation must be accepted as evidence: %+v, %v", result, err)
+		}
+		applyResult, err := applyOperationReceipt(tx, result.Event.EventID, 2, now)
+		if err != nil || applyResult.Applied {
+			t.Fatalf("F04 stale generation advanced: %+v, %v", applyResult, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
 		}
 	})
 

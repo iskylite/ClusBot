@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS operation_receipts (
   received_at INTEGER NOT NULL,
   -- 处理状态（received/applied/stale/quarantined）。
   state TEXT NOT NULL CHECK(state IN ('received','applied','stale','quarantined')) DEFAULT 'received',
-  UNIQUE(operation_id, external_version, source)
+  UNIQUE(operation_id, attempt_id, target_ref, external_version, source)
 );
 
 CREATE INDEX IF NOT EXISTS receipts_by_operation ON operation_receipts(operation_id, state);

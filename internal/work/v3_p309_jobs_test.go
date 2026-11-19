@@ -151,6 +151,15 @@ func TestV3P309AsyncJobRestart(t *testing.T) {
 	})
 }
 
+func dispatchV3P309Attempt(t *testing.T, tx *sql.Tx, operationID string, stamp int64) string {
+	t.Helper()
+	attempt, err := dispatchOperationAttempt(tx, operationID, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return attempt.AttemptID
+}
+
 // TestV3P309CallbackCorrelation 回调关联。
 func TestV3P309CallbackCorrelation(t *testing.T) {
 	t.Run("callback_authenticated_binds_all_fields", func(t *testing.T) {
@@ -158,8 +167,9 @@ func TestV3P309CallbackCorrelation(t *testing.T) {
 		now := v3P102Now()
 		// 回调认证后先入 Inbox，绑定 operation/attempt/目标/外部版本/代际。
 		tx, _ := store.db.Begin()
+		attemptID := dispatchV3P309Attempt(t, tx, opID, now)
 		receipt := OperationReceipt{
-			OperationID: opID, AttemptID: "attempt-1", TargetRef: "asset-1",
+			OperationID: opID, AttemptID: attemptID, TargetRef: "asset-1",
 			ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("回执"),
 			Receipt: "成功", Source: "callback",
 		}
@@ -235,8 +245,9 @@ func TestV3P309PollingEventDeduplication(t *testing.T) {
 		now := v3P102Now()
 		// 接收回执。
 		tx, _ := store.db.Begin()
+		attemptID := dispatchV3P309Attempt(t, tx, opID, now)
 		receipt := OperationReceipt{
-			OperationID: opID, AttemptID: "attempt-1", TargetRef: "asset-1",
+			OperationID: opID, AttemptID: attemptID, TargetRef: "asset-1",
 			ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("回执"),
 			Source: "poll",
 		}
@@ -269,8 +280,9 @@ func TestV3P309PollingEventDeduplication(t *testing.T) {
 		now := v3P102Now()
 		// 旧代际回执。
 		tx, _ := store.db.Begin()
+		attemptID := dispatchV3P309Attempt(t, tx, opID, now)
 		receipt := OperationReceipt{
-			OperationID: opID, AttemptID: "attempt-1", TargetRef: "asset-1",
+			OperationID: opID, AttemptID: attemptID, TargetRef: "asset-1",
 			ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("旧回执"),
 			Source: "poll",
 		}
@@ -304,20 +316,21 @@ func TestV3P309PollingEventDeduplication(t *testing.T) {
 		now := v3P102Now()
 		// 推送与轮询进入同一去重/核对路径。
 		tx, _ := store.db.Begin()
+		attemptID := dispatchV3P309Attempt(t, tx, opID, now)
 		pollReceipt := OperationReceipt{
-			OperationID: opID, AttemptID: "attempt-1", TargetRef: "asset-1",
+			OperationID: opID, AttemptID: attemptID, TargetRef: "asset-1",
 			ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("轮询回执"),
 			Source: "poll",
 		}
 		pushReceipt := OperationReceipt{
-			OperationID: opID, AttemptID: "attempt-1", TargetRef: "asset-1",
+			OperationID: opID, AttemptID: attemptID, TargetRef: "asset-1",
 			ExternalVersion: 1, QueryGeneration: 1, PayloadDigest: digest("轮询回执"),
 			Source: "callback",
 		}
 		pollResult, _ := receiveOperationReceipt(tx, pollReceipt, now)
 		pushResult, _ := receiveOperationReceipt(tx, pushReceipt, now)
 		tx.Commit()
-		// 同一去重路径：两个来源的回执都可应用（同一核对路径）。
+		// 同一版本与载荷经不同来源报告，也只应用一次。
 		tx, _ = store.db.Begin()
 		applyResult1, _ := applyOperationReceipt(tx, pollResult.Event.EventID, 1, now)
 		tx.Commit()
@@ -328,8 +341,8 @@ func TestV3P309PollingEventDeduplication(t *testing.T) {
 			t.Error("poll receipt not applied")
 		}
 		// 推送回执（同内容同代际）：幂等。
-		if applyResult2.Applied && applyResult1.Applied {
-			t.Logf("poll and push both applied (同一去重/核对路径)")
+		if applyResult2.Applied || !applyResult2.Duplicate {
+			t.Fatalf("identical callback must not repeat progress: %+v", applyResult2)
 		}
 	})
 
