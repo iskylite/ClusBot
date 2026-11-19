@@ -339,29 +339,40 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 		}
 		candidate := digest(toJSON(identity))
 		var priorAddress, priorState, asset, priorScope string
-		var priorSeen int64
-		priorErr := tx.QueryRow("SELECT address,state,admitted_ref,scope,seen_at FROM discovery_candidates WHERE candidate_id=?", candidate).
-			Scan(&priorAddress, &priorState, &asset, &priorScope, &priorSeen)
-		if priorErr != nil && !errors.Is(priorErr, sql.ErrNoRows) {
+		var priorScheduled int64
+		// Compare the durable local scan slots, not their receipt time. The HTTP
+		// adapter does not provide when the device was actually measured.
+		priorErr := tx.QueryRow(`SELECT c.state,c.admitted_ref,c.scope,coalesce(o.address,c.address),coalesce(o.scheduled_at,0)
+FROM discovery_candidates c LEFT JOIN discovery_observations o ON o.rowid=(
+ SELECT x.rowid FROM discovery_observations x JOIN discovery_plans p ON p.plan_id=x.plan_id
+ JOIN discovery_candidates accepted ON accepted.candidate_id=x.candidate_id
+ WHERE x.candidate_id=c.candidate_id AND p.source=c.source AND p.scope=c.scope
+ ORDER BY x.scheduled_at DESC,(x.address=accepted.address AND x.seen_at=accepted.seen_at) DESC,x.seen_at,x.plan_id,x.ordinal LIMIT 1
+) WHERE c.candidate_id=?`, candidate).Scan(&priorState, &asset, &priorScope, &priorAddress, &priorScheduled)
+		switch {
+		case errors.Is(priorErr, sql.ErrNoRows):
+			_, err = tx.Exec(`INSERT INTO discovery_candidates(candidate_id,source,scope,serial,address,seen_at,state) VALUES(?,?,?,?,?,?,?)`,
+				candidate, d.source, d.scope, o.Serial, ip, stamp, state)
+		case priorErr != nil:
 			return priorErr
+		case priorScope != d.scope || (d.at == priorScheduled && (priorAddress != ip || state == "conflict")):
+			_, err = tx.Exec(`UPDATE discovery_candidates SET state='conflict' WHERE candidate_id=? AND state<>'conflict'`, candidate)
+		case d.at > priorScheduled:
+			if priorState == "conflict" {
+				state = "conflict"
+			} else if asset != "" && state == "observed" {
+				state = "admitted"
+			}
+			_, err = tx.Exec(`UPDATE discovery_candidates SET address=?,seen_at=?,state=? WHERE candidate_id=?`, ip, stamp, state, candidate)
+			if err == nil && state == "admitted" && priorState == "admitted" && priorScheduled > 0 && priorAddress != ip {
+				err = evaluateDiscoveryDrift(tx, d, candidate, priorAddress, ip, asset, stamp)
+			}
 		}
-
-		if _, err = tx.Exec(`INSERT INTO discovery_candidates(candidate_id,source,scope,serial,address,seen_at,state) VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(candidate_id) DO UPDATE SET
-address=CASE WHEN discovery_candidates.scope=excluded.scope THEN excluded.address ELSE discovery_candidates.address END,
-seen_at=CASE WHEN discovery_candidates.scope=excluded.scope THEN excluded.seen_at ELSE discovery_candidates.seen_at END,
-state=CASE WHEN discovery_candidates.state='conflict' OR discovery_candidates.scope<>excluded.scope OR excluded.state='conflict'
-THEN 'conflict' WHEN discovery_candidates.admitted_ref<>'' THEN 'admitted' ELSE excluded.state END
-WHERE discovery_candidates.scope<>excluded.scope OR discovery_candidates.seen_at<=excluded.seen_at`, candidate, d.source, d.scope, o.Serial, ip, stamp, state); err != nil {
+		if err != nil {
 			return err
 		}
 		if _, err = tx.Exec(`INSERT INTO discovery_observations VALUES(?,?,?,?,?,?)`, d.plan, d.at, i, candidate, ip, stamp); err != nil {
 			return err
-		}
-		if priorErr == nil && asset != "" && priorState == "admitted" && state == "observed" && priorScope == d.scope && priorAddress != ip && priorSeen <= stamp {
-			if err = evaluateDiscoveryDrift(tx, d, candidate, priorAddress, ip, asset, stamp); err != nil {
-				return err
-			}
 		}
 
 		accepted++

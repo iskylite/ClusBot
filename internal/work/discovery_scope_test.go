@@ -129,3 +129,120 @@ func TestDiscoveryCandidateScopeIsolationAndLegacyProvenance(t *testing.T) {
 	}
 
 }
+
+type orderedDiscoveryFixture struct{ discoveryFixture }
+
+func (orderedDiscoveryFixture) AllowsDiscovery(source, scope string) bool {
+	return (source == "inventory-1" || source == "inventory-2") && scope == "POD7"
+}
+
+func TestDiscoveryDelayedReceiptsDoNotRewindCandidateOrTriggerReverseDrift(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "scan-order.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	source := orderedDiscoveryFixture{}
+	const actor, serial = "operator", "serial-1"
+	start := now() + 2000
+	if _, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7",
+		ExpiresAt: start + 60000, AllowDriftCheck: true}, source); err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range []struct {
+		id     string
+		offset int64
+	}{
+		{"initial", 0}, {"late", 1}, {"a-tie", 2}, {"new", 2},
+	} {
+		if err := s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: plan.id, Source: "inventory-1",
+			Scope: "POD7", FirstAt: start + plan.offset, PeriodSeconds: 60, CheckOnAddressDrift: true}, source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claim := func(want string, stamp int64) discoveryTick {
+		t.Helper()
+		tick, ok, err := s.claimDiscovery(ctx, source, stamp)
+		if !ok || err != nil || tick.plan != want {
+			t.Fatalf("claim %s: %+v %t %v", want, tick, ok, err)
+		}
+		return tick
+	}
+	settle := func(tick discoveryTick, ip string, stamp int64) {
+		t.Helper()
+		if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{serial, ip}}, nil, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() DiscoveryCandidate {
+		t.Helper()
+		items, err := s.ListDiscoveryCandidates(ctx, actor)
+		if err != nil || len(items) != 1 {
+			t.Fatalf("candidate: %+v %v", items, err)
+		}
+		return items[0]
+	}
+	const initialIP, newerIP, lateIP, conflictingIP = "192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"
+	settle(claim("initial", start), initialIP, now())
+	before := read()
+	admitted, err := s.AdmitDiscoveryCandidate(ctx, actor, DiscoveryAdmission{Candidate: before.ID, ConfirmedSerial: serial,
+		ExpectedSeenAt: before.SeenAt, Owner: "ops", Location: "rack", Role: "compute"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late := claim("late", start+1)
+	tie := claim("a-tie", start+2)
+	newer := claim("new", start+2)
+	settle(newer, newerIP, start+3)
+	settle(late, lateIP, start+4)
+	settle(late, lateIP, start+5)
+	got := read()
+	if got.ID != before.ID || got.Asset != admitted.Asset || got.Address != newerIP || got.State != "admitted" || got.SeenAt != start+3 {
+		t.Fatalf("old scan rewound current address or status: %+v", got)
+	}
+	page, err := s.ListDiscoveryObservations(ctx, actor, late.plan, "", 2)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Address != lateIP ||
+		page.Items[0].ScheduledAt != late.at || page.Items[0].SeenAt != start+4 {
+		t.Fatalf("late evidence lost or duplicated: %+v %v", page, err)
+	}
+	settle(tie, conflictingIP, start+3)
+	got = read()
+	if got.Asset != admitted.Asset || got.Address != newerIP || got.State != "conflict" {
+		t.Fatalf("same-slot disagreement rewound accepted address or hid conflict: %+v", got)
+	}
+	var count int
+	var oldAddress, newAddress, driftTask string
+	if err := s.db.QueryRow(`SELECT count(*),min(previous_address),min(current_address),min(task_id) FROM discovery_drift_checks`).Scan(&count, &oldAddress, &newAddress, &driftTask); err != nil ||
+		count != 1 || oldAddress != initialIP || newAddress != newerIP {
+		t.Fatalf("incorrect drift count=%d, %s -> %s: %v", count, oldAddress, newAddress, err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = guardDiscoveryDriftCheck(tx, driftTask, start+6)
+	tx.Rollback()
+	if driftTask == "" || !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("superseded drift query still allowed: %q %v", driftTask, err)
+	}
+
+	var endpoint string
+	if err := s.db.QueryRow("SELECT source_address FROM discovery_admissions WHERE candidate_id=?", before.ID).Scan(&endpoint); err != nil || endpoint != initialIP {
+		t.Fatalf("canonical admission endpoint overwritten: %s %v", endpoint, err)
+	}
+	if _, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-2", Scope: "POD7",
+		ExpiresAt: start + 60000}, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "other", Source: "inventory-2",
+		Scope: "POD7", FirstAt: start + 7, PeriodSeconds: 60}, source); err != nil {
+		t.Fatal(err)
+	}
+	settle(claim("other", start+7), "192.0.2.5", start+8)
+	items, err := s.ListDiscoveryCandidates(ctx, actor)
+	if err != nil || len(items) != 2 || items[0].ID == before.ID || items[0].Source != "inventory-2" ||
+		items[0].Asset != "" || items[1].ID != before.ID || items[1].Address != newerIP {
+		t.Fatalf("a different source overwrote same-serial identity: %+v %v", items, err)
+	}
+}

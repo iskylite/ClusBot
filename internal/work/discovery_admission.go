@@ -36,10 +36,11 @@ const scopedDiscoveryCandidate = `SELECT c.candidate_id,c.source,c.scope,c.seria
 d.address,d.seen_at,c.state,c.admitted_ref,c.check_task_id
 FROM discovery_candidates c JOIN discovery_observations d ON d.rowid=(
  SELECT x.rowid FROM discovery_observations x
+ JOIN discovery_candidates accepted ON accepted.candidate_id=x.candidate_id
  JOIN discovery_plans p ON p.plan_id=x.plan_id
  JOIN discovery_occurrences o ON o.plan_id=x.plan_id AND o.scheduled_at=x.scheduled_at
  WHERE x.candidate_id=c.candidate_id AND p.source=c.source AND p.scope=c.scope AND o.status='done'
- ORDER BY x.seen_at DESC,x.scheduled_at DESC,x.plan_id DESC,x.ordinal DESC LIMIT 1
+ ORDER BY x.scheduled_at DESC,(x.address=accepted.address AND x.seen_at=accepted.seen_at) DESC,x.seen_at,x.plan_id,x.ordinal LIMIT 1
 )`
 
 func (s *Store) ListDiscoveryCandidates(ctx context.Context, actor string) ([]DiscoveryCandidate, error) {
