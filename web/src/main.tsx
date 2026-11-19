@@ -21,6 +21,9 @@ import { ConnectionsPage } from './ConnectionsPage'
 import { SettingsPage } from './SettingsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
 import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft } from './composerDrafts'
+import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './BenchmarkExecution'
+import {useConversationTasks,type TaskLink} from './ConversationTasks'
+import {BenchmarkConversation} from './BenchmarkConversation'
 import './styles.css'
 
 if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
@@ -74,7 +77,7 @@ function Login({enter}: {enter: () => void}) {
 
 function workRoute(next:string,scope:string,search:string) {
   const url=new URL(next,location.origin)
-  if(url.pathname==='/' || /^\/(tasks|artifacts)(\/|$)/.test(url.pathname)) {
+  if(url.pathname==='/overview' || /^\/(tasks|artifacts)(\/|$)/.test(url.pathname)) {
     if(scope && !url.searchParams.has('scope_label'))url.searchParams.set('scope_label',scope)
     if(search && !url.searchParams.has('q'))url.searchParams.set('q',search)
   }
@@ -136,7 +139,7 @@ function Workspace({logout}: {logout: () => void}) {
   const justCreatedTask = useRef('')
   const compose = useRef<HTMLTextAreaElement>(null)
   const [area,id,source] = path.split('/').slice(1)
-  const section = area || 'home'
+  const section = area || 'chat'
   const historyView=section==='tasks'&&params.get('view')==='history'
   const isHistory=historyView&&!id
   const historyStatus=historyView?params.get('status')??'':''
@@ -223,7 +226,7 @@ function Workspace({logout}: {logout: () => void}) {
   const visibleTasks = isHistory ? historyPage?.items??[] : section === 'tasks' ? tasks.filter(task => task.status !== 'completed') : tasks
   const previewTask = visibleTasks.find(task => task.id === selected) || visibleTasks[0]
   const focused = detailOpen ? previewTask : undefined
-  const isOverview = section === 'home' || (section === 'tasks' && !id)
+  const isOverview = section === 'overview' || (section === 'tasks' && !id)
   function openTask(task: Task) {
     if (matchMedia('(max-width: 1050px)').matches) navigateFromOverview('/tasks/'+task.id)
     else {
@@ -260,10 +263,10 @@ function Workspace({logout}: {logout: () => void}) {
     }
   },[id])
   const nav = [
-    { label:'总览', path:'/', icon:Inbox, on:section==='home' },
+    { label:'个人助手', path:'/chat', icon:MessageCircle, on:section==='chat' },
+    { label:'工作总览', path:'/overview', icon:Inbox, on:section==='overview' },
     { label:'进行中', path:'/tasks', icon:LayoutList, on:section==='tasks' },
     { label:'成果', path:'/artifacts', icon:FileText, on:section==='artifacts' },
-    { label:'对话', path:'/chat', icon:MessageCircle, on:section==='chat' },
   ]
   return <VisionContext.Provider value={Boolean(settings?.attributes?.vision && settings.mode !== 'demo' && settings.mode !== 'unconfigured')}><div className={'workspace' + (isOverview && !focused ? ' overview-without-detail' : '')}>
     {menu && <button className="scrim" onClick={() => setMenu(false)} aria-label="关闭导航"/>}
@@ -274,7 +277,7 @@ function Workspace({logout}: {logout: () => void}) {
         <button key={target} className={on ? 'nav-item current' : 'nav-item'} aria-current={on ? 'page' : undefined} onClick={() => navigate(target)}><Icon size={19}/>{label}</button>)}</nav>
       {Boolean(overview?.data.scopes.length) && <div className="scopes"><h2>工作范围</h2>
         {overview?.data.scopes.map((item,i) => <button key={item} className={scope===item?'scope current':'scope'} aria-pressed={scope===item}
-          onClick={()=>openRoute(historyView?taskHistoryRoute('/tasks',scope===item?'':item,'',historyStatus):workRoute(section==='artifacts'?'/artifacts':section==='tasks'&&!id?'/tasks':'/',scope===item?'':item,''))}>
+          onClick={()=>openRoute(historyView?taskHistoryRoute('/tasks',scope===item?'':item,'',historyStatus):workRoute(section==='artifacts'?'/artifacts':section==='tasks'&&!id?'/tasks':'/overview',scope===item?'':item,''))}>
           <span className={'scope-dot tone-'+i%3}/>{item}</button>)}
       </div>}
       <div className="sidebar-footer">
@@ -420,11 +423,11 @@ function receiptPath(receipt:Receipt,assign:boolean) {
 type ComposerProps = {
   draftKey:string
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<Receipt>
-  onReceipt:(path:string)=>void|Promise<void>
-  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>
+  onReceipt:(path:string,receipt?:Receipt)=>void|Promise<void>
+  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode
 }
 
-function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef}:ComposerProps) {
+function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference}:ComposerProps) {
   const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
@@ -445,7 +448,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     mounted.current=true
     return()=>{mounted.current=false}
   },[])
-  const completeAdmission=useEffectEvent((path:string)=>onReceipt(path))
+  const completeAdmission=useEffectEvent((path:string,receipt:Receipt)=>onReceipt(path,receipt))
   useEffect(()=>{
     if(!admissionKey)return
     const requestKey=admissionKey
@@ -471,7 +474,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
           const path=receiptPath(receipt,assign)
           if(path) {
             finishDraftRequest(draftKey,requestKey)
-            try {await completeAdmission(path)}
+            try {await completeAdmission(path,receipt)}
             catch(e) {if(!disposed)setError(errorMessage(e))}
             return
           }
@@ -537,7 +540,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
       }
       if(!path)throw new Error('未收到有效回执。草稿已保留，可以重试。')
       finishDraftRequest(draftKey,request.key)
-      if(mounted.current)await onReceipt(path)
+      if(mounted.current)await onReceipt(path,receipt)
     }
     catch(e){
       if(e instanceof APIError&&e.code==='classification_failed'&&requestID)releaseDraftRequest(draftKey,requestID)
@@ -547,6 +550,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     finally{locked.current=false;setPending(false)}
   }
   return <form className="composer" onSubmit={submit}>
+    {reference}
     <textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={inputRef} rows={2} maxLength={16000}
       onChange={e=>edit({text:e.target.value})} readOnly={submitting}
       onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>
@@ -646,8 +650,11 @@ function useDetail(path: string | undefined, onChange?: () => void) {
   return {data,live,error,reload,reconnecting:active&&reconnecting}
 }
 
-function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
+type TaskReference={taskID:string;title:string;planRevision?:number}
+
+function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversationBusy,onReference,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;fromChat?:boolean;sourceConversationID?:string;sourceConversationBusy?:boolean;onReference?:(task:TaskReference)=>void;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
   const {data,live,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
+  const {progress:benchmark,unavailable:nonBenchmark,checking:checkingBenchmark,error:benchmarkError,refresh:refreshBenchmark}=useBenchmarkProgress(taskID)
   const sourceMessage=useMessageAnchor()
   const [actionError,setActionError]=useState('')
   const [acceptanceError,setAcceptanceError]=useState('')
@@ -680,8 +687,8 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
       }
       await api('/tasks/'+taskID+'/'+action,payload)
       resumeKey.current=undefined
-      await reload();onChange()
-    } catch(e) {setActionError(errorMessage(e));await reload()}
+      await Promise.all([reload(),refreshBenchmark()]);onChange()
+    } catch(e) {setActionError(errorMessage(e));await Promise.all([reload(),refreshBenchmark()])}
     finally{setPending(false)}
   }
   async function changeDiscussion() {
@@ -708,14 +715,14 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
   const question=task.status==='waiting_user'&&requestedInput?data.run?.response:undefined
   const ProgressIcon=taskReasonIcons[task.status_reason]??taskStatusIcons[task.status]
   const needsFile=Boolean(task.required_filename) && (data.publication?.status!=='succeeded' || data.publication.filename!==task.required_filename)
-  const status=writing ? ({pending:'待确认写入',dispatched:'正在保存成果',unknown:'写入待核对'}[data.publication?.status??'']??task.reason) : {
+  const status=benchmark ? benchmarkReadiness(benchmark) : task.status_reason==='stop_requested'?'停止请求处理中':task.status_reason==='pause_requested'?'暂停请求处理中':writing ? ({pending:'待确认写入',dispatched:'正在保存成果',unknown:'写入待核对'}[data.publication?.status??'']??task.reason) : {
     active:task.status_reason==='waiting_dependencies'?'等待依赖成果':task.status_reason==='queued'?'等待执行':'正在处理',waiting_user:question?'等你补充':needsFile?'待保存成果':'等你验收',completed:'已完成',
     interrupted:task.status_reason==='paused'?'已暂停':task.requirements_changed?'待按新要求执行':'执行中断',cancelled:'已停止',
   }[task.status]
   const controlling = task.status_reason === 'pause_requested' || task.status_reason === 'stop_requested'
   const archived=data.conversation.archived
   const readUnconfirmed=Boolean(data.unknown_read_run_id)
-  const composerBlocked=busy||writing||archived||readUnconfirmed||task.status==='cancelled'
+  const composerBlocked=!nonBenchmark||busy||writing||archived||readUnconfirmed||task.status==='cancelled'
   const discussion=question?data.messages.filter(message=>message.role!=='assistant'||message.run_id!==data.run?.id):data.messages
   const reads=data.reads??(data.read?[data.read]:[])
   const readEvidence=reads.map(read=><ReadEvidence key={read.position} read={read} showSource={reads.length>1} openRun={selectRun}
@@ -729,12 +736,25 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
     <p>这次读取的结果尚未取得。</p>
     <button type="button" className="outline" disabled={pending||busy} onClick={()=>void confirmRead()}>确认未取得结果</button>
   </div>
-  const actions = <div className="task-actions">
-    {!compact&&!editBlocked&&<button type="button" className="outline" onClick={()=>setEditing(true)}><Pencil size={15}/>编辑事项</button>}
-    {task.status==='active' && <button className="outline" disabled={pending||controlling} onClick={()=>void control('pause')}><Pause size={15}/>暂停</button>}
-    {['active','waiting_user','interrupted'].includes(task.status) && <button className="outline" disabled={pending||controlling||writing||readUnconfirmed} onClick={()=>void control('cancel')}><Square size={14}/>停止</button>}
-    {(task.status==='cancelled'||(task.status==='interrupted'&&(canResume||canRetry))) && <button className="primary" disabled={pending||readUnconfirmed} onClick={()=>void control('resume',canRetry)}>{canRetry?<RotateCcw size={16}/>:<Play size={16}/>} {task.status==='cancelled'?'重新开启':task.requirements_changed?'按新要求执行':canRetry?'重新执行':'继续工作'}</button>}
+  const canStopBenchmark=benchmark && !benchmarkError && !benchmark.stop_requested && !['succeeded','failed','cancelled','finalizing'].includes(benchmark.state)
+  const canStopOrdinary=nonBenchmark && ['active','waiting_user','interrupted'].includes(task.status)
+  const actions = <div className="task-actions" aria-label="任务操作">
+    {onReference&&<button type="button" className="text-button" onClick={()=>onReference({
+      taskID:task.id,title:task.title,planRevision:benchmarkError?undefined:benchmark?.plan_revision,
+    })}>在对话中引用</button>}
+    {nonBenchmark&&(!compact||fromChat)&&!editBlocked&&<button type="button" className="text-button" onClick={()=>setEditing(!editing)}>编辑事项</button>}
+    {nonBenchmark&&task.status==='active' && <button type="button" className="text-button" disabled={pending||controlling} onClick={()=>void control('pause')}>暂停</button>}
+    {(canStopBenchmark||canStopOrdinary) && <button type="button" className="text-button" disabled={pending||controlling||writing||readUnconfirmed} onClick={()=>void control('cancel')}>请求停止</button>}
+    {nonBenchmark&&(task.status==='cancelled'||(task.status==='interrupted'&&(canResume||canRetry))) &&
+      <button type="button" className="text-button" disabled={pending||readUnconfirmed} onClick={()=>void control('resume',canRetry)}>{task.status==='cancelled'?'重新开启':task.requirements_changed?'按新要求执行':canRetry?'重新执行':'继续工作'}</button>}
   </div>
+  const taskStatus=<p className="status-line"><span className={'status-dot '+task.status} aria-hidden="true"/>{status}</p>
+  const benchmarkSection=benchmark
+    ? <><BenchmarkExecution key={taskID} progress={benchmark} stale={Boolean(benchmarkError)} conversationID={sourceConversationID} conversationBusy={sourceConversationBusy} refresh={refreshBenchmark} onChange={()=>{void reload();onChange()}} compact={compact}/>
+      {benchmarkError&&<p className="error" role="alert">未能核对最新基准进度：{benchmarkError}</p>}</>
+    : benchmarkError
+      ? <p className="error" role="alert">{benchmarkError} <button type="button" className="text-button" onClick={()=>void refreshBenchmark()}>重新核对</button></p>
+      : checkingBenchmark?<p className="muted">正在核对执行状态…</p>:null
   const artifactActions=artifact && !busy && <div className="artifact-card"><span className="artifact-icon"><FileText size={20}/></span><div><strong>{artifact.name}</strong><small>{task.status==='interrupted'||requestedInput?'先前成果 · ':''}{time(artifact.created_at)}</small></div><button className="text-button" onClick={()=>setPreviewID(preview?'':artifact.id)}>{preview?'收起':'预览'}</button><a className="icon-button" aria-label="下载成果" href={'/api/v1/artifacts/'+artifact.id+'/content'}><ArrowDownToLine size={17}/></a></div>
   const previous=(data.artifact_versions??[]).filter(version=>busy||task.requirements_changed||version.id!==artifact?.id)
   const history=previous.length>0 && <details className="artifact-history">
@@ -756,18 +776,20 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
     <div><p>{question}</p>{!compact&&!archived&&<MemoryReferences items={data.memory_refs}/>}
       {!compact&&!composerBlocked&&<button type="button" className="text-button" onClick={()=>followUp.current?.focus()}>补充信息<ChevronRight size={15} aria-hidden="true"/></button>}</div>
   </div>
-  if (compact) return <div className="detail-content"><div className="status-line"><span className={'status-dot '+task.status}/>{status}</div>
-    <h2>{task.title}</h2>{task.scope_label && <p className="muted">{task.scope_label}</p>}
+  if (compact) return <div className="detail-content task-detail-content">
+    <header className="task-detail-header"><div><h2>{task.title}</h2>{task.scope_label && <p className="muted">{task.scope_label}</p>}{taskStatus}</div>{actions}</header>
+    {editing&&<TaskEditor task={task} blocked={editBlocked} reload={reload} onSaved={async()=>{await reload();onChange()}} onClose={()=>setEditing(false)}/> }
     {task.goal!==task.title && <p className="goal">{task.goal}</p>}
     {(task.acceptance_criteria||task.required_filename) && <><hr/><h3>验收条件</h3>{task.acceptance_criteria && <p className="criteria-text">{task.acceptance_criteria}</p>}{task.required_filename && <p className="criteria-text"><code>outputs/{task.required_filename}</code></p>}</>}
     <hr/><h3>当前进展</h3>{inputRequest||<p className="progress-line">{busy?<LoaderCircle size={17} className="spin" aria-hidden="true"/>:<ProgressIcon size={17} aria-hidden="true"/>} {task.reason}</p>}
     {readEvidence}
     {readConfirmation}
-    {output}{action}{task.status==='interrupted'&&actions}{(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
+    {benchmarkSection}
+    {output}{action}{(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
     <button className="detail-link" onClick={()=>navigate('/tasks/'+taskID)}>{question?'补充信息':'查看完整工作与交流'}<ChevronRight size={17}/></button><p className="updated">更新于 {time(task.updated_at)}</p></div>
   return <>
-    <main className="main work-detail"><button className="text-button back" onClick={()=>navigate(historyBack??'/')}><ArrowLeft size={16}/>{historyBack?'事项历史':'工作总览'}</button>
-      <header className="page-heading"><div><h1 tabIndex={-1} ref={headingRef}>{task.title}</h1><p>{task.scope_label && task.scope_label+' · '}{status}</p></div>{actions}</header>
+    <main className="main work-detail"><button className="text-button back" onClick={()=>navigate(historyBack??'/overview')}><ArrowLeft size={16}/>{historyBack?'事项历史':'工作总览'}</button>
+      <header className="page-heading task-detail-header"><div><h1 tabIndex={-1} ref={headingRef}>{task.title}</h1>{task.scope_label && <p>{task.scope_label}</p>}{taskStatus}</div>{actions}</header>
       {data.workflow_parent_id && <button type="button" className="text-button" onClick={()=>navigate('/tasks/'+data.workflow_parent_id)}><ArrowLeft size={16}/>查看父任务</button>}
       {editing&&<TaskEditor task={task} blocked={editBlocked} reload={reload} onSaved={async()=>{await reload();onChange()}} onClose={()=>setEditing(false)}/>}
       {task.goal!==task.title && <section className="work-goal"><h2>目标</h2><p>{task.goal}</p></section>}
@@ -784,6 +806,7 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
         {selectRun && <RunHistory taskID={taskID} latest={data.run} selected={selectedRun??''} select={selectRun}
           revision={task.revision} archived={archived} openArtifact={artifactID=>navigate(artifactRoute(artifactID,task.scope_label,task.id))}/>}
       </section>
+      {benchmarkSection}
       <section className="discussion"><header className="discussion-heading"><h2>相关交流</h2>
         <button className="text-button" disabled={pending||(!archived&&(busy||writing||readUnconfirmed))} onClick={()=>void changeDiscussion()}>
           {archived?<ArchiveRestore size={16}/>:<Archive size={16}/>} {archived?'恢复交流':'归档交流'}
@@ -794,10 +817,10 @@ function TaskDetail({taskID,compact,onChange,navigate,historyBack,selectedRun,se
       </section>
       <div className="mobile-outcome">{artifactActions}{preview&&artifact&&!busy&&<FormattedText text={artifact.content || ''} framed/>}{action}{history}</div>
       {(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
-      <Composer draftKey={'task:'+task.id} placeholder={question?'补充助手需要的信息…':'补充这项工作的要求…'} label={question?'发送补充信息':'发送补充要求'} task={task} inputRef={followUp} disabled={composerBlocked}
+      {nonBenchmark&&<Composer draftKey={'task:'+task.id} placeholder={question?'补充助手需要的信息…':'补充这项工作的要求…'} label={question?'发送补充信息':'发送补充要求'} task={task} inputRef={followUp} disabled={composerBlocked}
         disabledReason={archived?'恢复交流后可发送':readUnconfirmed?'请先确认读取结果':writing?'写入待处理，草稿可继续编辑':busy?'本轮处理中，草稿可继续编辑':'事项已停止'}
         onSend={(text,key,_scope,attachments,delivery)=>api('/conversations/'+task.conversation_id+'/messages',{text,client_message_id:key,attachment_ids:attachments,...delivery})}
-        onReceipt={async()=>{setAcceptanceError('');await reload();onChange()}}/>
+        onReceipt={async()=>{setAcceptanceError('');await reload();onChange()}}/>}
     </main>
     <aside className="detail-pane full-outcome"><div className="detail-content"><div className="status-line"><span className={'status-dot '+task.status}/>{status}</div><h2>工作成果</h2>{output}{!artifact&&!busy&&<p className="muted">{requestedInput?'本轮暂无成果。':task.status==='interrupted'||task.status==='cancelled'?'本轮未生成可验收的成果。':'成果将在执行结束后显示。'}</p>}{action}{history}</div></aside>
   </>
@@ -817,6 +840,31 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const [saving,setSaving]=useState(false)
   const [actionError,setActionError]=useState('')
   const [stopping,setStopping]=useState<string>()
+  const [selectedTask,setSelectedTask]=useState<string>()
+  const [taskReference,setTaskReference]=useState<TaskReference>()
+  const chatInput=useRef<HTMLTextAreaElement>(null)
+  const [latestReceipt,setLatestReceipt]=useState<TaskLink>()
+  const eventTasks=useConversationTasks(id)
+  const detailDialog=useRef<HTMLDialogElement>(null)
+  const taskTrigger=useRef<HTMLButtonElement|null>(null)
+  const detailClose=useRef<HTMLButtonElement>(null)
+  useLayoutEffect(()=>{
+    const element=detailDialog.current
+    if(selectedTask && element && !element.open) {
+      element.showModal()
+      detailClose.current?.focus({preventScroll:true})
+    }
+  },[selectedTask])
+  function closeTaskDetail(input=false) {
+    detailDialog.current?.close()
+    setSelectedTask(undefined)
+    if(input)chatInput.current?.focus()
+    else taskTrigger.current?.focus({preventScroll:true})
+  }
+  function referenceTask(reference:TaskReference) {
+    setTaskReference(previous=>previous?.taskID===reference.taskID?previous:reference)
+    closeTaskDetail(true)
+  }
   const resumeKey=useRef<{runID:string;key:string}|undefined>(undefined)
   const refreshList=useCallback(async()=>{
     try {
@@ -829,6 +877,9 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const busy=activeRun(data?.run)
   const conversation=data?.conversation
   const run=data?.run
+  const taskLinks=new Map(eventTasks.map(link=>[link.taskID,link]))
+  if(run?.task_id && !taskLinks.has(run.task_id))taskLinks.set(run.task_id,{taskID:run.task_id,benchmark:false})
+  if(latestReceipt&&!taskLinks.has(latestReceipt.taskID))taskLinks.set(latestReceipt.taskID,latestReceipt)
   const canResume=Boolean(conversation && !conversation.archived && run && !run.task_id && data?.read_checkpoint==='ready')
   const chatError=actionError||error||listError||(run?.error_code==='stop'?'':run?.error)
   const showArchived=archiveView??conversation?.archived??false
@@ -914,6 +965,18 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {archiveNext&&<button type="button" className="text-button" disabled={listPending} onClick={()=>void loadConversations(true)}>加载更多归档</button>}
       </div>}
       <div className="discussion chat-log">{data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?(live||data.run?.response):undefined} liveRunID={busy?data.run?.id:undefined} remember={id=>navigate('/memory/new/'+id)}/>:!id&&<div className="empty"><MessageCircle size={26}/><h2>聊聊你的问题</h2></div>}</div>
+      {id&&run&&!busy&&<BenchmarkConversation key={run.id} conversationID={id} run={run} archived={Boolean(conversation?.archived)}
+        alreadyAccepted={[...taskLinks.values()].some(link=>link.benchmark&&link.sourceRunID===run.id)}
+        onAccepted={taskID=>{setLatestReceipt({taskID,benchmark:true,sourceRunID:run.id});void reload()}} onApplied={()=>void reload()}/>}
+      {taskLinks.size>0&&<section className="conversation-tasks" aria-label="会话已受理工作">
+        <h2>这段对话关联的工作</h2>
+        {[...taskLinks.values()].reverse().slice(0,8).map(link=><div key={link.taskID} className="conversation-task-link">
+          <div><strong>{link.benchmark?'基准任务':'任务'}</strong><small>{link.taskID}</small></div>
+          <button type="button" className="text-button" aria-haspopup="dialog" onClick={event=>{
+            taskTrigger.current=event.currentTarget;setSelectedTask(link.taskID)
+          }}>查看任务 <ChevronRight size={16} aria-hidden="true"/></button>
+        </div>)}
+      </section>}
       {busy&&!run?.task_id&&<div className="chat-actions"><button type="button" className="outline chat-stop" disabled={stopping===run?.id} onClick={()=>void stopConversation()}>
         {stopping===run?.id?<LoaderCircle size={16} className="spin"/>:<Square size={16}/>} {stopping===run?.id?'正在停止…':'停止回复'}
       </button></div>}
@@ -923,16 +986,37 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {canResume && <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>}
       </div>}
       {id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
-      <Composer key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
+      <Composer inputRef={chatInput} reference={taskReference&&<div className="composer-task-reference">
+        <button type="button" className="text-button" aria-haspopup="dialog" onClick={event=>{
+          taskTrigger.current=event.currentTarget;setSelectedTask(taskReference.taskID)
+        }}>引用任务 · {taskReference.title}{taskReference.planRevision!==undefined&&' · 修订 '+taskReference.planRevision}</button>
+        <button type="button" className="icon-button" aria-label="移除任务引用" onClick={()=>{setTaskReference(undefined);chatInput.current?.focus()}}><X size={14} aria-hidden="true"/></button>
+      </div>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
         if (promote && id) {
           return api('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
         }
         return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments})
-      }} onReceipt={async path=>{
+      }} onReceipt={async(path,receipt)=>{
+        if (receipt?.task_id && path.startsWith('/tasks/')) {
+          if (id) {
+            setLatestReceipt({taskID:receipt.task_id,benchmark:false})
+            await reload()
+            return
+          }
+          if(receipt.conversation_id) {
+            navigate('/chat/'+receipt.conversation_id)
+            return
+          }
+        }
         if (id && path==='/chat/'+id) await reload()
         else navigate(path)
       }}/>
     </main>
+    {selectedTask&&<dialog className="chat-task-dialog" aria-label="任务详情" ref={detailDialog}
+      onCancel={event=>{event.preventDefault();closeTaskDetail()}}>
+      <div className="chat-task-dialog-bar"><button type="button" className="text-button" ref={detailClose} onClick={()=>closeTaskDetail(true)}>回到输入框 <X size={16} aria-hidden="true"/></button></div>
+      <TaskDetail key={selectedTask} taskID={selectedTask} compact fromChat onReference={conversation?.archived?undefined:referenceTask} sourceConversationID={conversation?.archived?undefined:id} sourceConversationBusy={Boolean(!conversation?.archived&&busy)} onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}/>
+    </dialog>}
     <aside className="detail-pane chat-history"><div className="detail-content">
       <header className="discussion-heading"><h2>{showArchived?'已归档':'最近对话'}</h2><button type="button" className="text-button" onClick={()=>setShowArchived(!showArchived)}>{showArchived?'最近对话':'查看归档'}</button></header>
       {(showArchived?archivedItems:items).map(item=><button key={item.id} className={'history-row '+(id===item.id?'selected':'')} onClick={()=>navigate('/chat/'+item.id)}>{item.archived?<Archive size={17}/>:<MessageCircle size={17}/>} {item.title}</button>)}

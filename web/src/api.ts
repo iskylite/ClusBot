@@ -13,7 +13,7 @@ export type ExecutionUsage = {
   model_requests:number; unreported_requests:number; active_ms:number; time_partial:boolean; untracked_runs:number
   input_tokens:number|null; output_tokens:number|null; last_input_tokens?:number|null
 }
-export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number }
+export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number} }
 export type RunListItem = {id:string; status:string; created_at:number; input_excerpt?:string}
 export type RunPage = {items:RunListItem[]; next_cursor?:string}
 export type RunRecord = Run & {
@@ -112,7 +112,7 @@ export type Receipt = {
 }
 
 export class APIError extends Error {
-  constructor(message:string,readonly code?:string) {super(message);this.name='APIError'}
+  constructor(message:string,readonly code?:string,readonly status?:number) {super(message);this.name='APIError'}
 }
 
 export async function api<T>(path: string, data?: unknown, method = data === undefined ? 'GET' : 'POST'): Promise<T> {
@@ -125,7 +125,7 @@ export async function api<T>(path: string, data?: unknown, method = data === und
   if (!response.ok) {
     const body = await response.json().catch(() => null)
     if (response.status === 401 && path !== '/session') window.dispatchEvent(new Event('clusbot:logout'))
-    throw new APIError(body?.message || '请求未完成，请稍后重试',body?.code)
+    throw new APIError(body?.message || body?.error || '请求未完成，请稍后重试',body?.code,response.status)
   }
   return response.status === 204 ? undefined as T : response.json()
 }
