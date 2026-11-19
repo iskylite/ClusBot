@@ -19,15 +19,16 @@ type BenchmarkReport struct {
 }
 
 type BenchmarkReportCase struct {
-	CaseKey          string                  `json:"case_key"`
-	StepID           string                  `json:"step_id"`
-	Phase            string                  `json:"phase"`
-	OperationState   string                  `json:"operation_state,omitempty"`
-	ToolOutcome      string                  `json:"tool_outcome"`
-	RequiredEvidence string                  `json:"required_evidence"`
-	Performance      string                  `json:"performance"`
-	Reason           string                  `json:"reason,omitempty"`
-	Targets          []BenchmarkReportTarget `json:"targets"`
+	CaseKey          string                         `json:"case_key"`
+	StepID           string                         `json:"step_id"`
+	ExecutionControl *BenchmarkCaseExecutionControl `json:"execution_control,omitempty"`
+	Phase            string                         `json:"phase"`
+	OperationState   string                         `json:"operation_state,omitempty"`
+	ToolOutcome      string                         `json:"tool_outcome"`
+	RequiredEvidence string                         `json:"required_evidence"`
+	Performance      string                         `json:"performance"`
+	Reason           string                         `json:"reason,omitempty"`
+	Targets          []BenchmarkReportTarget        `json:"targets"`
 }
 
 type BenchmarkReportTarget struct {
@@ -47,7 +48,7 @@ func (s *Store) ReadBenchmarkReport(ctx context.Context, actor, task string) (Be
 		Profile: BenchmarkProfileRef{Profile: progress.Profile, Version: progress.Version}, PlanRevision: progress.PlanRevision,
 		AssetAcceptance: "not_evaluated", Cases: make([]BenchmarkReportCase, 0, len(progress.Cases))}
 	for _, c := range progress.Cases {
-		item := BenchmarkReportCase{CaseKey: c.Key, StepID: c.StepID, Phase: c.Phase,
+		item := BenchmarkReportCase{CaseKey: c.Key, StepID: c.StepID, Phase: c.Phase, ExecutionControl: c.ExecutionControl,
 			ToolOutcome: "not_started", RequiredEvidence: "not_evaluated", Performance: "not_evaluated", Targets: []BenchmarkReportTarget{}}
 		if c.Operation != nil {
 			item.OperationState = c.Operation.State
@@ -63,6 +64,9 @@ func (s *Store) ReadBenchmarkReport(ctx context.Context, actor, task string) (Be
 			case V3OperationCancelled:
 				item.ToolOutcome = "cancelled"
 			}
+		}
+		if c.ExecutionControl != nil && c.ExecutionControl.State == benchmarkSkippedThisRun {
+			item.RequiredEvidence = "incomplete"
 		}
 		if c.Phase == "skipped" && len(c.Report) > 0 {
 			var skipped struct {

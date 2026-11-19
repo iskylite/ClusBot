@@ -200,3 +200,25 @@ func (s Server) previewBenchmarkSuggestion(w http.ResponseWriter, r *http.Reques
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) benchmarkExecutionControl(w http.ResponseWriter, r *http.Request) {
+	task, step := r.PathValue("id"), r.PathValue("step")
+	if !validID(task) || !validID(step) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	var in work.BenchmarkExecutionControlInput
+	if !decode(w, r, &in) {
+		return
+	}
+	result, err := s.Store.ApplyBenchmarkExecutionControl(r.Context(), s.principal(r), task, step, in)
+	if errors.Is(err, work.ErrBenchmarkCaseNotPending) {
+		fail(w, http.StatusConflict, "benchmark_case_not_pending", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, result)
+}

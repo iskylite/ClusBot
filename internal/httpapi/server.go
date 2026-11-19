@@ -143,6 +143,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}", s.benchmarkProgress)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/report", s.benchmarkReport)
+	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/cases/{step}/execution-control", s.benchmarkExecutionControl)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/revision", s.benchmarkRevision)
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/revision/preview", s.reviseBenchmark(false))
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/revision/proposal", s.proposeBenchmarkRevision)

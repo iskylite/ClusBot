@@ -104,16 +104,17 @@ type BenchmarkRunProgress struct {
 	Cases         []BenchmarkCaseProgress `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
-	Key         string                      `json:"key"`
-	Phase       string                      `json:"phase"`
-	JobID       string                      `json:"job_id,omitempty"`
-	Report      json.RawMessage             `json:"report,omitempty"`
-	StepID      string                      `json:"step_id"`
-	StepState   string                      `json:"step_state"`
-	Operation   *BenchmarkOperationProgress `json:"operation,omitempty"`
-	Wait        *BenchmarkWaitProgress      `json:"wait,omitempty"`
-	TargetHolds int                         `json:"target_holds"`
-	Targets     []BenchmarkCaseTarget       `json:"targets"`
+	Key              string                         `json:"key"`
+	Phase            string                         `json:"phase"`
+	JobID            string                         `json:"job_id,omitempty"`
+	Report           json.RawMessage                `json:"report,omitempty"`
+	StepID           string                         `json:"step_id"`
+	StepState        string                         `json:"step_state"`
+	Operation        *BenchmarkOperationProgress    `json:"operation,omitempty"`
+	Wait             *BenchmarkWaitProgress         `json:"wait,omitempty"`
+	TargetHolds      int                            `json:"target_holds"`
+	Targets          []BenchmarkCaseTarget          `json:"targets"`
+	ExecutionControl *BenchmarkCaseExecutionControl `json:"execution_control,omitempty"`
 }
 
 // BenchmarkAssetScope counts unique frozen target references, not GPU/CU,
@@ -281,6 +282,7 @@ WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
 o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
+ec.action,ec.state,ec.plan_revision,
 (SELECT count(*) FROM benchmark_target_holds h WHERE h.step_id=b.step_id),
 (SELECT json_group_array(json_object(
  'ref',v.value->>'ref','frozen_revision',v.value->>'revision','ownership_epoch',v.value->>'epoch',
@@ -295,6 +297,7 @@ FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id AND s.task_id=b.task_
 LEFT JOIN operations o ON o.operation_id=b.operation_id AND o.task_id=b.task_id AND o.step_id=b.step_id
 LEFT JOIN waits w ON w.wait_id='benchmark:'||b.step_id AND w.task_id=b.task_id AND w.step_id=b.step_id
  AND w.kind='external' AND w.match_key=o.operation_id
+LEFT JOIN benchmark_execution_controls ec ON ec.step_id=b.step_id AND ec.task_id=b.task_id AND ec.action='skip_this_run'
 WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	if err != nil {
 		return p, err
@@ -304,9 +307,10 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		var c BenchmarkCaseProgress
 		var raw, targetsJSON string
 		var opID, opState, waitID, waitState sql.NullString
-		var waitRev, waitDeadline sql.NullInt64
+		var waitRev, waitDeadline, controlRevision sql.NullInt64
+		var controlAction, controlState sql.NullString
 		if err := rows.Scan(&c.Key, &c.Phase, &c.JobID, &raw, &c.StepID, &c.StepState,
-			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &c.TargetHolds, &targetsJSON); err != nil {
+			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &controlAction, &controlState, &controlRevision, &c.TargetHolds, &targetsJSON); err != nil {
 			return p, err
 		}
 		if raw != "" {
@@ -314,6 +318,9 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		}
 		if opID.Valid {
 			c.Operation = &BenchmarkOperationProgress{ID: opID.String, State: opState.String}
+		}
+		if controlAction.Valid {
+			c.ExecutionControl = &BenchmarkCaseExecutionControl{Action: controlAction.String, State: controlState.String, PlanRevision: int(controlRevision.Int64)}
 		}
 		if waitID.Valid {
 			c.Wait = &BenchmarkWaitProgress{ID: waitID.String, Version: int(waitRev.Int64), State: waitState.String, RecheckAt: waitDeadline.Int64}

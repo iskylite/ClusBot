@@ -182,6 +182,35 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 	if err != nil || len(runs.Items) != 0 {
 		t.Fatalf("domain stop/recovery created a generic model execution: %+v %v", runs, err)
 	}
+
+	cancel()
+	<-done
+	controlled, err := a.store.SubmitBenchmarkRun(ctx, actor, work.BenchmarkRunRequest{RequestKey: "execution-control-api", Profile: "full", Version: 1}, benchmarkReadProvider{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := a.store.BenchmarkProgress(ctx, actor, controlled)
+	if err != nil || len(baseline.Cases) != 1 {
+		t.Fatalf("cannot locate API execution target: %+v %v", baseline, err)
+	}
+	path := "/api/v1/domain/benchmarks/" + controlled + "/cases/" + baseline.Cases[0].StepID + "/execution-control"
+	body := `{"action":"skip_this_run","expected_plan_revision":1,"client_request_id":"execution-control-api-request","reason":"本次不执行"}`
+	for range 2 {
+		status, receipt := a.post(path, body)
+		if status != http.StatusOK || receipt["state"] != "skipped_this_run" || receipt["step_id"] != baseline.Cases[0].StepID || receipt["plan_revision"] != float64(1) {
+			t.Fatalf("HTTP skip returned wrong stable receipt: %d %+v", status, receipt)
+		}
+	}
+	if status, receipt := a.post(path, strings.Replace(body, "execution-control-api-request", "next-control-api-request", 1)); status != http.StatusConflict || receipt["code"] != "benchmark_case_not_pending" {
+		t.Fatalf("new skip did not refuse terminal case: %d %+v", status, receipt)
+	}
+	res = get(controlled, true, http.StatusOK)
+	var skipped work.BenchmarkRunProgress
+	if err := json.NewDecoder(res.Body).Decode(&skipped); err != nil || skipped.State != "failed" || skipped.PlanRevision != 1 || len(skipped.Cases) != 1 ||
+		skipped.Cases[0].ExecutionControl == nil || skipped.Cases[0].ExecutionControl.State != "skipped_this_run" {
+		t.Fatalf("no-model progress missing real manual skip: %+v %v", skipped, err)
+	}
+
 }
 
 func TestBenchmarkChatConfirmDoesNotAcceptClientPlan(t *testing.T) {
