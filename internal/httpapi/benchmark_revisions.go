@@ -34,3 +34,17 @@ func (s Server) reviseBenchmark(apply bool) http.HandlerFunc {
 		jsonResponse(w, http.StatusOK, data)
 	}
 }
+
+func (s Server) proposeBenchmarkRevision(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var input work.BenchmarkRevisionProposalInput
+	if !decode(w, r, &input) {
+		return
+	}
+	proposal, err := s.Store.ProposeBenchmarkRevision(r.Context(), s.principal(r), r.PathValue("id"), input, s.BenchmarkProvider)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, proposal)
+}

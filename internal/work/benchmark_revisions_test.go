@@ -71,6 +71,47 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 		}
 	}
 	run() // first case is now "following"
+	propose := func(text string) (BenchmarkRevisionProposal, error) {
+		t.Helper()
+		return s.ProposeBenchmarkRevision(ctx, actor, task, BenchmarkRevisionProposalInput{ExpectedRevision: 1, Text: text}, provider)
+	}
+	check, err := propose("请将测试项 second 的参数 gpu_count 改为 32 并同步实测要求。")
+	if err != nil || check.Method != "explicit_shortcut" || check.State != "preview_only" || check.Preview.Revision != 2 ||
+		check.Preview.Profile.Cases[1].Parameters["gpu_count"] != "32" || check.Preview.Profile.Cases[1].ActualConfig["gpu_count"] != "32" ||
+		len(check.Preview.Frozen) != 1 || check.Preview.Frozen[0] != "first" {
+		t.Fatalf("wrong shortcut draft: %+v %v", check, err)
+	}
+	remove, err := propose("移除测试项 third")
+	if err != nil || len(remove.Preview.Changes.Removed) != 1 || remove.Preview.Changes.Removed[0] != "third" {
+		t.Fatalf("remove instruction: %+v %v", remove, err)
+	}
+	for _, test := range []struct {
+		text string
+		want error
+	}{
+		{"移除测试项 third，然后换成机外测试", ErrBenchmarkInput},
+		{"移除测试项 unknown", ErrBenchmarkInput},
+		{"将测试项 second 的参数 ‘gpu_count’ 改为 32", ErrBenchmarkInput},
+		{"将测试项 second 的参数 gpu_count 改为 32", ErrBenchmarkInput},
+		{"将测试项 second 的参数 gpu_count 改为 72 并同步实测要求", ErrAuthorizationDenied},
+		{"移除测试项 first", ErrBenchmarkInput},
+		{"将测试项 first 的参数 gpu_count 改为 32 并同步实测要求", ErrConflict},
+	} {
+		if _, err := propose(test.text); !errors.Is(err, test.want) {
+			t.Fatalf("unsafe or ambiguous proposal %q: %v expected %v", test.text, err, test.want)
+		}
+	}
+	if _, err := s.ProposeBenchmarkRevision(ctx, "other", task, BenchmarkRevisionProposalInput{ExpectedRevision: 1, Text: "移除测试项 third"}, provider); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign proposal accessed task: %v", err)
+	}
+	if _, err := s.ProposeBenchmarkRevision(ctx, actor, task, BenchmarkRevisionProposalInput{ExpectedRevision: 7, Text: "移除测试项 third"}, provider); !errors.Is(err, ErrTaskRevision) {
+		t.Fatalf("stale proposal base accepted: %v", err)
+	}
+	var savedRevisions int
+	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_run_revisions WHERE task_id=?", task).Scan(&savedRevisions); err != nil || savedRevisions != 0 {
+		t.Fatalf("preview persisted a revision: %d %v", savedRevisions, err)
+	}
+
 	changed := caseFor("second", "32", "first")
 	req := BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "change-key", Cases: []BenchmarkCase{first, changed}}
 	preview, err := s.ReviseBenchmark(ctx, actor, task, req, provider, false)
