@@ -25,12 +25,13 @@ import (
 )
 
 type Server struct {
-	Store          *work.Store
-	Token          string
-	Hosts          []string
-	Settings       *model.Settings
-	WorkspacePath  string
-	TicketProvider *work.TicketProvider
+	Store             *work.Store
+	Token             string
+	Hosts             []string
+	Settings          *model.Settings
+	WorkspacePath     string
+	TicketProvider    *work.TicketProvider
+	BenchmarkProvider work.BenchmarkProvider
 }
 
 type submission struct {
@@ -109,6 +110,10 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/domain/asset-acceptance/{task_id}", s.assetAcceptanceProgress)
 	api.HandleFunc("POST /api/v1/domain/tickets", s.submitDomainTicket)
 	api.HandleFunc("GET /api/v1/domain/ticket-operations/{id}", s.domainTicketProgress)
+	api.HandleFunc("POST /api/v1/domain/benchmark-profiles", s.publishBenchmarkProfile)
+	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)
+	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}", s.benchmarkProgress)
+	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/evidence/{artifact}", s.benchmarkEvidence)
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
 	api.HandleFunc("POST /api/v1/loans", s.lendAsset)
 	api.HandleFunc("POST /api/v1/loans/return", s.returnAsset)

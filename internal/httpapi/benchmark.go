@@ -1,0 +1,63 @@
+package httpapi
+
+import (
+	"errors"
+	"net/http"
+
+	"clusbot/internal/work"
+)
+
+func benchmarkError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, work.ErrBenchmarkInput):
+		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, work.ErrBenchmarkBinding):
+		jsonResponse(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	default:
+		writeError(w, err)
+	}
+}
+func (s Server) publishBenchmarkProfile(w http.ResponseWriter, r *http.Request) {
+	var p work.BenchmarkProfile
+	if !decode(w, r, &p) {
+		return
+	}
+	if err := s.Store.PublishBenchmarkProfile(r.Context(), "user:session", p); err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, map[string]any{"key": p.Key, "version": p.Version})
+}
+func (s Server) submitBenchmark(w http.ResponseWriter, r *http.Request) {
+	var req work.BenchmarkRunRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	id, err := s.Store.SubmitBenchmarkRun(r.Context(), "user:session", req, s.BenchmarkProvider)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]string{"task_id": id})
+}
+func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
+	p, err := s.Store.BenchmarkProgress(r.Context(), "user:session", r.PathValue("id"))
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, p)
+}
+
+func (s Server) benchmarkEvidence(w http.ResponseWriter, r *http.Request) {
+	body, err := s.Store.ReadBenchmarkEvidence(r.Context(), "user:session", r.PathValue("id"), r.PathValue("artifact"))
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="benchmark-evidence.bin"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(body)
+}

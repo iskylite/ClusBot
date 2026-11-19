@@ -40,6 +40,10 @@ func controlTask(tx *sql.Tx, taskID, action string, revision int) error {
 	if task.Revision != revision || task.Status == "completed" || task.Status == "cancelled" || (action == "pause" && task.Status != "active") {
 		return ErrState
 	}
+	if handled, err := controlBenchmark(tx, taskID, action); handled || err != nil {
+		return err
+	}
+
 	var runID, status, pending string
 	err = tx.QueryRow("SELECT id,status,control FROM runs WHERE task_id=? ORDER BY rowid DESC LIMIT 1", taskID).Scan(&runID, &status, &pending)
 	if err != nil {

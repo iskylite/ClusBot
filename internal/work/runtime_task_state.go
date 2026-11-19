@@ -296,6 +296,9 @@ func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to 
 		}
 		// 目标终态由收尾结果决定；这里要求调用方给出明确终态。
 		// 成功/失败/已取消的区分由收尾记录决定，统一经 finalize 进入。
+		if guard.FinalState == V3TaskCancelled {
+			return V3TaskCancelled, "收尾完成，运行时确认取消", nil, ""
+		}
 		if guard.FinalState == V3TaskFailed {
 			return V3TaskFailed, "收尾完成，运行时确认失败", nil, ""
 		}

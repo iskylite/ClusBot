@@ -9,12 +9,22 @@ import (
 )
 
 type DomainAssetEntry struct {
-	ObjectRef string `yaml:"object_ref"`
-	Kind      string `yaml:"kind"`
-	Identity  string `yaml:"identity"`
-	State     string `yaml:"state"`
-	Read      bool   `yaml:"allow_read"`
-	Repair    bool   `yaml:"allow_repair"`
+	ObjectRef string                 `yaml:"object_ref"`
+	Kind      string                 `yaml:"kind"`
+	Identity  string                 `yaml:"identity"`
+	State     string                 `yaml:"state"`
+	Read      bool                   `yaml:"allow_read"`
+	Repair    bool                   `yaml:"allow_repair"`
+	Benchmark []DomainBenchmarkGrant `yaml:"benchmark_grants"`
+}
+
+// DomainBenchmarkGrant is an explicit local operator grant, never derived
+// from a published plan, a provider claim, or a user message.
+type DomainBenchmarkGrant struct {
+	Connection string              `yaml:"connection" json:"connection"`
+	Tool       string              `yaml:"tool" json:"tool"`
+	Allowed    map[string][]string `yaml:"allowed" json:"allowed"`
+	ExpiresAt  int64               `yaml:"expires_at_unix_ms" json:"-"`
 }
 
 // ImportDomainAssets installs an operator-managed inventory into a local data directory.
@@ -54,6 +64,34 @@ func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEnt
 		case existing.Identity != entry.Identity || existing.Kind != entry.Kind:
 			return fmt.Errorf("%w：资产 %s 的身份或类型与现有记录不符", ErrConflict, ref)
 		}
+		for _, grant := range entry.Benchmark {
+			if !validBenchKey(grant.Connection) || !validBenchKey(grant.Tool) || grant.ExpiresAt <= stamp || len(grant.Allowed) > 32 {
+				return ErrBenchmarkInput
+			}
+			for k, values := range grant.Allowed {
+				if !validBenchKey(k) || len(values) == 0 || len(values) > 64 {
+					return ErrBenchmarkInput
+				}
+				for _, value := range values {
+					if value == "" || len(value) > 256 || strings.TrimSpace(value) != value {
+						return ErrBenchmarkInput
+					}
+				}
+			}
+			params := toJSON(grant)
+			var exists bool
+			if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM authorizations WHERE subject=? AND action='benchmark.execute'
+AND object_ref=? AND param_constraints=? AND expires_at=? AND revoked_at=0)`, principal, ref, params, grant.ExpiresAt).Scan(&exists); err != nil {
+				return err
+			}
+			if !exists {
+				if _, err := grantAuthorization(tx, Authorization{Subject: principal, Action: "benchmark.execute", ObjectRef: ref,
+					ParamConstraints: params, ExpiresAt: grant.ExpiresAt, ValidFrom: stamp, Source: "local-domain-asset-import", Owner: principal}, stamp); err != nil {
+					return err
+				}
+			}
+		}
+
 		for _, access := range []struct {
 			action, object string
 			allowed        bool

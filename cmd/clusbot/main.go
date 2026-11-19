@@ -37,6 +37,13 @@ type config struct {
 		CredentialEnv       string `yaml:"credential_env"`
 		HealthCredentialEnv string `yaml:"health_credential_env"`
 	} `yaml:"tickets"`
+	Benchmark struct {
+		BaseURL       string   `yaml:"base_url"`
+		Connection    string   `yaml:"connection"`
+		Revision      int      `yaml:"revision"`
+		Tools         []string `yaml:"tools"`
+		CredentialEnv string   `yaml:"credential_env"`
+	} `yaml:"benchmark"`
 	Model struct {
 		Provider string `yaml:"provider"`
 		BaseURL  string `yaml:"base_url"`
@@ -248,8 +255,21 @@ func run() error {
 			return err
 		}
 	}
+	var benchmarkProvider work.BenchmarkProvider
+	if cfg.Benchmark.BaseURL != "" {
+		p, err := work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
+			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
+		if err != nil {
+			return err
+		}
+		if err := db.InstallBenchmarkProvider(context.Background(), p); err != nil {
+			return err
+		}
+		benchmarkProvider = p
+	}
+
 	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider,
+		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -275,6 +295,10 @@ func run() error {
 	})
 	approvalWorker := db.StartApprovalWorker(ctx)
 	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })
+	if benchmarkProvider != nil {
+		background.Go(func() { db.RunBenchmarks(ctx, benchmarkProvider) })
+	}
+
 	if ticketProvider != nil {
 		background.Go(func() { db.RunTicketOperations(ctx, ticketProvider, ticketChecker) })
 	}
