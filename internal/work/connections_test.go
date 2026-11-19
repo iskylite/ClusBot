@@ -157,6 +157,25 @@ func TestConnectionsDiscoverAndAuthorizeBothTransports(t *testing.T) {
 				!strings.Contains(string(full.Structured), `"tail":"最后一行"`) {
 				t.Fatalf("saved evidence does not include the complete result: %v", err)
 			}
+			oldID := result.Reference.ID
+			defer func() {
+				current, err := s.Connection(ctx, c.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if current.Tools[0].Allowed {
+					if err = s.SetToolPermission(ctx, current.ID, current.Tools[0].Name, current.Tools[0].Version, current.Revision, false); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err = s.ConnectionEvidence(ctx, oldID); !errors.Is(err, sql.ErrNoRows) {
+					t.Fatalf("old private evidence available after grant or version changed: %v", err)
+				}
+				var retained []byte
+				if err = s.db.QueryRowContext(ctx, "SELECT evidence FROM connection_calls WHERE id=?", oldID).Scan(&retained); err != nil || string(retained) != string(evidence) {
+					t.Fatalf("original stored evidence changed: %v", err)
+				}
+			}()
 			if transport == "stdio" {
 				result, err = s.CallConnectionTool(ctx, c.ID, c.Tools[0].Name, c.Revision, map[string]any{"mode": "overlimit"})
 				if err != nil || !result.Truncated || result.Reference != nil {
@@ -182,5 +201,55 @@ func TestConnectionsDiscoverAndAuthorizeBothTransports(t *testing.T) {
 				t.Fatalf("changed definition inherited grant: %+v, %v", c, err)
 			}
 		})
+	}
+}
+
+func TestConnectionInlineResultSettledAfterRevocation(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "inline-revocation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	server := mcp.NewServer(&mcp.Implementation{Name: "local-test", Version: "1"}, nil)
+	type revokeSource struct {
+		id, name, version string
+		revision          int
+	}
+	input := make(chan revokeSource, 1)
+	server.AddTool(&mcp.Tool{Name: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			source := <-input
+			if err := s.SetToolPermission(ctx, source.id, source.name, source.version, source.revision, false); err != nil {
+				return nil, err
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "private-fixture"}}}, nil
+		})
+	httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	defer httpServer.Close()
+	c, err := s.SaveConnection(ctx, "", Connection{Name: "fixture", Enabled: true, Config: mcpclient.Config{Transport: "http", Endpoint: httpServer.URL}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err = s.TestConnection(ctx, c.ID, c.Revision)
+	if err != nil || len(c.Tools) != 1 {
+		t.Fatalf("catalog %v %v", c.Tools, err)
+	}
+	tool := c.Tools[0]
+	if err = s.SetToolPermission(ctx, c.ID, tool.Name, tool.Version, c.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	c, err = s.Connection(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input <- revokeSource{c.ID, tool.Name, tool.Version, c.Revision}
+	result, err := s.CallConnectionTool(ctx, c.ID, tool.Name, c.Revision, map[string]any{})
+	if err != nil || !result.SourceUnavailable || result.ID == "" || result.ReceivedAt == 0 || result.Text != "" || result.Reference != nil {
+		t.Fatalf("expected redacted settlement, got %+v %v", result, err)
+	}
+	var status string
+	if err = s.db.QueryRowContext(ctx, "SELECT status FROM connection_calls WHERE id=?", result.ID).Scan(&status); err != nil || status != "completed" {
+		t.Fatalf("original dispatched outcome changed: %s %v", status, err)
 	}
 }

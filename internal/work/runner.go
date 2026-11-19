@@ -495,6 +495,9 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 	if err == nil && checkpointStream != nil && remainingOutput >= 512 {
 		controlled, err = s.workerPlanContext(controlled, run, limits)
 	}
+	if err == nil && run.TaskID != "" {
+		err = s.checkTaskReadModelAuthority(controlled, run.ID)
+	}
 	if err == nil {
 		var answer TaskAnswer
 		size := 0
@@ -565,6 +568,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			reason, accounting.errorCode = "模型未发出有效的读取调用，请检查模型工具调用能力", "invalid_model_tool_call"
 		case errors.Is(err, ErrTaskAnswer):
 			reason, accounting.errorCode = ErrTaskAnswer.Error(), "invalid_task_answer"
+		case errors.Is(err, ErrReadNeedsSelection):
+			reason, accounting.errorCode = ErrReadNeedsSelection.Error(), "tool_read_reselection_required"
 		case errors.Is(err, errReadFailed):
 			reason, accounting.errorCode = "读取未完成，请检查工具状态并重新提交", "tool_read_failed"
 		case ctx.Err() != nil:

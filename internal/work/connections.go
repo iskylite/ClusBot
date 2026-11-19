@@ -290,12 +290,27 @@ func (s *Store) SetToolPermission(ctx context.Context, key, name, version string
 
 type ConnectionResult struct {
 	mcpclient.Result
-	ID         string `json:"id"`
-	ReceivedAt int64  `json:"received_at"`
+	ID                string `json:"id"`
+	ReceivedAt        int64  `json:"received_at"`
+	SourceUnavailable bool   `json:"source_unavailable,omitempty"`
 }
 
 func (s *Store) CallConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any) (ConnectionResult, error) {
-	return s.callConnectionTool(ctx, key, name, revision, args, "", 0)
+	result, err := s.callConnectionTool(ctx, key, name, revision, args, "", 0)
+	if err != nil {
+		return result, err
+	}
+	// The already-issued call may settle after local permission was revoked.
+	// Keep its durable outcome but do not send the now-private inline bytes.
+	var authorized bool
+	err = s.db.QueryRowContext(ctx, `SELECT `+exactMCPAuthority("connection_calls")+` FROM connection_calls WHERE id=?`, result.ID).Scan(&authorized)
+	if err != nil {
+		return ConnectionResult{}, err
+	}
+	if !authorized {
+		return ConnectionResult{ID: result.ID, ReceivedAt: result.ReceivedAt, SourceUnavailable: true}, nil
+	}
+	return result, nil
 }
 
 func (s *Store) callConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int) (ConnectionResult, error) {
@@ -377,10 +392,20 @@ func (s *Store) callConnectionTool(ctx context.Context, key, name string, revisi
 	return receipt, callErr
 }
 
+// exactMCPAuthority requires the grant and the source versions that produced the
+// read. Regranting increments the connection revision, so it does not revive old evidence.
+// row is an internal constant SQL table/alias, never request data.
+func exactMCPAuthority(row string) string {
+	return `EXISTS(SELECT 1 FROM connections mc JOIN connection_tools mt ON mt.connection_id=mc.id
+WHERE mc.id=` + row + `.connection_id AND mc.revision=` + row + `.connection_revision
+AND mc.enabled=1 AND mc.status='ready' AND mt.allowed=1
+AND mt.name=` + row + `.tool_name AND json_extract(mt.definition,'$.version')=` + row + `.tool_version)`
+}
+
 func (s *Store) ConnectionEvidence(ctx context.Context, callID string) ([]byte, error) {
 	var content []byte
 	err := s.db.QueryRowContext(ctx, `SELECT evidence FROM connection_calls
-WHERE id=? AND status IN ('completed','tool_error') AND evidence IS NOT NULL`, callID).Scan(&content)
+WHERE id=? AND status IN ('completed','tool_error') AND evidence IS NOT NULL AND `+exactMCPAuthority("connection_calls"), callID).Scan(&content)
 	return content, err
 }
 
@@ -394,8 +419,8 @@ func (s *Store) dispatchConnectionCall(ctx context.Context, callID, key string, 
 	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO connection_calls(id,connection_id,connection_revision,tool_name,tool_version,status,created_at)
 SELECT ?,c.id,c.revision,?,?,'dispatched',? FROM connections c JOIN connection_tools t ON t.connection_id=c.id
-WHERE c.id=? AND c.revision=? AND c.enabled=1 AND c.status='ready' AND t.name=? AND t.allowed=1`,
-		callID, tool.Name, tool.Version, now(), key, revision, tool.Name)
+WHERE c.id=? AND c.revision=? AND c.enabled=1 AND c.status='ready' AND t.name=? AND t.allowed=1 AND json_extract(t.definition,'$.version')=?`,
+		callID, tool.Name, tool.Version, now(), key, revision, tool.Name, tool.Version)
 	if err != nil {
 		return err
 	}

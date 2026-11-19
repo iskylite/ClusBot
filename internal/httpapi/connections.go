@@ -109,6 +109,11 @@ func (s Server) callConnectionTool(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if result.SourceUnavailable {
+		// Do not emit Result's zero-valued success/error flags for a private result.
+		jsonResponse(w, http.StatusOK, map[string]any{"id": result.ID, "received_at": result.ReceivedAt, "source_unavailable": true})
+		return
+	}
 	jsonResponse(w, 200, result)
 }
 

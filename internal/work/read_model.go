@@ -113,6 +113,9 @@ func (s *Store) streamWithTaskRead(ctx context.Context, runID string, started ti
 	if err != nil {
 		return TaskAnswer{}, err
 	}
+	if err = s.checkTaskReadModelAuthority(ctx, runID); err != nil {
+		return TaskAnswer{}, err
+	}
 	modelCtx, cancel = context.WithTimeoutCause(ctx, limits.ModelTimeout, errModelTimeout)
 	defer cancel()
 	answerLimit := limits.OutputTokens - planLimit

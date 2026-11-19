@@ -27,20 +27,21 @@ type TaskReadRequest struct {
 }
 
 type TaskRead struct {
-	Position       int               `json:"position"`
-	ConnectionName string            `json:"connection_name"`
-	ToolName       string            `json:"tool_name"`
-	ToolTitle      string            `json:"tool_title,omitempty"`
-	Status         string            `json:"status"`
-	Detail         string            `json:"detail,omitempty"`
-	ReceivedAt     int64             `json:"received_at,omitempty"`
-	Result         *mcpclient.Result `json:"result,omitempty"`
-	Acknowledged   bool              `json:"acknowledged,omitempty"`
-	SourceRunID    string            `json:"source_run_id,omitempty"`
-	request        TaskReadRequest
-	modelRound     int
-	modelOrder     int
-	modelCallID    string
+	Position          int               `json:"position"`
+	ConnectionName    string            `json:"connection_name"`
+	ToolName          string            `json:"tool_name"`
+	ToolTitle         string            `json:"tool_title,omitempty"`
+	Status            string            `json:"status"`
+	Detail            string            `json:"detail,omitempty"`
+	ReceivedAt        int64             `json:"received_at,omitempty"`
+	Result            *mcpclient.Result `json:"result,omitempty"`
+	SourceUnavailable bool              `json:"source_unavailable,omitempty"`
+	Acknowledged      bool              `json:"acknowledged,omitempty"`
+	SourceRunID       string            `json:"source_run_id,omitempty"`
+	request           TaskReadRequest
+	modelRound        int
+	modelOrder        int
+	modelCallID       string
 }
 
 type TaskToolOption struct {
@@ -113,16 +114,24 @@ VALUES(?,?,?,?,?,?,?,?,?)`, run.ID, position, request.ConnectionID, request.Revi
 const taskReadColumns = `position,coalesce(connection_id,''),connection_revision,connection_name,tool_name,tool_title,tool_version,arguments,status,detail,received_at,result,
 coalesce(model_round,0),model_order,coalesce(model_call_id,''),acknowledged_at<>0`
 
+func authorizedTaskReadColumns() string {
+	return taskReadColumns + `,connection_id IS NOT NULL AND NOT ` + exactMCPAuthority("run_reads")
+}
+
 func scanTaskRead(row scanner) (TaskRead, error) {
 	var read TaskRead
 	var args, result string
 	err := row.Scan(&read.Position, &read.request.ConnectionID, &read.request.Revision, &read.ConnectionName, &read.ToolName, &read.ToolTitle,
 		&read.request.ToolVersion, &args, &read.Status, &read.Detail, &read.ReceivedAt, &result,
-		&read.modelRound, &read.modelOrder, &read.modelCallID, &read.Acknowledged)
+		&read.modelRound, &read.modelOrder, &read.modelCallID, &read.Acknowledged, &read.SourceUnavailable)
 	if err != nil {
 		return read, err
 	}
 	read.request.ToolName = read.ToolName
+	if read.SourceUnavailable {
+		read.Detail = "原读取来源或授权已变更，结果不可查看"
+		return read, nil
+	}
 	if err = json.Unmarshal([]byte(args), &read.request.Arguments); err != nil {
 		return read, err
 	}
@@ -158,7 +167,10 @@ FROM runs r WHERE r.task_id=? AND r.id<>? ORDER BY r.rowid DESC LIMIT 1`, taskID
 	}
 	_, err = tx.Exec(`INSERT INTO run_reads(run_id,position,connection_id,connection_revision,connection_name,tool_name,tool_title,tool_version,arguments,status,call_id,received_at,result)
 SELECT ?,CASE WHEN ? THEN position ELSE row_number() OVER (ORDER BY position) END,
-connection_id,connection_revision,connection_name,tool_name,tool_title,tool_version,arguments,'reused',call_id,received_at,result
+connection_id,connection_revision,connection_name,tool_name,tool_title,tool_version,
+CASE WHEN connection_id IS NULL OR `+exactMCPAuthority("run_reads")+` THEN arguments ELSE '{}' END,
+'reused',call_id,received_at,
+CASE WHEN connection_id IS NULL OR `+exactMCPAuthority("run_reads")+` THEN result ELSE '' END
 FROM run_reads WHERE run_id=? AND status IN ('completed','reused')
 AND NOT EXISTS(SELECT 1 FROM run_read_checkpoints WHERE run_id=run_reads.run_id AND automatic_tools=1)`, runID, failureRunID != "", previous)
 	return err
@@ -170,7 +182,7 @@ type taskReadQuerier interface {
 }
 
 func listTaskReads(ctx context.Context, q taskReadQuerier, runID string) ([]TaskRead, error) {
-	rows, err := q.QueryContext(ctx, "SELECT "+taskReadColumns+" FROM run_reads WHERE run_id=? ORDER BY position", runID)
+	rows, err := q.QueryContext(ctx, "SELECT "+authorizedTaskReadColumns()+" FROM run_reads WHERE run_id=? ORDER BY position", runID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +196,22 @@ func listTaskReads(ctx context.Context, q taskReadQuerier, runID string) ([]Task
 		reads = append(reads, read)
 	}
 	return reads, rows.Err()
+}
+
+// Recheck persisted source identity immediately before building an outbound
+// model request. A completed/reused result is not new authorization to send it.
+func (s *Store) checkTaskReadModelAuthority(ctx context.Context, runID string) error {
+	var revoked bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM run_reads rr
+JOIN runs r ON r.id=?
+WHERE rr.connection_id IS NOT NULL
+AND (rr.run_id=r.id OR (rr.run_id=r.read_failure_run_id AND rr.status NOT IN ('completed','reused')
+AND EXISTS(SELECT 1 FROM runs prev WHERE prev.id=rr.run_id AND prev.task_id=r.task_id)))
+AND NOT `+exactMCPAuthority("rr")+`)`, runID).Scan(&revoked)
+	if err == nil && revoked {
+		return ErrReadNeedsSelection
+	}
+	return err
 }
 
 func listTaskReadEvidence(ctx context.Context, q taskReadQuerier, runID string) ([]TaskRead, error) {
@@ -222,7 +250,7 @@ func (s *Store) taskRead(ctx context.Context, runID string) (*TaskRead, error) {
 }
 
 func (s *Store) taskReadAt(ctx context.Context, runID string, position int) (*TaskRead, error) {
-	read, err := scanTaskRead(s.db.QueryRowContext(ctx, "SELECT "+taskReadColumns+" FROM run_reads WHERE run_id=? AND position=?", runID, position))
+	read, err := scanTaskRead(s.db.QueryRowContext(ctx, "SELECT "+authorizedTaskReadColumns()+" FROM run_reads WHERE run_id=? AND position=?", runID, position))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -260,6 +288,9 @@ func (s *Store) runTaskReadAt(ctx context.Context, runID string, position int) (
 	}
 	if read == nil {
 		return nil, ErrState
+	}
+	if read.SourceUnavailable && read.Status != "queued" {
+		return read, ErrToolPermission
 	}
 	if read.Status == "reused" {
 		return read, err

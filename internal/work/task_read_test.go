@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"clusbot/internal/mcpclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -99,6 +100,77 @@ func TestTaskReadBindsArgumentsAndReusesSavedResult(t *testing.T) {
 	if err != nil || len(retriedRun.Messages) != 0 || len(retriedRun.Reads) != 1 || retriedRun.Reads[0].Status != "reused" ||
 		retriedRun.InheritedInput == nil || retriedRun.InheritedInput.ID != firstRun.Messages[0].ID {
 		t.Fatalf("retried Run record: %+v, %v", retriedRun, err)
+	}
+}
+
+func TestTaskReadRevocationHidesHistoryAndBlocksAlreadyQueuedReuse(t *testing.T) {
+	ctx := context.Background()
+	store, read := taskReadFixture(t)
+	run, err := store.SubmitWithDelivery(ctx, "revocable-read", "整理样例状态", "", "", true, Delivery{Read: &read})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.claim(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := store.runTaskRead(ctx, run.ID); err != nil || result.Result == nil {
+		t.Fatalf("original authorized result: %+v, %v", result, err)
+	}
+	if err = store.finish(run, "failed", "本地测试模型失败", runAccounting{}); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := store.Detail(run.TaskID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := store.Resume(ctx, run.TaskID, "before-revocation", detail.Task.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetToolPermission(ctx, read.ConnectionID, read.ToolName, read.ToolVersion, read.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{run.ID, next.ID} {
+		record, err := store.RunRecord(ctx, id, run.TaskID)
+		if err != nil || len(record.Reads) != 1 || !record.Reads[0].SourceUnavailable ||
+			record.Reads[0].Result != nil || record.Reads[0].request.Arguments != nil {
+			t.Fatalf("private result or arguments remained visible: %+v, %v", record, err)
+		}
+	}
+	claimed, err := store.claim(ctx)
+	if err != nil || claimed.ID != next.ID {
+		t.Fatalf("wanted queued reuse: %+v, %v", claimed, err)
+	}
+	dispatched := false
+	store.execute(ctx, testProvider(func(context.Context, []Message, bool, int, func(string) error) (*TokenUsage, error) {
+		dispatched = true
+		return nil, errors.New("must not send revoked read to model")
+	}), claimed, RunLimits{OutputTokens: 64, ActiveTime: time.Minute, ModelTimeout: time.Minute})
+	if dispatched {
+		t.Fatal("old private result was still eligible for model context")
+	}
+	var settled, failure string
+	if err = store.db.QueryRowContext(ctx, "SELECT status,error FROM runs WHERE id=?", next.ID).Scan(&settled, &failure); err != nil ||
+		settled != "interrupted" || failure != ErrReadNeedsSelection.Error() {
+		t.Fatalf("run did not stop for explicit reselection: %s / %s / %v", settled, failure, err)
+	}
+	var original string
+	if err = store.db.QueryRowContext(ctx, "SELECT result FROM run_reads WHERE run_id=?", run.ID).Scan(&original); err != nil || original == "" {
+		t.Fatalf("stored original lost: %v", err)
+	}
+	var calls int
+	if err = store.db.QueryRowContext(ctx, "SELECT count(*) FROM connection_calls").Scan(&calls); err != nil || calls != 1 {
+		t.Fatalf("original tool was replayed: %d, %v", calls, err)
+	}
+	c, err := store.Connection(ctx, read.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.SetToolPermission(ctx, read.ConnectionID, read.ToolName, read.ToolVersion, c.Revision, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.checkTaskReadModelAuthority(ctx, next.ID); !errors.Is(err, ErrReadNeedsSelection) {
+		t.Fatalf("regrant restored old source authority: %v", err)
 	}
 }
 

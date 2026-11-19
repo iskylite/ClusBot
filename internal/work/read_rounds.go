@@ -239,6 +239,9 @@ func (s *Store) streamWithTaskReads(ctx context.Context, runID string, started t
 		if err = s.reserveReadRequest(ctx, runID, limit, time.Since(started)); err != nil {
 			return TaskAnswer{}, err
 		}
+		if err = s.checkTaskReadModelAuthority(ctx, runID); err != nil {
+			return TaskAnswer{}, err
+		}
 		modelCtx, cancel := context.WithTimeoutCause(ctx, limits.ModelTimeout, errModelTimeout)
 		var emitAnswer func(string) error
 		if answer {

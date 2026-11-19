@@ -133,6 +133,9 @@ func (s *Store) streamWithAutomaticTools(ctx context.Context, runID string, star
 		if err = s.reserveReadRequest(ctx, runID, limit, time.Since(started)); err != nil {
 			return TaskAnswer{}, err
 		}
+		if err = s.checkTaskReadModelAuthority(ctx, runID); err != nil {
+			return TaskAnswer{}, err
+		}
 		modelCtx, cancel := context.WithTimeoutCause(ctx, limits.ModelTimeout, errModelTimeout)
 		turn, err := model.TaskToolTurn(modelCtx, input, available, history, limit, func(text string) error {
 			return emit(modelCtx, text)
