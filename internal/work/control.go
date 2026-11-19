@@ -121,7 +121,29 @@ func (s *Store) resumeTask(ctx context.Context, taskID, requestKey string, revis
 	return run, tx.Commit()
 }
 
+var ErrBenchmarkRecoveryUnsupported = errors.New("基准任务不能用普通助手继续、重试或重新分派；请查看原作业对账，或另行提交新的基准任务")
+
+func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
+	var benchmark bool
+	if err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
+		return err
+	}
+	if benchmark {
+		return ErrBenchmarkRecoveryUnsupported
+	}
+	return nil
+}
+
+// CheckGenericTaskRecovery lets the HTTP entry point explain the domain guard
+// even when the personal model is unavailable. The write path checks again.
+func (s *Store) CheckGenericTaskRecovery(taskID string) error {
+	return requireGenericTaskRecovery(s.db, taskID)
+}
+
 func resumeTaskTx(tx *sql.Tx, taskID, requestKey string, revision int, action string) (Run, error) {
+	if err := requireGenericTaskRecovery(tx, taskID); err != nil {
+		return Run{}, err
+	}
 	retry := action == "retry"
 	fingerprint := digest(action + ":" + taskID)
 	var previous, previousRun string

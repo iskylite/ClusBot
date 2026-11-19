@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -291,6 +292,25 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 	}
 	run()
 	run()
+	checkRecoveryBlocked := func() {
+		t.Helper()
+		current, err := scanTask(s.db.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE id=?", task))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, attempt := range []func(context.Context, string, string, int) (Run, error){s.Resume, s.RetryTask, s.ReassignTask} {
+			if created, err := attempt(ctx, task, fmt.Sprintf("generic-recovery-%d", i), current.Revision); !errors.Is(err, ErrBenchmarkRecoveryUnsupported) || created.ID != "" {
+				t.Fatalf("generic recovery %d created a model run for the benchmark: %+v %v", i, created, err)
+			}
+		}
+		// Router's resume intent has the same transactional entry; a typed
+		// fake decision cannot create a model run for this domain task.
+		var n int
+		if err := s.db.QueryRow("SELECT count(*) FROM runs WHERE task_id=?", task).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("unexpected benchmark model run: %d %v", n, err)
+		}
+	}
+	checkRecoveryBlocked()
 	var holds int
 	if err = s.db.QueryRow("SELECT count(*) FROM benchmark_target_holds").Scan(&holds); err != nil || holds != 1 {
 		t.Fatalf("released hold before stop confirmed: %d %v", holds, err)
@@ -307,5 +327,19 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 	pg, err = s.BenchmarkProgress(ctx, actor, task)
 	if err != nil || pg.State != "cancelled" || provider.cancellations != 1 || !pg.StopRequested || len(pg.Cases) != 1 || pg.Cases[0].TargetHolds != 0 || pg.Cases[0].Wait == nil || pg.Cases[0].Wait.State != "closed" {
 		t.Fatalf("wrong stop outcome: %+v / %d, %v", pg, provider.cancellations, err)
+	}
+	checkRecoveryBlocked()
+	current, err := scanTask(s.db.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE id=?", task))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	decision := submissionClassification{DelegationResult: DelegationResult{Route: &RouteDecision{Kind: "resume", TaskID: task, Revision: current.Revision}}}
+	if _, err := submitWorkTx(ctx, tx, "router-benchmark-recovery", "fixture", "继续原基准", "", "", false, Delivery{}, &decision, nil); !errors.Is(err, ErrBenchmarkRecoveryUnsupported) {
+		t.Fatalf("router resume bypassed the benchmark guard: %v", err)
 	}
 }

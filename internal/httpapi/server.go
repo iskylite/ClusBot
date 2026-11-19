@@ -930,6 +930,8 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 502, "classification_unconfirmed", err.Error())
 	case errors.Is(err, work.ErrClassification):
 		fail(w, 502, "classification_failed", err.Error())
+	case errors.Is(err, work.ErrBenchmarkRecoveryUnsupported):
+		fail(w, 409, "benchmark_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrApprovalExpired):
 		fail(w, 409, "approval_expired", err.Error())
 	case errors.Is(err, mcpclient.ErrConfig), errors.Is(err, mcpclient.ErrArguments), errors.Is(err, mcpclient.ErrToolSchema), errors.Is(err, work.ErrReadSelection):
@@ -1000,6 +1002,10 @@ func (s Server) resume(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(in.RequestID) < 8 || len(in.RequestID) > 128 || (in.Retry && in.Reassign) {
 		fail(w, 400, "invalid_submission", "需要有效的请求标识")
+		return
+	}
+	if err := s.Store.CheckGenericTaskRecovery(r.PathValue("id")); err != nil {
+		writeError(w, err)
 		return
 	}
 	if !s.modelReady(w, r) {

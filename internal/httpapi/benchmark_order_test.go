@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -137,6 +139,49 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 		t.Fatalf("wrong empty no-model inventory: %+v %v", page, err)
 	}
 
+	// The domain-specific rejection takes precedence over an unrelated
+	// model setup error, both while stopping and once fully stopped.
+	assertRecoveryRejected := func(revision int) {
+		t.Helper()
+		for i, extra := range []string{"", `,"retry":true`, `,"reassign":true`} {
+			body := fmt.Sprintf(`{"revision":%d,"client_request_id":"benchmark-generic-recovery-%d"%s}`, revision, i, extra)
+			path := "/api/v1/tasks/" + id + "/resume"
+			if status, result := a.post(path, body); status != http.StatusConflict || result["code"] != "benchmark_recovery_unsupported" {
+				t.Fatalf("generic recovery %d was not rejected independently of model: %d %+v", i, status, result)
+			}
+		}
+	}
+	if status, out := a.post("/api/v1/tasks/"+id+"/cancel", `{"revision":1}`); status != http.StatusOK {
+		t.Fatalf("could not stop the queued benchmark through HTTP: %d %+v", status, out)
+	}
+	assertRecoveryRejected(1)
+	workerCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); a.store.RunBenchmarks(workerCtx, benchmarkReadProvider{}) }()
+	defer func() { cancel(); <-done }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		progress, err := a.store.BenchmarkProgress(ctx, actor, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if progress.State == "cancelled" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued cancellation did not settle: %+v", progress)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	detail, err := a.store.Detail(id, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertRecoveryRejected(detail.Task.Revision)
+	runs, err := a.store.TaskRuns(ctx, id, "")
+	if err != nil || len(runs.Items) != 0 {
+		t.Fatalf("domain stop/recovery created a generic model execution: %+v %v", runs, err)
+	}
 }
 
 func TestBenchmarkChatConfirmDoesNotAcceptClientPlan(t *testing.T) {
