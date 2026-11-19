@@ -91,4 +91,41 @@ func TestDiscoveryCandidateScopeIsolationAndLegacyProvenance(t *testing.T) {
 	scan(start+60000, "scan-a", "192.0.2.70")
 	scan(start+60001, "scan-b", "192.0.2.80")
 	raw("192.0.2.70")
+	for _, lane := range []struct{ actor, scope, current, prior string }{
+		{a, "POD7", "192.0.2.70", "192.0.2.7"}, {b, "POD8", "192.0.2.80", "192.0.2.8"},
+	} {
+		page, err := s.ListDiscoveryCandidateObservations(ctx, lane.actor, c.ID, "", 1)
+		if err != nil || len(page.Items) != 1 || page.Items[0].Address != lane.current || page.Items[0].Scope != lane.scope ||
+			page.Items[0].Source != "inventory-1" || page.Items[0].AddressConflictInScan || page.NextBefore == "" ||
+			page.EvidenceKind != "reported_addresses_only" {
+			t.Fatalf("timeline leaked cross-scope data or called a later address a conflict: %+v %v", page, err)
+		}
+		old, err := s.ListDiscoveryCandidateObservations(ctx, lane.actor, c.ID, page.NextBefore, 1)
+		if err != nil || len(old.Items) != 1 || old.NextBefore != "" || old.Items[0].Address != lane.prior ||
+			old.Items[0].AddressConflictInScan || old.Items[0].Scope != lane.scope {
+			t.Fatalf("wrong immutable timeline: %+v %v", old, err)
+		}
+	}
+	tick, claimed, err := s.claimDiscovery(ctx, f, start+120000)
+	if err != nil || !claimed || tick.plan != "scan-a" {
+		t.Fatalf("claim conflict scan: %+v %t %v", tick, claimed, err)
+	}
+	if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{"same-serial", "192.0.2.71"}, {"same-serial", "192.0.2.72"}}, nil, start+120000); err != nil {
+		t.Fatal(err)
+	}
+	both, err := s.ListDiscoveryCandidateObservations(ctx, a, c.ID, "", 2)
+	if err != nil || len(both.Items) != 2 || !both.Items[0].AddressConflictInScan || !both.Items[1].AddressConflictInScan ||
+		both.Items[0].Address == both.Items[1].Address || both.Items[0].ScanTaskID != tick.task || both.Items[1].ScanTaskID != tick.task || both.NextBefore == "" {
+		t.Fatalf("same scan's contradictory addresses hidden: %+v %v", both, err)
+	}
+	if _, err := s.db.Exec("UPDATE authorizations SET revoked_at=? WHERE subject=? AND action='discover'", now(), a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListDiscoveryCandidateObservations(ctx, a, c.ID, both.NextBefore, 2); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("revoked scope still accessible with old cursor: %v", err)
+	}
+	if _, err := s.ListDiscoveryCandidateObservations(ctx, "other", c.ID, "", 2); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign candidate disclosed: %v", err)
+	}
+
 }

@@ -94,3 +94,30 @@ func (s Server) discoveryObservationHistory(w http.ResponseWriter, r *http.Reque
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) discoveryCandidateObservations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	q := r.URL.Query()
+	limit := 25
+	if values, exists := q["limit"]; exists {
+		if len(values) != 1 {
+			discoveryError(w, work.ErrDiscoveryInput)
+			return
+		}
+		var err error
+		if limit, err = strconv.Atoi(values[0]); err != nil {
+			discoveryError(w, work.ErrDiscoveryInput)
+			return
+		}
+	}
+	if values, exists := q["before"]; exists && (len(values) != 1 || values[0] == "") {
+		discoveryError(w, work.ErrDiscoveryInput)
+		return
+	}
+	page, err := s.Store.ListDiscoveryCandidateObservations(r.Context(), s.principal(r), r.PathValue("id"), q.Get("before"), limit)
+	if err != nil {
+		discoveryError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, page)
+}
