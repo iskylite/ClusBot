@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBenchmarkConcurrentCapacityAndDurableHoldRecovery(t *testing.T) {
@@ -165,5 +166,124 @@ func TestBenchmarkConcurrentCapacityAndDurableHoldRecovery(t *testing.T) {
 	}
 	if p.started != 0 || p.looked != 0 || p.read != 0 {
 		t.Fatalf("test must not execute provider actions: %+v", p)
+	}
+}
+
+// This fake pauses after the claim transaction has read its candidate but
+// before it takes ownership. It never executes a provider operation.
+type benchmarkClaimBarrier struct {
+	benchFixtureProvider
+	entered chan<- struct{}
+	release <-chan struct{}
+}
+
+func (p *benchmarkClaimBarrier) Supports(binding BenchmarkBinding) bool {
+	p.entered <- struct{}{}
+	<-p.release
+	return p.benchFixtureProvider.Supports(binding)
+}
+
+func TestBenchmarkMultiStoreSameSnapshotDoesNotDoubleDispatch(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "shared-connection.sqlite")
+	a, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	const actor = "user:session"
+	binding := BenchmarkBinding{Connection: "bench-test", Revision: 1, Tool: "test", Validator: benchmarkValidatorV1}
+	grant := DomainBenchmarkGrant{Revision: 1, Connection: binding.Connection, Tool: binding.Tool, ExpiresAt: now() + 60000}
+	fixture := &benchFixtureProvider{}
+	for i, target := range []string{"node-shared", "node-free"} {
+		if err := a.ImportDomainAssets(ctx, []DomainAssetEntry{
+			{ObjectRef: target, Kind: "node", Identity: target, Benchmark: []DomainBenchmarkGrant{grant}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		spec := BenchmarkCase{Key: "case", Binding: binding, Targets: []string{target}, RequiredMetrics: map[string]string{"rate": "GB/s"}}
+		if err := a.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: target, Version: 1, Cases: []BenchmarkCase{spec}}); err != nil {
+			t.Fatal(err)
+		}
+		count := 1
+		if i == 0 {
+			count = 2
+		}
+		for j := 0; j < count; j++ {
+			task, err := a.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{fmt.Sprintf("%s-%d", target, j), target, 1}, fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := a.db.Exec("UPDATE benchmark_cases SET next_at=? WHERE task_id=?", i+1, task); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	type result struct {
+		s   *Store
+		d   benchmarkDispatch
+		ok  bool
+		err error
+	}
+	entered, release, outcomes := make(chan struct{}, 2), make(chan struct{}), make(chan result, 2)
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	stamp := now()
+	for _, store := range []*Store{a, b} {
+		go func() {
+			d, ok, err := store.claimBenchmark(ctx, &benchmarkClaimBarrier{entered: entered, release: release}, stamp)
+			outcomes <- result{store, d, ok, err}
+		}()
+	}
+	deadline := time.After(5 * time.Second)
+	for range 2 {
+		select {
+		case <-entered:
+		case <-deadline:
+			t.Fatal("both stores must read the same unclaimed SQLite snapshot")
+		}
+	}
+	releaseOnce()
+	var winner, loser result
+	for range 2 {
+		got := <-outcomes
+		if got.err == nil {
+			if winner.s != nil || !got.ok || got.d.action != "start" || got.d.request.Targets[0] != "node-shared" {
+				t.Fatalf("more than one winner or out-of-order dispatch: %+v", got)
+			}
+			winner = got
+		} else {
+			// SQLite rejects promotion of the other reader's stale snapshot.
+			// No provider operation was returned from the failed transaction.
+			var sqlite interface{ Code() int }
+			if !errors.As(got.err, &sqlite) || sqlite.Code()&0xff != 5 || loser.s != nil {
+				t.Fatalf("expected one SQLITE_BUSY-family contention rejection: %+v", got)
+			}
+			loser = got
+		}
+	}
+	if winner.s == nil || loser.s == nil {
+		t.Fatal("expected exactly one durable winner and one blocked writer")
+	}
+	var holds, ops int
+	if err := loser.s.db.QueryRow("SELECT (SELECT count(*) FROM benchmark_target_holds),(SELECT count(*) FROM operations)").Scan(&holds, &ops); err != nil ||
+		holds != 1 || ops != 1 {
+		t.Fatalf("other connection observed duplicate/partial transaction: holds=%d ops=%d err=%v", holds, ops, err)
+	}
+	d, ok, err := loser.s.claimBenchmark(ctx, fixture, stamp)
+	if err != nil || !ok || !d.deferredForHold || d.action != "" {
+		t.Fatalf("fresh snapshot must defer same target after winner: %+v %t %v", d, ok, err)
+	}
+	d, ok, err = loser.s.claimBenchmark(ctx, fixture, stamp)
+	if err != nil || !ok || d.action != "start" || d.operation == winner.d.operation || d.request.Targets[0] != "node-free" {
+		t.Fatalf("contended connection failed to move disjoint target: %+v %t %v", d, ok, err)
+	}
+	if fixture.started != 0 || fixture.looked != 0 || fixture.read != 0 {
+		t.Fatal("the test must not run provider actions")
 	}
 }
