@@ -409,6 +409,9 @@ func (l *RuntimeLoop) tick(ctx context.Context) {
 	if _, err := scanDueSchedules(l.store.db, now, 20); err != nil {
 		l.recordFailure()
 	}
+	if err := l.store.reclaimExpiredEmbeddedReads(ctx, now); err != nil {
+		l.recordFailure()
+	}
 	// 就绪单元核对（依赖与合同版本）。
 	if _, err := l.store.computeAllReadyUnits(ctx); err != nil {
 		l.recordFailure()

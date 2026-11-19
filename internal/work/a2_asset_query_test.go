@@ -12,6 +12,7 @@ package work
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -314,5 +315,121 @@ VALUES('old','node-1','in_service',1,1)`); err != nil {
 	p, err := queryAssetAcceptance(s.db, "node-1")
 	if err != nil || p.InService || p.State != "待交付" || len(p.DeliveryStages) != 1 {
 		t.Fatalf("current and historical status: %+v %v", p, err)
+	}
+}
+
+func TestA2LiveRuntimeReclaimsSaturatedEmbeddedReaders(t *testing.T) {
+	ctx := t.Context()
+	s := setupA2(t, "a2-live-lease.db")
+	reader, err := s.EnableAssetAcceptanceQuery(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := now()
+	loop := NewRuntimeLoop(s, func() bool { return false })
+	type leaseAndTask struct {
+		claim ClaimResult
+		task  string
+	}
+	var due []leaseAndTask
+	for i := 0; i < embeddedReadReclaimBatch+2; i++ {
+		task, err := s.SubmitAssetAcceptanceQuery(ctx, fmt.Sprintf("live-expired-%03d", i), "node-1", "user:session")
+		if err != nil {
+			t.Fatal(err)
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		claim, err := claimWorkUnit(tx, ClaimRequest{WorkerID: reader.workerID, Credential: reader.credential, Kind: WorkUnitDeterministic, LeaseTTL: 30000, QuotaAvailable: true}, now())
+		if err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if _, err = tx.Exec("UPDATE work_units SET state='running' WHERE unit_id=?", claim.Unit.UnitID); err != nil {
+			tx.Rollback()
+			t.Fatal(err)
+		}
+		if i != embeddedReadReclaimBatch+1 {
+			if _, err = tx.Exec("UPDATE work_leases SET lease_until=? WHERE lease_id=?", stamp+int64(i)-5000, claim.Lease.LeaseID); err != nil {
+				tx.Rollback()
+				t.Fatal(err)
+			}
+			due = append(due, leaseAndTask{claim, task.TaskID})
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A host worker can have other records, including future external actions.
+	// The live read reclaimer must never make them dispatchable.
+	last := due[len(due)-1]
+	if _, err := s.db.Exec("UPDATE work_units SET kind='action' WHERE unit_id=?", last.claim.Unit.UnitID); err != nil {
+		t.Fatal(err)
+	}
+	due = due[:len(due)-1]
+	// Add one more eligible expired reader to require a second batch.
+	extra, err := s.SubmitAssetAcceptanceQuery(ctx, "next-full-batch", "node-1", "user:session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := claimWorkUnit(tx, ClaimRequest{WorkerID: reader.workerID, Credential: reader.credential, Kind: WorkUnitDeterministic, LeaseTTL: 30000, QuotaAvailable: true}, now())
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("UPDATE work_leases SET lease_until=? WHERE lease_id=?", stamp-1, next.Lease.LeaseID); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	checkReady := func(want int) {
+		t.Helper()
+		var got int
+		if err := s.db.QueryRow("SELECT count(*) FROM work_units WHERE kind='deterministic' AND state='ready'").Scan(&got); err != nil || got != want {
+			t.Fatalf("ready=%d want=%d err=%v", got, want, err)
+		}
+	}
+	loop.tick(ctx)
+	checkReady(embeddedReadReclaimBatch)
+	loop.tick(ctx)
+	checkReady(embeddedReadReclaimBatch + 1)
+	loop.tick(ctx) // no eligible rows: no audit or new lease generation
+	var audited int
+	if err := s.db.QueryRow("SELECT count(*) FROM runtime_audit WHERE event='embedded_read_lease_reclaimed'").Scan(&audited); err != nil || audited != embeddedReadReclaimBatch+1 {
+		t.Fatalf("empty tick duplicated reclaim or audit: %d %v", audited, err)
+	}
+	var leaseGeneration, unitGeneration int
+	if err := s.db.QueryRow(`SELECT l.lease_generation,u.lease_generation FROM work_leases l JOIN work_units u ON u.unit_id=l.unit_id
+WHERE l.lease_id=? AND l.state='reclaimed' AND u.state='ready'`, due[0].claim.Lease.LeaseID).Scan(&leaseGeneration, &unitGeneration); err != nil ||
+		leaseGeneration != due[0].claim.Lease.LeaseGeneration || unitGeneration != leaseGeneration {
+		t.Fatalf("reclaim changed execution identity: %d %d %v", leaseGeneration, unitGeneration, err)
+	}
+	var still string
+	if err := s.db.QueryRow("SELECT state FROM work_leases WHERE lease_id=?", last.claim.Lease.LeaseID).Scan(&still); err != nil || still != "active" {
+		t.Fatalf("external action lease automatically released: %s %v", still, err)
+	}
+	// A stale result from the original lease cannot finish the recovered task.
+	if err := reader.completeClaimed(ctx, due[0].claim, DeterministicResult{Summary: "stale reply"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	unread, err := s.ReadAssetAcceptanceQuery(ctx, due[0].task, "user:session")
+	if err != nil || unread.Done {
+		t.Fatalf("stale reader completed the task: %+v %v", unread, err)
+	}
+	for range embeddedReadReclaimBatch + 1 {
+		if worked, err := reader.RunOnce(ctx); !worked || err != nil {
+			t.Fatalf("recovered work not consumed: %t %v", worked, err)
+		}
+	}
+	fresh, err := s.ReadAssetAcceptanceQuery(ctx, extra.TaskID, "user:session")
+	if err != nil || !fresh.Done || fresh.Result == nil {
+		t.Fatalf("later saturated task did not finish: %+v %v", fresh, err)
 	}
 }
