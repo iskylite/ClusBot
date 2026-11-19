@@ -87,6 +87,19 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 		t.Fatal(err)
 	}
 	read(stamp+100, "acknowledged", "open") // no replay
+	for _, subject := range []string{actor, "another:actor"} {
+		page, err := s.ListAttention(ctx, subject, stamp+200, 5, AttentionCursor{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if subject == actor {
+			if len(page.Items) != 1 || page.Items[0].Kind != "benchmark_wait" || page.Items[0].State != "result_pending" || page.Items[0].TaskID != task {
+				t.Fatalf("benchmark timeout projection: %+v", page)
+			}
+		} else if len(page.Items) != 0 {
+			t.Fatalf("foreign benchmark appeared in attention: %+v", page)
+		}
+	}
 	if p.started != 1 || p.looked != 0 || p.read != 0 {
 		t.Fatalf("scheduling directly called provider: %+v", p)
 	}
@@ -104,5 +117,9 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 	}
 	if err := s.db.QueryRow("SELECT state FROM waits WHERE task_id=?", task).Scan(&wait); err != nil || wait != "closed" {
 		t.Fatalf("provider result did not resolve wait: %s %v", wait, err)
+	}
+	page, err := s.ListAttention(ctx, actor, now(), 5, AttentionCursor{})
+	if err != nil || len(page.Items) != 0 {
+		t.Fatalf("resolved wait still appears as pending: %+v %v", page, err)
 	}
 }
