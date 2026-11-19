@@ -13,6 +13,10 @@ import (
 const benchmarkCallTimeout = 10 * time.Second
 const benchmarkClaimMS = int64(30000)
 
+// A tick may defer this many busy queue entries but never starts more than
+// one provider call. A finite budget also bounds returned work on busy queues.
+const benchmarkScanBudget = 16
+
 // This is a one-shot query recheck, not a remote execution limit.
 const benchmarkWaitRecheckMS = int64((5 * time.Minute) / time.Millisecond)
 
@@ -21,6 +25,7 @@ type benchmarkDispatch struct {
 	spec                                      BenchmarkCase
 	step, task, actor, operation, job, action string
 	generation                                int
+	deferredForHold                           bool
 }
 
 func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider) (bool, error) {
@@ -33,9 +38,26 @@ func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider
 	if err := s.applyBenchmarkHints(ctx, now()); err != nil {
 		return false, err
 	}
-	d, worked, err := s.claimBenchmark(ctx, provider, now())
-	if err != nil || !worked || d.action == "" {
-		return worked, err
+	// A fixed cutoff excludes entries just deferred in this same tick.
+	// Each new transaction still checks live expiry/authorization against
+	// its own clock and issues only the original kind of provider action.
+	cutoff := now()
+	var d benchmarkDispatch
+	var worked bool
+	var err error
+	for i := 0; i < benchmarkScanBudget; i++ {
+		var selected bool
+		d, selected, err = s.claimBenchmarkDue(ctx, provider, cutoff, now())
+		worked = worked || selected
+		if err != nil || !selected {
+			return worked, err
+		}
+		if !d.deferredForHold {
+			break
+		}
+	}
+	if d.action == "" {
+		return worked, nil
 	}
 	call, cancel := context.WithTimeout(ctx, benchmarkCallTimeout)
 	defer cancel()
@@ -57,6 +79,10 @@ func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider
 }
 
 func (s *Store) claimBenchmark(ctx context.Context, provider BenchmarkProvider, stamp int64) (benchmarkDispatch, bool, error) {
+	return s.claimBenchmarkDue(ctx, provider, stamp, stamp)
+}
+
+func (s *Store) claimBenchmarkDue(ctx context.Context, provider BenchmarkProvider, cutoff, stamp int64) (benchmarkDispatch, bool, error) {
 	var d benchmarkDispatch
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -77,7 +103,7 @@ WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
       WHERE e.step_id=b.step_id AND p.phase NOT IN ('verified','incomplete','skipped')
     ))
   )))
-ORDER BY b.next_at, r.created_at, s.position, b.step_id LIMIT 1`, stamp).
+ORDER BY b.next_at, r.created_at, s.position, b.step_id LIMIT 1`, cutoff).
 		Scan(&d.step, &d.task, &d.actor, &profile, &version, &phase, &d.operation, &d.job, &d.generation, &d.request.Case, &targetsRaw, &authsRaw, &stopping, &cancelSent, &caseSpec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, false, nil
@@ -154,6 +180,7 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				return d, false, holdErr
 			}
 			if held {
+				d.deferredForHold = true
 				_, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+1000, d.step)
 				if err != nil {
 					return d, false, err
