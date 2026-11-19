@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"clusbot/internal/work"
@@ -47,4 +48,22 @@ func (s Server) proposeBenchmarkRevision(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	jsonResponse(w, http.StatusOK, proposal)
+}
+
+func (s Server) proposeBenchmarkRevisionAI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var input work.BenchmarkRevisionAIInput
+	if !decode(w, r, &input) {
+		return
+	}
+	result, err := s.Store.ProposeBenchmarkRevisionAI(r.Context(), s.principal(r), r.PathValue("id"), input, s.BenchmarkProvider, s.Settings.InterpretBenchmarkRevision)
+	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
+		fail(w, http.StatusBadGateway, "benchmark_revision_model_failed", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, result)
 }

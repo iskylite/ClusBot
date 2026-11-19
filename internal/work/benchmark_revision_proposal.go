@@ -56,20 +56,32 @@ func parseBenchmarkRevisionText(text string) (BenchmarkRevisionIntent, error) {
 // The preview is ephemeral: apply must still recheck the expected revision,
 // authorization and whether the job has already crossed the dispatch boundary.
 func (s *Store) ProposeBenchmarkRevision(ctx context.Context, actor, task string, input BenchmarkRevisionProposalInput, provider BenchmarkProvider) (BenchmarkRevisionProposal, error) {
-	if input.ExpectedRevision < 1 {
-		return BenchmarkRevisionProposal{}, ErrBenchmarkInput
-	}
-	current, err := s.ReadBenchmarkRevision(ctx, actor, task, 0)
+	current, err := s.benchmarkRevisionProposalBase(ctx, actor, task, input.ExpectedRevision)
 	if err != nil {
 		return BenchmarkRevisionProposal{}, err
-	}
-	if input.ExpectedRevision != current.Revision {
-		return BenchmarkRevisionProposal{}, fmt.Errorf("%w：当前测试方案修订为 %d", ErrTaskRevision, current.Revision)
 	}
 	intent, err := parseBenchmarkRevisionText(input.Text)
 	if err != nil {
 		return BenchmarkRevisionProposal{}, err
 	}
+	return s.previewBenchmarkRevisionIntent(ctx, actor, task, current, intent, provider, "explicit_shortcut")
+}
+
+func (s *Store) benchmarkRevisionProposalBase(ctx context.Context, actor, task string, expected int) (BenchmarkRevision, error) {
+	if expected < 1 {
+		return BenchmarkRevision{}, ErrBenchmarkInput
+	}
+	current, err := s.ReadBenchmarkRevision(ctx, actor, task, 0)
+	if err != nil {
+		return BenchmarkRevision{}, err
+	}
+	if expected != current.Revision {
+		return BenchmarkRevision{}, fmt.Errorf("%w：当前测试方案修订为 %d", ErrTaskRevision, current.Revision)
+	}
+	return current, nil
+}
+
+func (s *Store) previewBenchmarkRevisionIntent(ctx context.Context, actor, task string, current BenchmarkRevision, intent BenchmarkRevisionIntent, provider BenchmarkProvider, method string) (BenchmarkRevisionProposal, error) {
 	cases := slices.Clone(current.Profile.Cases)
 	index := slices.IndexFunc(cases, func(c BenchmarkCase) bool { return c.Key == intent.CaseKey })
 	if index < 0 {
@@ -97,10 +109,10 @@ func (s *Store) ProposeBenchmarkRevision(ctx context.Context, actor, task string
 		}
 	}
 	preview, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{
-		ExpectedRevision: input.ExpectedRevision, Cases: cases,
+		ExpectedRevision: current.Revision, Cases: cases,
 	}, provider, false)
 	if err != nil {
 		return BenchmarkRevisionProposal{}, err
 	}
-	return BenchmarkRevisionProposal{Method: "explicit_shortcut", State: "preview_only", ExpectedRevision: input.ExpectedRevision, Interpretation: intent, Preview: preview}, nil
+	return BenchmarkRevisionProposal{Method: method, State: "preview_only", ExpectedRevision: current.Revision, Interpretation: intent, Preview: preview}, nil
 }

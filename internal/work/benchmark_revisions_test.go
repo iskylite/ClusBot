@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,67 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 	if _, err := s.ProposeBenchmarkRevision(ctx, actor, task, BenchmarkRevisionProposalInput{ExpectedRevision: 7, Text: "移除测试项 third"}, provider); !errors.Is(err, ErrTaskRevision) {
 		t.Fatalf("stale proposal base accepted: %v", err)
 	}
+	const spoken = "第二项的卡数降到32，实际验收也按这个数"
+	modelInput := BenchmarkRevisionAIInput{BenchmarkRevisionProposalInput: BenchmarkRevisionProposalInput{ExpectedRevision: 1, Text: spoken}, AllowExpectedActualChange: true}
+	var modelCalls int
+	interpret := func(raw string) BenchmarkRevisionModel {
+		return func(_ context.Context, input BenchmarkRevisionModelInput, limit int) (string, error) {
+			modelCalls++
+			if input.Text != spoken || limit < 32 || limit > 512 || len(input.Cases) != 2 ||
+				input.Cases[0].Key != "second" || input.Cases[1].Key != "third" || len(input.Cases[0].Parameters) != 1 ||
+				input.Cases[0].Parameters[0].Key != "gpu_count" {
+				t.Fatalf("unscoped model input: %+v, tokens=%d", input, limit)
+			}
+			return raw, nil
+		}
+	}
+	const answer = `{"action":"set_parameter","case_key":"second","parameter":"gpu_count","value":"32","change_expected_actual_config":true,"quote":"第二项的卡数降到32，实际验收也按这个数"}`
+	ai, err := s.ProposeBenchmarkRevisionAI(ctx, actor, task, modelInput, provider, interpret(answer))
+	if err != nil || ai.Method != "model_interpreted" || ai.State != "preview_only" ||
+		ai.Preview.Profile.Cases[1].Parameters["gpu_count"] != "32" || ai.Preview.Profile.Cases[1].ActualConfig["gpu_count"] != "32" {
+		t.Fatalf("unstructured language did not produce validated candidate: %+v %v", ai, err)
+	}
+	for _, tc := range []struct {
+		raw  string
+		want error
+	}{
+		{"[" + answer + "]", ErrBenchmarkRevisionModel},
+		{answer + answer, ErrBenchmarkRevisionModel},
+		{`{"action":"clarify","action":"clarify"}`, ErrBenchmarkRevisionModel},
+		{answer[:len(answer)-1] + `,"target":"outside"}`, ErrBenchmarkRevisionModel},
+		{strings.Replace(answer, spoken, "模型添加的内容", 1), ErrBenchmarkRevisionModel},
+		{`{"action":"clarify"}`, ErrBenchmarkInput},
+		{strings.Replace(answer, "second", "first", 1), ErrBenchmarkInput},
+		{strings.Replace(answer, `"value":"32"`, `"value":"2"`, 1), ErrBenchmarkRevisionModel},
+	} {
+		if _, err := s.ProposeBenchmarkRevisionAI(ctx, actor, task, modelInput, provider, interpret(tc.raw)); !errors.Is(err, tc.want) {
+			t.Fatalf("unsafe model output %q: %v want %v", tc.raw, err, tc.want)
+		}
+	}
+	unauthorized := modelInput
+	unauthorized.Text = "第二项的卡数降到72，实际验收也按这个数"
+	if _, err := s.ProposeBenchmarkRevisionAI(ctx, actor, task, unauthorized, provider,
+		func(_ context.Context, _ BenchmarkRevisionModelInput, _ int) (string, error) {
+			return strings.ReplaceAll(answer, "32", "72"), nil
+		}); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("model bypassed authorization: %v", err)
+	}
+
+	unconfirmed := modelInput
+	unconfirmed.AllowExpectedActualChange = false
+	if _, err := s.ProposeBenchmarkRevisionAI(ctx, actor, task, unconfirmed, provider, interpret(answer)); !errors.Is(err, ErrBenchmarkInput) {
+		t.Fatalf("model self-authorized changing required actual configuration: %v", err)
+	}
+	callsBefore := modelCalls
+	if _, err := s.ProposeBenchmarkRevisionAI(ctx, "foreign", task, modelInput, provider, interpret(answer)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign AI proposal: %v", err)
+	}
+	stale := modelInput
+	stale.ExpectedRevision = 20
+	if _, err := s.ProposeBenchmarkRevisionAI(ctx, actor, task, stale, provider, interpret(answer)); !errors.Is(err, ErrTaskRevision) || modelCalls != callsBefore {
+		t.Fatalf("stale/foreign sent to model: %v (%d calls vs %d)", err, modelCalls, callsBefore)
+	}
+
 	var savedRevisions int
 	if err := s.db.QueryRow("SELECT count(*) FROM benchmark_run_revisions WHERE task_id=?", task).Scan(&savedRevisions); err != nil || savedRevisions != 0 {
 		t.Fatalf("preview persisted a revision: %d %v", savedRevisions, err)
@@ -141,10 +203,20 @@ func TestBenchmarkRevisionPreservesDispatchedCase(t *testing.T) {
 	if err := try(first, other); !errors.Is(err, ErrAuthorizationDenied) {
 		t.Fatalf("allowed scope expansion: %v", err)
 	}
-	saved, err := s.ReviseBenchmark(ctx, actor, task, req, provider, true)
-	if err != nil || saved.Revision != 2 {
-		t.Fatalf("revision apply: %+v %v", saved, err)
+	var saved BenchmarkRevision
+	_, err = s.ProposeBenchmarkRevisionAI(ctx, actor, task, modelInput, provider,
+		func(_ context.Context, _ BenchmarkRevisionModelInput, _ int) (string, error) {
+			var applyErr error
+			saved, applyErr = s.ReviseBenchmark(ctx, actor, task, req, provider, true)
+			if applyErr != nil || saved.Revision != 2 {
+				t.Fatalf("independent revision applied while model active: %+v %v", saved, applyErr)
+			}
+			return answer, nil
+		})
+	if !errors.Is(err, ErrTaskRevision) {
+		t.Fatalf("model answer survived a changed durable revision: %v", err)
 	}
+
 	if _, err := s.ReviseBenchmark(ctx, actor, task, BenchmarkRevisionInput{ExpectedRevision: 1, RequestKey: "other-edit", Cases: req.Cases}, provider, true); !errors.Is(err, ErrTaskRevision) {
 		t.Fatalf("accepted concurrent stale edit: %v", err)
 	}
