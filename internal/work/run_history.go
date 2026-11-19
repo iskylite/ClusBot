@@ -42,6 +42,7 @@ type RunContext struct {
 	PreviousRevision     int64           `json:"previous_revision"`
 	ControlRevision      int             `json:"control_revision"`
 	Manifest             json.RawMessage `json:"manifest"`
+	ModelReceipt         *ModelReceipt   `json:"model_receipt,omitempty"`
 }
 
 func (s *Store) TaskRuns(ctx context.Context, taskID, after string) (RunPage, error) {
@@ -126,15 +127,20 @@ ORDER BY seq DESC LIMIT 1`, record.ConversationID, record.ConversationID, runID)
 		return RunRecord{}, err
 	}
 	record.Contexts, err = scanRunRecords(ctx, tx, `SELECT m.generation,b.task_revision,b.assignment_generation,
-coalesce(a.worker_role,''),m.assembled_at,m.previous_revision,m.control_revision,m.manifest
+coalesce(a.worker_role,''),m.assembled_at,m.previous_revision,m.control_revision,m.manifest,coalesce(mr.protocol,''),coalesce(mr.state,''),coalesce(mr.reported_model,'')
 FROM context_manifests m JOIN run_bindings b ON b.run_id=m.run_id AND b.generation=m.generation
 LEFT JOIN assignments a ON a.task_id=b.task_id AND a.generation=b.assignment_generation
+LEFT JOIN model_receipts mr ON mr.manifest_id=m.id
 WHERE m.run_id=? ORDER BY m.id DESC LIMIT 32`, runID, func(row scanner) (RunContext, error) {
 		var entry RunContext
 		var payload string
+		var receipt ModelReceipt
 		err := row.Scan(&entry.Generation, &entry.TaskRevision, &entry.AssignmentGeneration, &entry.WorkerRole,
-			&entry.RecordedAt, &entry.PreviousRevision, &entry.ControlRevision, &payload)
+			&entry.RecordedAt, &entry.PreviousRevision, &entry.ControlRevision, &payload, &receipt.Protocol, &receipt.State, &receipt.ReportedModel)
 		entry.Manifest = json.RawMessage(payload)
+		if receipt.State != "" {
+			entry.ModelReceipt = &receipt
+		}
 		return entry, err
 	})
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -351,5 +352,112 @@ func TestRequestStreamExhaustsRetriesOnPersistentServerError(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&calls); got != maxSendAttempts {
 		t.Fatalf("attempts = %d, want %d", got, maxSendAttempts)
+	}
+}
+
+func TestRunnerModelProvenanceOnTerminalSSE(t *testing.T) {
+	const alias, actual, token = "requested-alias", "vendor/model-2026", "private-fixture-value"
+	for _, tc := range []struct {
+		name, protocol, stream, state, reported string
+		retry                                   bool
+	}{
+		{"responses-divergent", ProtocolResponses, `{"type":"response.completed","response":{"model":"vendor/model-2026"}}`, "reported", actual, true},
+		{"responses-omitted", ProtocolResponses, `{"type":"response.created","response":{"model":"not-a-terminal-value"}}|{"type":"response.completed"}`, "not_reported", "", false},
+		{"responses-token-echo", ProtocolResponses, `{"type":"response.completed","response":{"model":"private-fixture-value"}}`, "not_reported", "", false},
+		{"chat-divergent-repeated", ProtocolChat, `{"model":"vendor/model-2026","choices":[{"delta":{"content":"答案"}}]}|{"model":"vendor/model-2026","choices":[{"finish_reason":"stop"}]}|[DONE]`, "reported", actual, false},
+		{"chat-conflicting", ProtocolChat, `{"model":"vendor/model-2026","choices":[{"delta":{"content":"答案"}}]}|{"model":"vendor/other","choices":[{"finish_reason":"stop"}]}|[DONE]`, "conflicting", "", false},
+		{"chat-omitted", ProtocolChat, `{"choices":[{"delta":{"content":"答案"}}]}|{"choices":[{"finish_reason":"stop"}]}|[DONE]`, "not_reported", "", false},
+		{"chat-truncated", ProtocolChat, `{"model":"vendor/model-2026","choices":[{"delta":{"content":"答案"}}]}`, "", "", false},
+		{"responses-failed", ProtocolResponses, `{"type":"response.failed","response":{"model":"vendor/model-2026"}}`, "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct{ Model string }
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Model != alias {
+					t.Errorf("request model=%q: %v", request.Model, err)
+				}
+				if calls.Add(1) == 1 && tc.retry {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				if tc.protocol == ProtocolResponses {
+					io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"答案"}`+"\n\n")
+				}
+				for _, chunk := range strings.Split(tc.stream, "|") {
+					io.WriteString(w, "data: "+chunk+"\n\n")
+				}
+			}))
+			defer server.Close()
+			p, err := NewProvider(server.URL+"/v1", alias, token, tc.protocol)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "runner-model-receipt.sqlite")
+			s, err := work.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if s != nil {
+					s.Close()
+				}
+			}()
+			run, err := s.Submit(t.Context(), "model-receipt", "请回答", "", "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			workers := s.Start(ctx, p, 1, work.RunLimits{ActiveTime: 3 * time.Second, ModelTimeout: 2 * time.Second, OutputTokens: 128})
+			defer func() { cancel(); workers.Wait() }()
+			for {
+				state, err := s.RunRecord(ctx, run.ID, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state.Status != "queued" && state.Status != "running" {
+					break
+				}
+				select {
+				case <-time.After(10 * time.Millisecond):
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+			cancel()
+			workers.Wait()
+			if err := s.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s, err = work.Open(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := s.RunRecord(t.Context(), run.ID, "")
+			if err != nil || len(record.Contexts) != 1 {
+				t.Fatalf("persisted context count: %d %v", len(record.Contexts), err)
+			}
+			entry := record.Contexts[0]
+			var manifest work.ManifestRequest
+			if err := json.Unmarshal(entry.Manifest, &manifest); err != nil || manifest.RequestedModel != alias || strings.Contains(string(entry.Manifest), token) {
+				t.Fatalf("bad manifest model: %q %v", manifest.RequestedModel, err)
+			}
+			if tc.state == "" {
+				if entry.ModelReceipt != nil {
+					t.Fatalf("nonterminal stream wrote a receipt: %+v", entry.ModelReceipt)
+				}
+			} else if entry.ModelReceipt == nil || entry.ModelReceipt.State != tc.state || entry.ModelReceipt.Protocol != tc.protocol ||
+				entry.ModelReceipt.ReportedModel != tc.reported {
+				t.Fatalf("unexpected provenance: %+v", entry.ModelReceipt)
+			}
+			wantCalls := int64(1)
+			if tc.retry {
+				wantCalls++
+			}
+			if calls.Load() != wantCalls {
+				t.Fatalf("provider round trip count: %d, expected %d", calls.Load(), wantCalls)
+			}
+		})
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -91,6 +92,9 @@ type responseRequest struct {
 }
 
 type responseData struct {
+	Model             json.RawMessage `json:"model"`
+	reportedModel     string
+	modelConflict     bool
 	Usage             *work.TokenUsage        `json:"usage"`
 	Output            []json.RawMessage       `json:"output"`
 	IncompleteDetails struct{ Reason string } `json:"incomplete_details"`
@@ -261,7 +265,8 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 	// Record the manifest once per logical request, before any attempt. Retries
 	// below re-send the same bytes, so a manifest per attempt would duplicate the
 	// audit record and break the single-write-entry contract of context_manifests.
-	if err := recordModelManifest(ctx, p, request, originalInput, body); err != nil {
+	recordReceipt, err := recordModelManifest(ctx, p, request, originalInput, body)
+	if err != nil {
 		return responseData{}, err
 	}
 	res, err := p.sendWithRetry(ctx, body, request.noRetry)
@@ -279,10 +284,27 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 		}
 		return responseData{}, responseHTTPError(res.StatusCode)
 	}
+	var result responseData
 	if p.protocol == ProtocolChat {
-		return readChatStream(res.Body, emit)
+		result, err = readChatStream(res.Body, emit)
+	} else {
+		result, err = readResponsesStream(res.Body, len(request.Tools) > 0, emit)
+		result.observeModel(result.Model)
 	}
-	return readResponsesStream(res.Body, len(request.Tools) > 0, emit)
+	if err == nil && ctx.Err() == nil && recordReceipt != nil {
+		receipt := work.ModelReceipt{Protocol: p.protocol, State: "not_reported"}
+		if result.modelConflict {
+			receipt.State = "conflicting"
+		} else if acceptableReceiptModel(result.reportedModel, p.key) {
+			receipt.State, receipt.ReportedModel = "reported", result.reportedModel
+		}
+		if recordErr := recordReceipt(ctx, receipt); recordErr != nil {
+			// Receipt persistence is observational: never reissue a model call
+			// or manufacture a receipt due to local storage unavailability.
+			slog.Warn("model receipt persistence unavailable")
+		}
+	}
+	return result, err
 }
 
 // Retry attempts and backoff bound transient model-provider failures. Only
@@ -541,7 +563,24 @@ func boundedModelRequest(request *responseRequest, limit int, contextTokens *int
 	return nil, work.ErrModelRequestBudget
 }
 
-func recordModelManifest(ctx context.Context, p *Provider, request responseRequest, original []any, body []byte) error {
+func acceptableReceiptModel(model, credential string) bool {
+	return work.ValidModelReceiptIdentifier(model) &&
+		(credential == "" || (model != credential && (len(credential) < 8 || !strings.Contains(model, credential))))
+}
+
+func (r *responseData) observeModel(raw json.RawMessage) {
+	var model string
+	if json.Unmarshal(raw, &model) != nil || !work.ValidModelReceiptIdentifier(model) {
+		return
+	}
+	if r.reportedModel == "" {
+		r.reportedModel = model
+	} else if r.reportedModel != model {
+		r.modelConflict = true
+	}
+}
+
+func recordModelManifest(ctx context.Context, p *Provider, request responseRequest, original []any, body []byte) (work.ModelReceiptWriter, error) {
 	binding, _ := p.ReadCheckpointIdentity()
 	manifest := work.ManifestRequest{
 		Materials: make(map[string]string), Memories: make(map[string]int),
@@ -550,6 +589,9 @@ func recordModelManifest(ctx context.Context, p *Provider, request responseReque
 		Digest:     fmt.Sprintf("%x", sha256.Sum256(body)), MaxOutput: request.MaxOutputTokens,
 		Excerpted: request.excerpted,
 		Provider:  fmt.Sprintf("%x", sha256.Sum256([]byte(binding))),
+	}
+	if acceptableReceiptModel(request.Model, p.key) {
+		manifest.RequestedModel = request.Model
 	}
 	for _, item := range original[:len(original)-len(request.Input)] {
 		if msg, ok := item.(responseMessage); ok && msg.reference.ID != 0 && !slices.Contains(request.excerpted, msg.reference.ID) {
@@ -579,11 +621,11 @@ func recordModelManifest(ctx context.Context, p *Provider, request responseReque
 		}
 		encoded, err := json.Marshal(item)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		manifest.ToolItems = append(manifest.ToolItems, fmt.Sprintf("%x", sha256.Sum256(encoded)))
 	}
-	return work.RecordModelManifest(ctx, manifest)
+	return work.RecordModelManifestWithReceipt(ctx, manifest)
 }
 
 func normalizedUsage(usage *work.TokenUsage) *work.TokenUsage {

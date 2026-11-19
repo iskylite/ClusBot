@@ -271,3 +271,65 @@ func TestContextManifestRecordsRevisions(t *testing.T) {
 	}
 	_ = created
 }
+
+func TestModelReceiptMigrationAndImmutableHistory(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "legacy-model-manifest.sqlite")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
+	if _, err := s.Submit(ctx, "manifest-without-receipt", "查询", "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := ManifestRequest{Digest: "legacy-content"}
+	if err = RecordModelManifest(s.withManifestRecorder(ctx, run), old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("DROP TABLE model_receipts; PRAGMA user_version=113"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := s.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 114 {
+		t.Fatalf("receipt migration version %d: %v", version, err)
+	}
+	base, err := s.RunRecord(ctx, run.ID, "")
+	if err != nil || len(base.Contexts) != 1 || base.Contexts[0].ModelReceipt != nil {
+		t.Fatalf("legacy receipt invented: %+v %v", base.Contexts, err)
+	}
+	next, err := RecordModelManifestWithReceipt(s.withManifestRecorder(ctx, run), ManifestRequest{RequestedModel: "alias-new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt := ModelReceipt{Protocol: "responses", State: "reported", ReportedModel: "model-returned"}
+	if err := next(ctx, receipt); err != nil {
+		t.Fatal(err)
+	}
+	if err := next(ctx, ModelReceipt{Protocol: "responses", State: "not_reported"}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := s.RunRecord(ctx, run.ID, "")
+	if err != nil || len(record.Contexts) != 2 || record.Contexts[0].ModelReceipt == nil || *record.Contexts[0].ModelReceipt != receipt ||
+		record.Contexts[1].ModelReceipt != nil || string(record.Contexts[1].Manifest) != string(base.Contexts[0].Manifest) {
+		t.Fatalf("receipt replay overwrote history or touched the old request: %+v %v", record.Contexts, err)
+	}
+	if _, err := s.RunRecord(ctx, run.ID, "unrelated-task-scope"); err == nil {
+		t.Fatal("mismatched task path can read model evidence")
+	}
+}

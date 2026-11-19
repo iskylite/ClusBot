@@ -117,6 +117,7 @@ func marshalChatRequest(value any) ([]byte, error) {
 }
 
 type chatChunk struct {
+	Model json.RawMessage `json:"model"`
 	Error json.RawMessage
 	Usage *struct {
 		Prompt     *int64 `json:"prompt_tokens"`
@@ -179,6 +180,7 @@ func readChatStream(body io.Reader, emit func(string) error) (responseData, erro
 		if json.Unmarshal([]byte(data), &chunk) != nil || (len(chunk.Error) > 0 && string(chunk.Error) != "null") {
 			return result, errors.New("invalid chat completion event")
 		}
+		result.observeModel(chunk.Model)
 		if chunk.Usage != nil {
 			result.Usage = &work.TokenUsage{InputTokens: chunk.Usage.Prompt, OutputTokens: chunk.Usage.Completion}
 		}

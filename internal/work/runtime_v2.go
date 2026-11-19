@@ -60,122 +60,140 @@ WHERE m.conversation_id=? AND NOT EXISTS (SELECT 1 FROM input_dispositions d WHE
 // ManifestRequest records references and digests without duplicating material
 // or memory contents. The model adapter supplies these after input fitting.
 type ManifestRequest struct {
-	Messages   []int64           `json:"messages"`
-	Excerpted  []int64           `json:"excerpted_messages,omitempty"`
-	Omitted    []int64           `json:"omitted_messages,omitempty"`
-	Materials  map[string]string `json:"materials,omitempty"`
-	Memories   map[string]int    `json:"memories,omitempty"`
-	Experience map[string]string `json:"experience,omitempty"`
-	Skills     map[string]int    `json:"skills,omitempty"`
-	ToolItems  []string          `json:"tool_item_digests,omitempty"`
-	Digest     string            `json:"request_sha256"`
-	MaxOutput  int               `json:"max_output_tokens"`
-	Provider   string            `json:"provider_binding,omitempty"`
+	Messages       []int64           `json:"messages"`
+	Excerpted      []int64           `json:"excerpted_messages,omitempty"`
+	Omitted        []int64           `json:"omitted_messages,omitempty"`
+	Materials      map[string]string `json:"materials,omitempty"`
+	Memories       map[string]int    `json:"memories,omitempty"`
+	Experience     map[string]string `json:"experience,omitempty"`
+	Skills         map[string]int    `json:"skills,omitempty"`
+	ToolItems      []string          `json:"tool_item_digests,omitempty"`
+	Digest         string            `json:"request_sha256"`
+	MaxOutput      int               `json:"max_output_tokens"`
+	Provider       string            `json:"provider_binding,omitempty"`
+	RequestedModel string            `json:"requested_model,omitempty"`
 }
 
 type manifestRecorderKey struct{}
 
 func RecordModelManifest(ctx context.Context, manifest ManifestRequest) error {
-	record, ok := ctx.Value(manifestRecorderKey{}).(func(context.Context, ManifestRequest) error)
+	_, err := RecordModelManifestWithReceipt(ctx, manifest)
+	return err
+}
+
+type ModelReceiptWriter func(context.Context, ModelReceipt) error
+type modelManifestRecorder func(context.Context, ManifestRequest) (ModelReceiptWriter, error)
+
+func RecordModelManifestWithReceipt(ctx context.Context, manifest ManifestRequest) (ModelReceiptWriter, error) {
+	record, ok := ctx.Value(manifestRecorderKey{}).(modelManifestRecorder)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	return record(ctx, manifest)
 }
 
 func (s *Store) withManifestRecorder(ctx context.Context, run Run) context.Context {
-	return context.WithValue(ctx, manifestRecorderKey{}, func(ctx context.Context, manifest ManifestRequest) error {
-		payload, err := json.Marshal(manifest)
-		if err != nil {
-			return err
-		}
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			return err
-		}
-		defer tx.Rollback()
-		if run.TaskID != "" {
-			if err := checkWorkflowEvidence(tx, run.ID, run.Generation); err != nil {
-				return err
-			}
-		}
-		var skillGoal string
-		if len(manifest.Skills) != 0 {
-			if err := tx.QueryRowContext(ctx, "SELECT goal FROM tasks WHERE id=?", run.TaskID).Scan(&skillGoal); err != nil {
-				return err
-			}
-		}
-		for id, version := range manifest.Skills {
-			if err = checkRunSkillVersion(ctx, tx, run.ID, id, version); err != nil {
-				return err
-			}
-			effective, err := applicableSkillInstructions(tx, id, version, skillGoal)
-			if errors.Is(err, ErrExperienceSource) || (err == nil && effective == "") {
-				return ErrReadCheckpoint
-			}
+	return context.WithValue(ctx, manifestRecorderKey{}, modelManifestRecorder(func(ctx context.Context, manifest ManifestRequest) (ModelReceiptWriter, error) {
+		var manifestID int64
+		err := func() error {
+			payload, err := json.Marshal(manifest)
 			if err != nil {
 				return err
 			}
-		}
-		for id, revision := range manifest.Memories {
-			var valid bool
-			if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM memories WHERE id=? AND revision=?)", id, revision).Scan(&valid); err != nil {
+			tx, err := s.db.BeginTx(ctx, nil)
+			if err != nil {
 				return err
 			}
-			if !valid {
-				return ErrReadCheckpoint
+			defer tx.Rollback()
+			if run.TaskID != "" {
+				if err := checkWorkflowEvidence(tx, run.ID, run.Generation); err != nil {
+					return err
+				}
 			}
-		}
-		for id, hash := range manifest.Experience {
-			var valid bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artifacts a JOIN tasks t ON t.id=a.task_id
+			var skillGoal string
+			if len(manifest.Skills) != 0 {
+				if err := tx.QueryRowContext(ctx, "SELECT goal FROM tasks WHERE id=?", run.TaskID).Scan(&skillGoal); err != nil {
+					return err
+				}
+			}
+			for id, version := range manifest.Skills {
+				if err = checkRunSkillVersion(ctx, tx, run.ID, id, version); err != nil {
+					return err
+				}
+				effective, err := applicableSkillInstructions(tx, id, version, skillGoal)
+				if errors.Is(err, ErrExperienceSource) || (err == nil && effective == "") {
+					return ErrReadCheckpoint
+				}
+				if err != nil {
+					return err
+				}
+			}
+			for id, revision := range manifest.Memories {
+				var valid bool
+				if err = tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM memories WHERE id=? AND revision=?)", id, revision).Scan(&valid); err != nil {
+					return err
+				}
+				if !valid {
+					return ErrReadCheckpoint
+				}
+			}
+			for id, hash := range manifest.Experience {
+				var valid bool
+				if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artifacts a JOIN tasks t ON t.id=a.task_id
 JOIN conversations c ON c.id=t.conversation_id WHERE a.id=? AND a.sha256=? AND c.archived=0)`,
-				id, hash).Scan(&valid); err != nil {
-				return err
+					id, hash).Scan(&valid); err != nil {
+					return err
+				}
+				if !valid {
+					return ErrReadCheckpoint
+				}
 			}
-			if !valid {
-				return ErrReadCheckpoint
-			}
-		}
-		// previous_revision links this manifest to the immediately prior one for the
-		// same run+generation (0 if first): the manifest is never rewritten, a new
-		// row chains to its predecessor. control_revision records the task revision
-		// this manifest was assembled under (0 for non-task runs); pause/stop/revise
-		// all bump tasks.revision, so recovery can tell a manifest assembled under a
-		// stale control intent (e.g. pause committed after assembly began) from a
-		// current one.
-		result, err := tx.ExecContext(ctx, `INSERT INTO context_manifests(run_id,generation,assembled_at,previous_revision,control_revision,manifest)
+			// previous_revision links this manifest to the immediately prior one for the
+			// same run+generation (0 if first): the manifest is never rewritten, a new
+			// row chains to its predecessor. control_revision records the task revision
+			// this manifest was assembled under (0 for non-task runs); pause/stop/revise
+			// all bump tasks.revision, so recovery can tell a manifest assembled under a
+			// stale control intent (e.g. pause committed after assembly began) from a
+			// current one.
+			result, err := tx.ExecContext(ctx, `INSERT INTO context_manifests(run_id,generation,assembled_at,previous_revision,control_revision,manifest)
 SELECT b.run_id,b.generation,?,
 (SELECT COALESCE(max(p.id),0) FROM context_manifests p WHERE p.run_id=b.run_id AND p.generation=b.generation),
 COALESCE(t.revision,0),? FROM run_bindings b JOIN runs r ON r.id=b.run_id
 LEFT JOIN tasks t ON t.id=b.task_id
 WHERE r.id=? AND b.generation=? AND r.execution_generation=b.generation AND r.status='running' AND r.control=''
 AND (t.id IS NULL OR (t.revision=b.task_revision AND b.assignment_generation=(SELECT max(generation) FROM assignments WHERE task_id=t.id)))`,
-			now(), payload, run.ID, run.Generation)
-		if err != nil {
-			return err
-		}
-		if n, err := result.RowsAffected(); err != nil || n != 1 {
+				now(), payload, run.ID, run.Generation)
 			if err != nil {
 				return err
 			}
-			return ErrState
-		}
-		manifestID, err := result.LastInsertId()
-		if err != nil {
-			return err
-		}
-		inputIDs, err := json.Marshal(manifest.Messages)
-		if err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO context_inputs
+			if n, err := result.RowsAffected(); err != nil || n != 1 {
+				if err != nil {
+					return err
+				}
+				return ErrState
+			}
+			manifestID, err = result.LastInsertId()
+			if err != nil {
+				return err
+			}
+			inputIDs, err := json.Marshal(manifest.Messages)
+			if err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO context_inputs
 SELECT ?,message_seq FROM input_deliveries WHERE run_id=? AND generation=?
 AND message_seq IN (SELECT value FROM json_each(?))`, manifestID, run.ID, run.Generation, inputIDs); err != nil {
-			return err
+				return err
+			}
+			return tx.Commit()
+		}()
+		if err != nil {
+			return nil, err
 		}
-		return tx.Commit()
-	})
+		return func(ctx context.Context, receipt ModelReceipt) error {
+			return s.recordModelReceipt(ctx, manifestID, run, receipt)
+		}, nil
+	}))
 }
 
 func settleInputs(tx *sql.Tx, run Run, outcome string) error {
