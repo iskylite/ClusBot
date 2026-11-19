@@ -624,3 +624,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .run-model-provenance dl { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 2px 9px; margin: 4px 0; font-size: 13px; }
 .run-model-provenance dt { color: var(--muted); }
 .run-model-provenance dd { margin: 0; overflow-wrap: anywhere; }
+
+.composer[hidden] { display: none; }
+.composer-secondary { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: center; }
+.isolated-reply { display: grid; gap: 10px; }
+.isolated-reply h2 { font-size: 16px; }

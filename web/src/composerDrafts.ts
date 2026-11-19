@@ -4,6 +4,7 @@ import type {DeliveryUpdate,Material} from './api'
 import type {ReadDraft} from './TaskRead'
 
 export type TaskReference={taskID:string;title:string;planRevision?:number;passive:boolean}
+export type IsolatedReplyRequest={mode:'only_this_message';profile_id:string;profile_revision:number;confirm_current_text_egress:true;client_request_id:string;text:string}
 type Request = {key:string;scope:string;delivery:DeliveryUpdate;awaitingAdmission?:boolean}
 type Draft = {
   text:string
@@ -11,6 +12,7 @@ type Draft = {
   materials:Material[]
   replaceMaterials?:boolean
   taskReference?:TaskReference
+  isolatedRequest?:IsolatedReplyRequest
   criteria?:{text:string;filename:string;baseText:string;baseFilename:string;revision?:number}
   read?:ReadDraft
   reads?:ReadDraft[]
@@ -89,6 +91,10 @@ export function releaseDraftRequest(key:string,requestID?:string) {
 }
 
 export function discardComposerDraft(key:string) {write(key,empty)}
+
+export function hasPinnedIsolatedRequest(key:string,requestID:string) {
+  return read(key).isolatedRequest?.client_request_id===requestID
+}
 
 export function draftGeneration() {return generation}
 

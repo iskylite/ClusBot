@@ -26,6 +26,7 @@ import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './Benc
 import {useConversationTasks,type TaskLink} from './ConversationTasks'
 import {BenchmarkConversation} from './BenchmarkConversation'
 import {ConversationConfiguration} from './ConversationConfiguration'
+import {IsolatedReplyComposer,isolatedDraftKey} from './IsolatedReplyComposer'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import './styles.css'
 
@@ -427,10 +428,10 @@ type ComposerProps = {
   draftKey:string
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<Receipt>
   onReceipt:(path:string,receipt?:Receipt)=>void|Promise<void>
-  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode
+  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:()=>void; isolatedRecovery?:boolean; hidden?:boolean
 }
 
-function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference}:ComposerProps) {
+function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden}:ComposerProps) {
   const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
@@ -552,7 +553,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     }
     finally{locked.current=false;setPending(false)}
   }
-  return <form className="composer" onSubmit={submit}>
+  return <form className="composer" hidden={hidden} onSubmit={submit}>
     <MessageContent reference={reference} body={<textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={inputRef} rows={2} maxLength={16000}
       onChange={e=>edit({text:e.target.value})} readOnly={submitting}
       onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>}
@@ -596,7 +597,9 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     <div role="status">{admissionKey&&<p className="material-progress muted">已接收，等待模型可用</p>}</div>
     {error && <div><p className="error" role="alert">{error}</p>{unconfirmed&&<button type="button" className="text-button composer-retry" disabled={disabled||submitting||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button>}</div>}
     <div className="composer-bar">
-      {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={submitting} onChange={e=>edit({scope:e.target.value})}/></label> : <span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>}
+      {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={submitting} onChange={e=>edit({scope:e.target.value})}/></label> : <div className="composer-secondary"><span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>
+        {openIsolated&&<button type="button" className="text-button" disabled={(!isolatedRecovery&&disabled)||submitting||capturing} onClick={openIsolated}>
+          {isolatedRecovery?'核对单条回复请求':'单独问一个模型'}</button>}</div>}
       <button className={assign?'primary':'send'} aria-label={label} disabled={disabled||submitting||capturing||!value.trim()}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>
     </div>
   </form>
@@ -843,6 +846,9 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const [saving,setSaving]=useState(false)
   const [actionError,setActionError]=useState('')
   const [stopping,setStopping]=useState<string>()
+  const [isolatedOpen,setIsolatedOpen]=useState(false)
+  const {isolatedRequest}=useComposerDraft(isolatedDraftKey(id||'new'))
+  const returnToComposer=useRef(false)
   const [configOpen,setConfigOpen]=useState(false)
   const configTrigger=useRef<HTMLButtonElement>(null)
   const configID='conversation-configuration'
@@ -863,6 +869,10 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
       detailClose.current?.focus({preventScroll:true})
     }
   },[selectedTask])
+  useLayoutEffect(()=>{
+    if(!isolatedOpen&&returnToComposer.current){returnToComposer.current=false;chatInput.current?.focus()}
+  },[isolatedOpen])
+  function closeIsolated(){returnToComposer.current=true;setIsolatedOpen(false)}
   function closeTaskDetail(input=false) {
     detailDialog.current?.close()
     setSelectedTask(undefined)
@@ -945,6 +955,7 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
       await api('/conversations/'+conversation.id,{revision:conversation.revision},'DELETE')
       discardComposerDraft('chat:'+conversation.id)
       discardComposerDraft('promotion:'+conversation.id)
+      discardComposerDraft(isolatedDraftKey(conversation.id))
       navigate('/chat')
     }catch(e){setActionError(errorMessage(e));await reload()}
     finally{setSaving(false)}
@@ -1001,11 +1012,12 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {chatError && <p className="error" role="alert">{chatError}</p>}
         {canResume && <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>}
       </div>}
-      {id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
+      {!isolatedOpen && id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
       {id&&executionTarget&&<BenchmarkExecutionConversation key={executionTarget.taskID+':'+executionTarget.planRevision} conversationID={id}
         target={executionTarget} run={run} disabled={Boolean(busy||conversation?.archived)}
         canSuggest={taskReference?.taskID===executionTarget.taskID&&taskReference?.planRevision!==undefined} onChange={()=>void reload()}/>}
-      <Composer inputRef={chatInput} reference={!promote&&taskReference&&<MessageReference
+      <Composer inputRef={chatInput} hidden={isolatedOpen} isolatedRecovery={Boolean(isolatedRequest)}
+        openIsolated={id&&conversation&&!promote&&(!conversation.archived||isolatedRequest)?()=>setIsolatedOpen(true):undefined} reference={!promote&&taskReference&&<MessageReference
         label={(taskReference.passive?'引用任务 · ':'基准控制目标 · ')+taskReference.title+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
         onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
         onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
@@ -1028,6 +1040,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         if (id && path==='/chat/'+id) await reload()
         else navigate(path)
       }}/>
+      {isolatedOpen&&id&&conversation&&<IsolatedReplyComposer conversationID={id} blocked={busy||saving}
+        archived={Boolean(conversation.archived)} onClose={closeIsolated} onReceipt={()=>void reload()}/>}
     </main>
     {selectedTask&&<dialog className="chat-task-dialog" aria-label="任务详情" ref={detailDialog}
       onCancel={event=>{event.preventDefault();closeTaskDetail()}}>
