@@ -7,7 +7,8 @@ export type Task = {
   reason: string; status_reason: string; state_changed_at: number
   revision: number; updated_at: number
 }
-export type DeliveryUpdate = {acceptance_criteria?:string;required_filename?:string;revision?:number;mcp_read?:TaskReadRequest;mcp_reads?:TaskReadRequest[];replace_materials?:boolean}
+export type MessageTaskRef = {task_id:string}
+export type DeliveryUpdate = {task_ref?:MessageTaskRef;acceptance_criteria?:string;required_filename?:string;revision?:number;mcp_read?:TaskReadRequest;mcp_reads?:TaskReadRequest[];replace_materials?:boolean}
 export type Acceptance = {artifact_id:string;sha256:string;criteria:string;accepted_at:number;publication_id?:string;filename?:string}
 export type ExecutionUsage = {
   model_requests:number; unreported_requests:number; active_ms:number; time_partial:boolean; untracked_runs:number
@@ -34,7 +35,7 @@ export const awaitingPublication = (publication?: Publication) =>
   publication !== undefined && ['pending','dispatched','unknown'].includes(publication.status)
 export type UploadPart = {id:string;name:string;sha256:string;bytes:number;part:number;parts:number}
 export type Material = {id:string;path:string;sha256:string;size:number;captured_at:number;upload?:UploadPart}
-export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
+export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string; task_ref?:MessageTaskRef; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
 export type MaterialFile = {path:string;size:number}
 export type SkillReplayMetrics = {
   cases:number; completed:number; successful:number; success_rate:number

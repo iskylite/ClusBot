@@ -1,25 +1,10 @@
 import {useEffect,useRef} from 'react'
 import {Bookmark,BookmarkPlus,Gauge} from 'lucide-react'
 import Markdown from 'react-markdown'
-import {MaterialTypeIcon} from './MaterialPicker'
-import type {ExecutionUsage,Material,MemoryRef,Message} from './api'
+import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
+import type {ExecutionUsage,MemoryRef,Message} from './api'
 
 const usageNumber = new Intl.NumberFormat('zh-CN', {maximumFractionDigits:1})
-
-function MessageMaterials({items}:{items:Material[]}) {
-  const card=(item:Material)=>{
-    const filename=item.upload?.name??item.path.split('/').pop()??item.path
-    return <li className="message-material" key={item.id} title={filename}>
-      <MaterialTypeIcon material={item} size={20}/>
-      <span><strong>{filename}</strong>{item.upload&&item.upload.parts>1&&<small>第 {item.upload.part} / {item.upload.parts} 段</small>}</span>
-    </li>
-  }
-  return <div className="message-attachments" aria-label="本条消息附件">
-    <ul className="message-attachment-grid">{items.slice(0,3).map(card)}</ul>
-    {items.length>3&&<details><summary>另有 {items.length-3} 个附件</summary>
-      <ul className="message-attachment-grid">{items.slice(3).map(card)}</ul></details>}
-  </div>
-}
 
 export function UsageDetails({current,cumulative,running,contextWindow,title='执行用量'}:{current?:ExecutionUsage;cumulative?:ExecutionUsage;running:boolean;contextWindow?:number;title?:string}) {
   if(!current?.model_requests && !current?.active_ms && !cumulative?.model_requests && !cumulative?.untracked_runs) return null
@@ -100,7 +85,11 @@ export function Messages({messages,live,remember,anchors=true}:{messages:Message
   return <div className="messages">{messages.map((message,index)=>{
     const messageID=message.id
     const focused=target==='message-'+messageID
-    return <div className={'message'+(focused?' source-message':'')} key={messageID??index} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}><span>{message.role==='user'?'你':'助手'}</span>{message.role==='assistant'?<div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs}/></div>:<div className="user-message"><div>{message.text}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}{Boolean(message.materials?.length)&&<MessageMaterials items={message.materials!}/>}</div>
+    return <div className={'message'+(focused?' source-message':'')} key={messageID??index} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}><span>{message.role==='user'?'你':'助手'}</span>{message.role==='assistant'?<div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs}/></div>:<div className="user-message"><MessageContent
+      reference={message.task_ref?.task_id?<MessageReference label={'引用任务 · '+message.task_ref.task_id}/>:
+        message.asset_query_task_id&&<MessageReference label={'资产查询 · '+message.asset_query_task_id}/>}
+      body={message.text||message.replace_materials ? <>{message.text}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}</> : undefined}
+      attachments={Boolean(message.materials?.length)&&<MessageAttachments items={message.materials!}/>}/>
       {messageID!==undefined && remember && <button type="button" className="icon-button remember-message" aria-label="从这条消息新增记忆" title="新增记忆" onClick={()=>remember(messageID)}><BookmarkPlus size={16}/></button>}</div>}</div>
   })}{live&&<div className="message"><span>助手</span><FormattedText text={live}/></div>}</div>
 }

@@ -1,21 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { File, FileText, Image, LoaderCircle, Paperclip, Search, Upload, X } from 'lucide-react'
-import { api, type Material, type MaterialFile } from './api'
+import { FileText, LoaderCircle, Paperclip, Search, Upload } from 'lucide-react'
+import { api, type MaterialFile } from './api'
 
-// Classify only the namespaces produced by the server after validating
-// image bytes or capturing trusted text. A basename cannot enable previews.
-export function MaterialTypeIcon({material,size=16}:{material:Material;size?:number}) {
-  const Icon=material.path.startsWith('images/')?Image:
-    material.upload||material.path.startsWith('materials/')?FileText:File
-  return <Icon size={size} aria-hidden="true"/>
-}
-
-export function MaterialPicker({selected,disabled,choose,upload,choosePart,remove,replacement,allowImages}:{
-  allowImages:boolean; selected:Material[]; disabled:boolean; choose:(path:string)=>Promise<void>; upload:(file:File)=>Promise<void>;
-  choosePart:(id:string,part:number)=>Promise<void>; remove:(id:string)=>void
+export function MaterialPicker({limitReached,disabled,choose,upload,replacement,allowImages}:{
+  allowImages:boolean; limitReached:boolean; disabled:boolean; choose:(path:string)=>Promise<void>; upload:(file:File)=>Promise<void>;
   replacement?:{enabled:boolean;change:(enabled:boolean)=>void}
 }) {
-  const limitReached=selected.length>=4
   const input=useRef<HTMLInputElement>(null)
   const [open,setOpen]=useState(false)
   const [query,setQuery]=useState('')
@@ -37,15 +27,6 @@ export function MaterialPicker({selected,disabled,choose,upload,choosePart,remov
   },[open,query])
 
   return <div className="material-picker">
-    {selected.length>0 && <div className="material-chips" aria-label="已选材料">{selected.map(item=>
-      <span className="material-chip" key={item.upload?.id??item.id} title={(item.upload?.name??item.path)+' · '+item.sha256}>
-        <MaterialTypeIcon material={item}/><span>{item.upload?.name??item.path.slice(item.path.indexOf('/')+1)}</span>
-        {item.upload && item.upload.parts>1 && <select aria-label={'选择 '+item.upload.name+' 的片段'} disabled={disabled} value={item.upload.part}
-          onChange={event=>{if(item.upload)void choosePart(item.upload.id,Number(event.target.value))}}>
-          {Array.from({length:item.upload.parts},(_,index)=><option key={index} value={index+1}>第 {index+1} / {item.upload?.parts} 段</option>)}
-        </select>}
-        <button type="button" aria-label={'移除 '+(item.upload?.name??item.path)} disabled={disabled} onClick={()=>remove(item.id)}><X size={15}/></button>
-      </span>)}</div>}
     <button type="button" className={'text-button'+(replacement?.enabled?' replacing':'')} aria-expanded={open}
       disabled={disabled||(limitReached&&!replacement)} onClick={()=>{setOpen(!open);setQuery('')}}>
       <Paperclip size={16}/>{replacement?.enabled?'仅用本轮材料':'选取材料'}</button>

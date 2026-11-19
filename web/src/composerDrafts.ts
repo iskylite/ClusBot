@@ -3,12 +3,14 @@ import {useCallback,useSyncExternalStore} from 'react'
 import type {DeliveryUpdate,Material} from './api'
 import type {ReadDraft} from './TaskRead'
 
+export type TaskReference={taskID:string;title:string;planRevision?:number;passive:boolean}
 type Request = {key:string;scope:string;delivery:DeliveryUpdate;awaitingAdmission?:boolean}
 type Draft = {
   text:string
   scope?:string
   materials:Material[]
   replaceMaterials?:boolean
+  taskReference?:TaskReference
   criteria?:{text:string;filename:string;baseText:string;baseFilename:string;revision?:number}
   read?:ReadDraft
   reads?:ReadDraft[]

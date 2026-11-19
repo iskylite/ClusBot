@@ -11,6 +11,7 @@ import { FormattedText, MemoryReferences, Messages, UsageDetails } from './Execu
 import { RunHistory } from './RunHistory'
 import { TaskEditor } from './TaskEditor'
 import { MaterialPicker } from './MaterialPicker'
+import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
 import { PublicationPanel } from './PublicationPanel'
 import { MemoryPage } from './MemoryPage'
 import { ExperienceCandidatesPage } from './ExperienceCandidatesPage'
@@ -20,7 +21,7 @@ import {clearMemoryDrafts} from './memoryDrafts'
 import { ConnectionsPage } from './ConnectionsPage'
 import { SettingsPage } from './SettingsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
-import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft } from './composerDrafts'
+import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, releaseDraftRequest, useComposerDraft, type TaskReference } from './composerDrafts'
 import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './BenchmarkExecution'
 import {useConversationTasks,type TaskLink} from './ConversationTasks'
 import {BenchmarkConversation} from './BenchmarkConversation'
@@ -512,7 +513,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     locked.current=true
     setPending(true);setError('');setUnconfirmed(false)
     if(reclassify)releaseDraftRequest(draftKey,draft.request?.key)
-    const delivery:DeliveryUpdate={}
+    const delivery:DeliveryUpdate=draft.taskReference?.passive&&!assign&&!task?{task_ref:{task_id:draft.taskReference.taskID}}:{}
     if (criteriaDraft) {
       const criteria=criteriaDraft.text.trim()
       const filename=criteriaDraft.filename.trim()
@@ -546,17 +547,21 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     catch(e){
       if(e instanceof APIError&&e.code==='classification_failed'&&requestID)releaseDraftRequest(draftKey,requestID)
       setUnconfirmed(e instanceof APIError&&e.code==='classification_unconfirmed')
-      setError(e instanceof TypeError?'未收到提交回执。草稿已保留，可以重试。':errorMessage(e))
+      setError(draft.taskReference?.passive&&e instanceof APIError&&e.status===404?'此任务引用已不可用。草稿仍在，请移除引用后再发送。':e instanceof TypeError?'未收到提交回执。草稿已保留，可以重试。':errorMessage(e))
     }
     finally{locked.current=false;setPending(false)}
   }
   return <form className="composer" onSubmit={submit}>
-    {reference}
-    <textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={inputRef} rows={2} maxLength={16000}
+    <MessageContent reference={reference} body={<textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={inputRef} rows={2} maxLength={16000}
       onChange={e=>edit({text:e.target.value})} readOnly={submitting}
-      onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>
+      onKeyDown={e => {if ((e.ctrlKey||e.metaKey) && e.key==='Enter' && !e.nativeEvent.isComposing) e.currentTarget.form?.requestSubmit()}}/>}
+      attachments={materials.length>0&&<MessageAttachments items={materials} draft={{
+        disabled:submitting||capturing||disabled,
+        choosePart:(id,part)=>void capture(()=>api<Material>('/attachments/uploads/'+encodeURIComponent(id)+'/part',{part})),
+        remove:id=>edit({materials:materials.filter(item=>item.id!==id)}),
+      }}/>}/>
     <div className="composer-tools">
-      <MaterialPicker allowImages={allowImages} selected={materials} disabled={submitting||capturing||disabled}
+      <MaterialPicker allowImages={allowImages} limitReached={materials.length>=4} disabled={submitting||capturing||disabled}
         replacement={task?{enabled:Boolean(draft.replaceMaterials),change:enabled=>edit({replaceMaterials:enabled})}:undefined}
         choose={path=>capture(()=>api<Material>('/attachments/workspace',{path}))}
         upload={file=>capture(()=>{
@@ -564,9 +569,7 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
           const form=new FormData()
           form.set('file',file)
           return api<Material>('/attachments',form)
-        })}
-        choosePart={(id,part)=>capture(()=>api<Material>('/attachments/uploads/'+id+'/part',{part}))}
-        remove={id=>edit({materials:materials.filter(item=>item.id!==id)})}/>
+        })}/>
       {(assign || task) && <button type="button" className="text-button criteria-toggle" aria-expanded={Boolean(criteriaDraft)} disabled={submitting||disabled}
         onClick={()=>{
           if(criteriaDraft){
@@ -650,8 +653,6 @@ function useDetail(path: string | undefined, onChange?: () => void) {
   },[waitingForOperation,reload])
   return {data,live,error,reload,reconnecting:active&&reconnecting}
 }
-
-type TaskReference={taskID:string;title:string;planRevision?:number}
 
 function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversationBusy,onReference,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;fromChat?:boolean;sourceConversationID?:string;sourceConversationBusy?:boolean;onReference?:(task:TaskReference)=>void;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
   const {data,live,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
@@ -740,9 +741,9 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
   const canStopBenchmark=benchmark && !benchmarkError && !benchmark.stop_requested && !['succeeded','failed','cancelled','finalizing'].includes(benchmark.state)
   const canStopOrdinary=nonBenchmark && ['active','waiting_user','interrupted'].includes(task.status)
   const actions = <div className="task-actions" aria-label="任务操作">
-    {onReference&&<button type="button" className="text-button" onClick={()=>onReference({
-      taskID:task.id,title:task.title,planRevision:benchmarkError?undefined:benchmark?.plan_revision,
-    })}>在对话中引用</button>}
+    {onReference&&(task.conversation_id===sourceConversationID||Boolean(benchmark&&!benchmarkError))&&<button type="button" className="text-button" onClick={()=>onReference({
+      taskID:task.id,title:task.title,passive:task.conversation_id===sourceConversationID,planRevision:benchmarkError?undefined:benchmark?.plan_revision,
+    })}>{task.conversation_id===sourceConversationID?'在对话中引用':'选择基准控制目标'}</button>}
     {nonBenchmark&&(!compact||fromChat)&&!editBlocked&&<button type="button" className="text-button" onClick={()=>setEditing(!editing)}>编辑事项</button>}
     {nonBenchmark&&task.status==='active' && <button type="button" className="text-button" disabled={pending||controlling} onClick={()=>void control('pause')}>暂停</button>}
     {(canStopBenchmark||canStopOrdinary) && <button type="button" className="text-button" disabled={pending||controlling||writing||readUnconfirmed} onClick={()=>void control('cancel')}>请求停止</button>}
@@ -842,7 +843,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const [actionError,setActionError]=useState('')
   const [stopping,setStopping]=useState<string>()
   const [selectedTask,setSelectedTask]=useState<string>()
-  const [taskReference,setTaskReference]=useState<TaskReference>()
+  const ordinaryDraftKey='chat:'+(id||'new')
+  const {taskReference}=useComposerDraft(ordinaryDraftKey)
   const chatInput=useRef<HTMLTextAreaElement>(null)
   const [latestReceipt,setLatestReceipt]=useState<TaskLink>()
   const eventTasks=useConversationTasks(id)
@@ -863,7 +865,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
     else taskTrigger.current?.focus({preventScroll:true})
   }
   function referenceTask(reference:TaskReference) {
-    setTaskReference(previous=>previous?.taskID===reference.taskID?previous:reference)
+    if(taskReference?.taskID!==reference.taskID)changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}))
+    setPromote(false)
     closeTaskDetail(true)
   }
   const resumeKey=useRef<{runID:string;key:string}|undefined>(undefined)
@@ -993,16 +996,14 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
       {id&&executionTarget&&<BenchmarkExecutionConversation key={executionTarget.taskID+':'+executionTarget.planRevision} conversationID={id}
         target={executionTarget} run={run} disabled={Boolean(busy||conversation?.archived)}
         canSuggest={taskReference?.taskID===executionTarget.taskID&&taskReference?.planRevision!==undefined} onChange={()=>void reload()}/>}
-      <Composer inputRef={chatInput} reference={taskReference&&<div className="composer-task-reference">
-        <button type="button" className="text-button" aria-haspopup="dialog" onClick={event=>{
-          taskTrigger.current=event.currentTarget;setSelectedTask(taskReference.taskID)
-        }}>引用任务 · {taskReference.title}{taskReference.planRevision!==undefined&&' · 修订 '+taskReference.planRevision}</button>
-        <button type="button" className="icon-button" aria-label="移除任务引用" onClick={()=>{setTaskReference(undefined);chatInput.current?.focus()}}><X size={14} aria-hidden="true"/></button>
-      </div>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
+      <Composer inputRef={chatInput} reference={!promote&&taskReference&&<MessageReference
+        label={(taskReference.passive?'引用任务 · ':'基准控制目标 · ')+taskReference.title+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
+        onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
+        onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'发送消息…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery)=>{
         if (promote && id) {
           return api('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
         }
-        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments})
+        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments,...(id&&delivery.task_ref?{task_ref:delivery.task_ref}:{})})
       }} onReceipt={async(path,receipt)=>{
         if (receipt?.task_id && path.startsWith('/tasks/')) {
           if (id) {
