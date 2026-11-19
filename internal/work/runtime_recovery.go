@@ -115,6 +115,11 @@ AND state='received' AND payload_ref<>''`); err != nil {
 		report.Failure = err.Error()
 		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
 	}
+	if _, err := s.consumeTimerWaitFollowups(ctx, now, 50); err != nil {
+		report.FailedPhase = PhaseWaitsTimers
+		report.Failure = err.Error()
+		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
+	}
 	triggered, err := scanDueSchedules(s.db, now, 20)
 	if err != nil {
 		report.FailedPhase = PhaseWaitsTimers
@@ -379,6 +384,9 @@ func (l *RuntimeLoop) tick(ctx context.Context) {
 		l.recordFailure()
 	}
 	if _, err := l.store.consumeTimerInbox(ctx, now, 50); err != nil {
+		l.recordFailure()
+	}
+	if _, err := l.store.consumeTimerWaitFollowups(ctx, now, 50); err != nil {
 		l.recordFailure()
 	}
 	if _, err := scanDueSchedules(l.store.db, now, 20); err != nil {

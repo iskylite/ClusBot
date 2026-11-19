@@ -97,8 +97,8 @@ WHERE timer_id=? AND inbox_event_id=? AND state='delivered'`, timerKeyID(key), k
 		return false, err
 	}
 	if res.Closed {
-		// No side-effect receiver is registered for this backend. An adapter
-		// must implement the relevant follow-up contract before dispatch.
+		// Plain timer waits have a local eligibility recheck consumer.
+		// Business timeouts stay separate and never imply completion.
 		if err := enqueueOutbox(tx, OutboxCommand{
 			CommandID: e.EventID + ":follow-up", Kind: action, TargetKind: "wait",
 			TargetID: waitID, TargetVersion: version, TaskID: res.Wait.TaskID,
