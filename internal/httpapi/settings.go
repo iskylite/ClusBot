@@ -17,6 +17,16 @@ func (s Server) modelSettings(w http.ResponseWriter, r *http.Request) {
 	s.writeModelSettings(w, value)
 }
 
+func (s Server) modelRuntimeProjection(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	value, err := s.Settings.RuntimeProjection(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, value)
+}
+
 func (s Server) saveModelSettings(w http.ResponseWriter, r *http.Request) {
 	var input model.SettingsInput
 	if !decode(w, r, &input) {

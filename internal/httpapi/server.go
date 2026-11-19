@@ -61,6 +61,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	api.HandleFunc("GET /api/v1/settings", s.modelSettings)
+	api.HandleFunc("GET /api/v1/settings/model/runtime", s.modelRuntimeProjection)
 	api.HandleFunc("PATCH /api/v1/settings", s.saveModelSettings)
 	api.HandleFunc("POST /api/v1/settings/model/test", s.testModelSettings)
 	api.HandleFunc("POST /api/v1/settings/model/discover", s.discoverModels)
