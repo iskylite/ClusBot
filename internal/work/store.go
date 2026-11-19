@@ -875,6 +875,9 @@ func columnExists(tx *sql.Tx, table, column string) (bool, error) {
 }
 
 func requireDatabaseVersion(version int) error {
+	if version > databaseSchemaVersion {
+		return fmt.Errorf("数据库版本为 %d，高于此程序支持的 %d；不能就地降级。请使用支持该版本的程序，或将升级前备份恢复到独立数据目录后再使用旧程序", version, databaseSchemaVersion)
+	}
 	if version != databaseSchemaVersion {
 		return fmt.Errorf("数据库版本为 %d，当前需要 %d。请使用新的数据目录（--data-dir）", version, databaseSchemaVersion)
 	}
