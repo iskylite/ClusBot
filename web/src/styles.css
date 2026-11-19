@@ -618,3 +618,9 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 
 .skill-digest { overflow-wrap: anywhere; }
 .skill-instructions { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.run-model-provenance ol { display: grid; gap: 8px; margin: 8px 0; padding-inline-start: 20px; }
+.run-model-provenance li > small { color: var(--muted); }
+.run-model-provenance dl { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: 2px 9px; margin: 4px 0; font-size: 13px; }
+.run-model-provenance dt { color: var(--muted); }
+.run-model-provenance dd { margin: 0; overflow-wrap: anywhere; }

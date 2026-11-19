@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from 'react'
 import {ChevronDown,ChevronRight,FileCheck2,FileText,History,LoaderCircle,MessageCircle} from 'lucide-react'
-import {activeRun,api,type Run,type RunPage,type RunRecord} from './api'
+import {activeRun,api,type Run,type RunPage,type RunRecord,type RunModelContext} from './api'
 import {FormattedText,Messages,UsageDetails} from './ExecutionText'
 import {ReadEvidence} from './TaskRead'
 
@@ -19,9 +19,9 @@ export function RunHistory({taskID,latest,selected,select,revision,archived,open
 }) {
   const [expanded,setExpanded]=useState(false)
   const [page,setPage]=useState<RunPage>()
-  const [record,setRecord]=useState<RunRecord>()
+  const [record,setRecord]=useState<{key:string;value:RunRecord}>()
   const [listError,setListError]=useState('')
-  const [recordError,setRecordError]=useState('')
+  const [recordError,setRecordError]=useState<{key:string;text:string}>()
   const [loadingMore,setLoadingMore]=useState(false)
   const [retry,setRetry]=useState(0)
   const historyRef=useRef<HTMLDivElement>(null)
@@ -30,6 +30,8 @@ export function RunHistory({taskID,latest,selected,select,revision,archived,open
   const recordRevision=runID===latest?.id?revision:0
   const recordStatus=runID===latest?.id?latest.status:undefined
   const path='/tasks/'+taskID+'/runs'
+  const recordKey=JSON.stringify([path,runID,recordRevision,recordStatus,runID===latest?.id?latest.execution_generation:null,retry])
+  const errorForRun=recordError?.key===recordKey?recordError.text:''
 
   useEffect(()=>{
     if(selected)historyRef.current?.scrollIntoView({block:'start'})
@@ -47,11 +49,14 @@ export function RunHistory({taskID,latest,selected,select,revision,archived,open
   useEffect(()=>{
     if(!open||!runID)return
     let cancelled=false
-    setRecordError('')
-    api<RunRecord>(path+'/'+encodeURIComponent(runID)).then(result=>{if(!cancelled)setRecord(result)})
-      .catch(error=>{if(!cancelled)setRecordError(message(error))})
+    setRecordError(undefined)
+    api<RunRecord>(path+'/'+encodeURIComponent(runID)).then(result=>{
+      if(cancelled)return
+      if(result?.id!==runID)throw new Error('收到的执行记录不匹配')
+      setRecord({key:recordKey,value:result})
+    }).catch(error=>{if(!cancelled)setRecordError({key:recordKey,text:message(error)})})
     return()=>{cancelled=true}
-  },[open,path,runID,recordRevision,recordStatus,retry])
+  },[open,path,runID,recordKey])
 
   async function loadMore() {
     const after=page?.next_cursor
@@ -84,12 +89,34 @@ export function RunHistory({taskID,latest,selected,select,revision,archived,open
         {listError&&<><p className="error" role="alert">{listError}</p><button type="button" className="text-button" onClick={()=>setRetry(retry+1)}>重新加载</button></>}
       </div>
       {runID&&<div className="run-record" aria-label="执行详情">
-        {recordError?<><p className="error" role="alert">{recordError}</p><button type="button" className="text-button" onClick={()=>setRetry(retry+1)}>重新加载详情</button></>
-          :record?.id===runID?<RunEvidence record={record} archived={archived} openArtifact={openArtifact} openRun={select}/>
+        {errorForRun?<><p className="error" role="alert">{errorForRun}</p><button type="button" className="text-button" onClick={()=>setRetry(retry+1)}>重新加载详情</button></>
+          :record?.key===recordKey?<RunEvidence key={runID} record={record.value} archived={archived} openArtifact={openArtifact} openRun={select}/>
           :<LoaderCircle size={17} className="spin" aria-label="正在加载执行详情"/>}
       </div>}
     </div>}
   </div>
+}
+
+export function RunModelProvenance({contexts}:{contexts?:RunModelContext[]}) {
+  const entries=(contexts??[]).filter(c=>Boolean(c.manifest?.requested_model||c.model_receipt))
+  if(!entries.length)return null
+  return <details className="run-messages run-model-provenance">
+    <summary>模型来源（{entries.length} 条记录）</summary>
+    <p className="muted">请求的模型可能是别名。供应商回报仅为对方声明，不是独立核验的模型身份。</p>
+    <ol>{entries.map((entry,index)=>{
+      const receipt=entry.model_receipt
+      const protocol=receipt?.protocol==='responses'?'Responses':receipt?.protocol==='chat_completions'?'Chat Completions':''
+      return <li key={entry.execution_generation+':'+entry.recorded_at+':'+index}>
+        <small>执行代际 {entry.execution_generation}{Number.isFinite(entry.recorded_at)?' · '+runTime.format(entry.recorded_at):''}{protocol&&' · '+protocol}</small>
+        <dl>
+          <dt>请求的模型</dt><dd>{entry.manifest?.requested_model||'未记录'}</dd>
+          <dt>供应商回报</dt><dd>{!receipt?'没有回执记录':receipt.state==='not_reported'?'未回报模型标识':
+            receipt.state==='conflicting'?'回报互相冲突，无法确认':
+            receipt.state==='reported'&&receipt.reported_model?receipt.reported_model:'回执无法核对'}</dd>
+        </dl>
+      </li>
+    })}</ol>
+  </details>
 }
 
 function RunEvidence({record,archived,openArtifact,openRun}:{record:RunRecord;archived:boolean;openArtifact:(id:string)=>void;openRun:(id:string)=>void}) {
@@ -106,6 +133,7 @@ function RunEvidence({record,archived,openArtifact,openRun}:{record:RunRecord;ar
     {record.publications?.map(publication=><div className="run-receipt" key={publication.id}>
       <FileCheck2 size={16} aria-hidden="true"/><div><strong>outputs/{publication.filename}</strong><small>{publicationLabels[publication.status]??publication.status}{publication.detail&&['failed','conflict','unknown'].includes(publication.status)&&' · '+publication.detail}</small></div>
     </div>)}
+    <RunModelProvenance contexts={record.contexts}/>
     <UsageDetails current={record.usage} running={activeRun(record)} title="本轮用量"/>
     {!archived&&(messages.length>0||partial)&&<details className="run-messages">
       <summary><MessageCircle size={16} aria-hidden="true"/>当轮交流</summary>

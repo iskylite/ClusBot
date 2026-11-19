@@ -19,9 +19,11 @@ export type BenchmarkExecutionReceipt={task_id:string;step_id:string;plan_revisi
 export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number}; benchmark_execution_suggestion?:BenchmarkExecutionSuggestion; benchmark_execution_control?:BenchmarkExecutionReceipt }
 export type RunListItem = {id:string; status:string; created_at:number; input_excerpt?:string}
 export type RunPage = {items:RunListItem[]; next_cursor?:string}
+export type RunModelContext = {execution_generation:number;recorded_at:number;manifest?:{requested_model?:string};
+  model_receipt?:{protocol:string;state:'reported'|'not_reported'|'conflicting';reported_model?:string}}
 export type RunRecord = Run & {
   created_at:number; event_after:number; messages:Message[]; inherited_input?:Message
-  reads?:TaskRead[]; artifacts?:Artifact[]; publications?:Publication[]
+  reads?:TaskRead[]; artifacts?:Artifact[]; publications?:Publication[]; contexts?:RunModelContext[]
 }
 export type Conversation = { id: string; title: string; archived:boolean; revision:number }
 export type ConversationPage = {items:Conversation[];next_cursor?:string}
