@@ -13,6 +13,7 @@ package work
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -330,17 +331,17 @@ func TestV3P202LeaseRestart(t *testing.T) {
 		tx.Rollback()
 	})
 
-	t.Run("reclaim_judges_dispatched_ops_before_reclaim", func(t *testing.T) {
+	t.Run("running_model_does_not_count_as_dispatched_operation", func(t *testing.T) {
 		store, _, unitID := setupV3P202(t, "reclaim.db")
 		now := v3P102Now()
 		worker, cred := registerV3P202Worker(t, store, "worker", []WorkUnitKind{WorkUnitModel}, "")
-		// 领取（短期租约，单元进入 running 模拟已派发）。
+		// 领取（短期租约，模型单元进入 running，不代表外部操作已派发）。
 		tx, _ := store.db.Begin()
 		result, err := claimWorkUnit(tx, ClaimRequest{WorkerID: worker, Credential: cred, Kind: WorkUnitModel, LeaseTTL: 1000, QuotaAvailable: true}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
-		// 单元标记为 running（已派发操作），在同事务内更新。
+		// 模型单元标记为 running，在同事务内更新。
 		if _, err := tx.Exec("UPDATE work_units SET state='running' WHERE unit_id=?", result.Unit.UnitID); err != nil {
 			t.Fatal(err)
 		}
@@ -356,8 +357,8 @@ func TestV3P202LeaseRestart(t *testing.T) {
 		if reclaim.Reclaimed != 1 {
 			t.Errorf("reclaimed = %d, want 1", reclaim.Reclaimed)
 		}
-		if reclaim.PendingOps != 1 {
-			t.Errorf("pending ops = %d, want 1 (失联回收先判断已派发操作，进入核对不自动重发)", reclaim.PendingOps)
+		if reclaim.PendingOps != 0 {
+			t.Errorf("pending ops = %d: a running model is not a dispatched Operation", reclaim.PendingOps)
 		}
 		// 单元回到 ready（可重新核对领取），但回收记录了已派发操作数。
 		var state string
@@ -406,3 +407,116 @@ var (
 	_ = strings.Contains
 	_ = context.Background
 )
+
+func TestExpiredActionLeaseDoesNotPermitRepeat(t *testing.T) {
+	for _, startup := range []bool{false, true} {
+		name := "manual"
+		if startup {
+			name = "startup"
+		}
+		t.Run(name, func(t *testing.T) {
+			s, task, unit := setupV3P202(t, "expired-action.sqlite")
+			stamp := v3P102Now()
+			worker, cred := registerV3P202Worker(t, s, "expired-action", []WorkUnitKind{WorkUnitAction}, "")
+			tx, err := s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			var step string
+			if err := tx.QueryRow("SELECT step_id FROM work_units WHERE unit_id=?", unit).Scan(&step); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tx.Exec("UPDATE work_units SET kind='action',ready_at=? WHERE unit_id=?", stamp, unit); err != nil {
+				t.Fatal(err)
+			}
+			claimAction := func(tx *sql.Tx, v int64) (ClaimResult, error) {
+				return claimWorkUnit(tx, ClaimRequest{WorkerID: worker, Credential: cred, Kind: WorkUnitAction, QuotaAvailable: true, LeaseTTL: 1}, v)
+			}
+			link := func(step, key string) string {
+				t.Helper()
+				op, err := registerOperation(tx, Operation{TaskID: task, StepID: step, CapabilityKey: "fixture", IdempotencyKey: key,
+					TargetRefs: "[]", ParamsDigest: "fixture"}, stamp)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = dispatchOperationAttempt(tx, op.OperationID, stamp); err != nil {
+					t.Fatal(err)
+				}
+				return op.OperationID
+			}
+			linked := link(step, "expired-linked")
+			unrelated := link("", "expired-not-linked")
+			first, err := claimAction(tx, stamp)
+			if err != nil || first.Unit.UnitID != unit {
+				t.Fatalf("claim %+v %v", first, err)
+			}
+			otherUnit := id()
+			if err := insertWorkUnit(tx, WorkUnit{UnitID: otherUnit, TaskID: task, StepID: step, Kind: WorkUnitAction,
+				State: WorkUnitReady, CreatedAt: stamp, UpdatedAt: stamp, ReadyAt: stamp}); err != nil {
+				t.Fatal(err)
+			}
+			second, err := claimAction(tx, stamp)
+			if err != nil || second.Unit.UnitID != otherUnit {
+				t.Fatalf("second claim %+v %v", second, err)
+			}
+			if _, err := tx.Exec("UPDATE work_units SET state='running' WHERE unit_id=?", unit); err != nil {
+				t.Fatal(err)
+			}
+			unlinkedUnit := id()
+			if err := insertWorkUnit(tx, WorkUnit{UnitID: unlinkedUnit, TaskID: task, Kind: WorkUnitAction,
+				State: WorkUnitReady, CreatedAt: stamp, UpdatedAt: stamp, ReadyAt: stamp}); err != nil {
+				t.Fatal(err)
+			}
+			if claim, err := claimAction(tx, stamp); err != nil || claim.Unit.UnitID != unlinkedUnit {
+				t.Fatalf("claim without an exact step: %+v %v", claim, err)
+			}
+
+			if err = tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if startup {
+				if _, err := s.RecoverV3(t.Context(), now()); err != nil {
+					t.Fatal(err)
+				}
+			} else if out, err := s.ReclaimExpiredLeases(t.Context(), 10); err != nil || out.Reclaimed != 3 || out.PendingOps != 1 {
+				t.Fatalf("reclaimed state miscounted: %+v %v", out, err)
+			}
+			tx, err = s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			if _, err := claimAction(tx, stamp+2); !errors.Is(err, sql.ErrNoRows) {
+				t.Fatalf("affected action became claimable again: %v", err)
+			}
+			for id, expected := range map[string]string{unit: "running", otherUnit: "claimed", unlinkedUnit: "claimed"} {
+				var state, leaseState, reason string
+				if err := tx.QueryRow(`SELECT u.state,l.state,l.reclaim_reason FROM work_units u
+JOIN work_leases l ON l.unit_id=u.unit_id WHERE u.unit_id=?`, id).Scan(&state, &leaseState, &reason); err != nil ||
+					state != expected || leaseState != "reclaimed" || (id == unlinkedUnit && !strings.Contains(reason, "待人工核对")) {
+					t.Fatalf("unit %s unsafe state or inaccurate audit: %q %q %q %v", id, state, leaseState, reason, err)
+				}
+			}
+
+			if op, err := readOperation(tx, linked); err != nil || op.State != V3OperationReconcile || op.AttemptCount != 1 {
+				t.Fatalf("linked attempt not retained: %+v %v", op, err)
+			}
+			if op, err := readOperation(tx, unrelated); err != nil || op.State != V3OperationDispatched || op.AttemptCount != 1 {
+				t.Fatalf("unrelated attempt modified: %+v %v", op, err)
+			}
+			tx.Rollback()
+			if out, err := s.ReclaimExpiredLeases(t.Context(), 10); err != nil || out.Reclaimed != 0 || out.PendingOps != 0 {
+				t.Fatalf("duplicate reclaim result: %+v %v", out, err)
+			}
+			if _, err := s.RecoverV3(t.Context(), now()); err != nil {
+				t.Fatal(err)
+			}
+			var audits int
+			if err := s.db.QueryRow("SELECT count(*) FROM runtime_audit WHERE unit_id IN (?,?,?) AND event IN ('lease_reclaimed','unit_reconcile_required')",
+				unit, otherUnit, unlinkedUnit).Scan(&audits); err != nil || audits != 3 {
+				t.Fatalf("repeated audit: %d %v", audits, err)
+			}
+		})
+	}
+}

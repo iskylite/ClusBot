@@ -242,15 +242,17 @@ func (s *Store) reconcileRunningRuns(ctx context.Context) (int, error) {
 	}
 	// 2. action 类单元：失联先核对（关联 Operation 置待核对，不视为未执行）。
 	// 找到 claimed/running 的 action 单元，把其 Operation 标记为待核对。
-	rows, err := tx.Query(`SELECT unit_id, task_id FROM work_units WHERE kind='action' AND state IN ('claimed','running')`)
+	rows, err := tx.Query(`SELECT u.unit_id,u.task_id,coalesce(u.step_id,'') FROM work_units u
+WHERE u.kind='action' AND u.state IN ('claimed','running')
+AND NOT EXISTS (SELECT 1 FROM work_leases l WHERE l.unit_id=u.unit_id AND l.lease_generation=u.lease_generation AND l.state='reclaimed')`)
 	if err != nil {
 		return 0, err
 	}
-	type actionUnit struct{ unitID, taskID string }
+	type actionUnit struct{ unitID, taskID, stepID string }
 	var actions []actionUnit
 	for rows.Next() {
 		var a actionUnit
-		if err := rows.Scan(&a.unitID, &a.taskID); err != nil {
+		if err := rows.Scan(&a.unitID, &a.taskID, &a.stepID); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -259,14 +261,18 @@ func (s *Store) reconcileRunningRuns(ctx context.Context) (int, error) {
 	rows.Close()
 	for _, a := range actions {
 		// 关联 Operation 置待核对（失联先核对，不视为未执行）。
-		if _, err := tx.Exec(`UPDATE operations SET state=?, updated_at=? WHERE task_id=? AND state IN ('dispatched','running')`,
-			string(V3OperationReconcile), nowV, a.taskID); err != nil {
+		operations, err := reconcileLeasedActionOperations(tx, a.taskID, a.stepID, nowV)
+		if err != nil {
 			return 0, err
 		}
-		// action 单元标记待核对（不直接重发）：保持 running，由核对流程决定。
+		summary := "保留失联动作单元；未找到同一步骤的在途操作，待人工核对"
+		if len(operations) != 0 {
+			summary = "保留失联动作单元；同一步骤的在途操作待核对，不视为未执行"
+		}
+		// Keep the existing state barrier rather than inventing a WorkUnit state.
 		if err := recordAudit(tx, AuditEvent{
 			TaskID: a.taskID, UnitID: a.unitID, Event: "unit_reconcile_required", Actor: "system",
-			Summary: "失联 action 单元，关联 Operation 置待核对（不视为未执行）", OccurredAt: nowV,
+			Summary: summary, OccurredAt: nowV,
 		}); err != nil {
 			return 0, err
 		}

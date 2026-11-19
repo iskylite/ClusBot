@@ -199,56 +199,121 @@ type ReclaimResult struct {
 // 失联回收先判断是否有已派发操作；未知外部效果进入核对，不能自动重新发出；
 // 控制面重启后根据持久租约恢复，不能依赖内存 map 判断所有权。
 func reclaimExpiredLeases(tx *sql.Tx, now int64, limit int) (ReclaimResult, error) {
-	// 读取过期 active 租约（分批）。
-	rows, err := tx.Query(`SELECT lease_id,unit_id,task_id,worker_id FROM work_leases
-WHERE state='active' AND lease_until<=? LIMIT ?`, now, limit)
+	type expiredLease struct {
+		Lease
+		step, kind, state string
+		currentGeneration int
+	}
+	rows, err := tx.Query(`SELECT l.lease_id,l.unit_id,l.task_id,l.worker_id,l.lease_generation,coalesce(u.step_id,''),u.kind,u.state,u.lease_generation
+FROM work_leases l JOIN work_units u ON u.unit_id=l.unit_id
+WHERE l.state='active' AND l.lease_until<=? ORDER BY l.lease_until,l.lease_id LIMIT ?`, now, limit)
 	if err != nil {
 		return ReclaimResult{}, err
 	}
-	var leases []Lease
+	var leases []expiredLease
 	for rows.Next() {
-		var l Lease
-		if err := rows.Scan(&l.LeaseID, &l.UnitID, &l.TaskID, &l.WorkerID); err != nil {
+		var l expiredLease
+		if err := rows.Scan(&l.LeaseID, &l.UnitID, &l.TaskID, &l.WorkerID, &l.LeaseGeneration, &l.step, &l.kind, &l.state, &l.currentGeneration); err != nil {
 			rows.Close()
 			return ReclaimResult{}, err
 		}
 		leases = append(leases, l)
 	}
+	err = rows.Err()
 	rows.Close()
+	if err != nil {
+		return ReclaimResult{}, err
+	}
 	var result ReclaimResult
+	pendingOps := map[string]bool{}
 	for _, lease := range leases {
-		// 判断是否有已派发操作（未知外部效果进入核对，不自动重新发出）。
-		var dispatchedOps int
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM work_units WHERE unit_id=? AND state='running'`, lease.UnitID).Scan(&dispatchedOps); err != nil {
-			return result, err
+		activeUnit := lease.LeaseGeneration == lease.currentGeneration &&
+			(lease.state == string(WorkUnitClaimed) || lease.state == string(WorkUnitRunning))
+		var operations []string
+		holdAction := activeUnit && lease.kind == string(WorkUnitAction)
+		if holdAction {
+			operations, err = reconcileLeasedActionOperations(tx, lease.TaskID, lease.step, now)
+			if err != nil {
+				return result, err
+			}
 		}
-		// 回收租约：标记 reclaimed，单元回到 ready（可重新核对领取）。
+		detail := "过期租约已关闭"
+		if holdAction {
+			if len(operations) == 0 {
+				detail = "过期动作租约已关闭，未找到同一步骤的在途操作；保留待人工核对"
+			} else {
+				detail = fmt.Sprintf("过期动作租约已关闭，禁止重领（同一步骤待核对操作 %d）", len(operations))
+			}
+		}
 		res, err := tx.Exec(`UPDATE work_leases SET state='reclaimed', reclaimed_at=?, reclaim_reason=?, dispatched_ops=?
-WHERE lease_id=? AND state='active' AND lease_until<=?`,
-			now, "租约过期失联", dispatchedOps, lease.LeaseID, now)
+WHERE lease_id=? AND state='active' AND lease_until<=?`, now, detail, len(operations), lease.LeaseID, now)
 		if err != nil {
 			return result, err
 		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			continue // 并发回收：另一回收者已取得
-		}
-		// 单元回到 ready（可重新核对领取；已派发操作的效果另行核对）。
-		if _, err := tx.Exec(`UPDATE work_units SET state='ready', updated_at=? WHERE unit_id=? AND state IN ('claimed','running')`,
-			now, lease.UnitID); err != nil {
+		if n, err := res.RowsAffected(); err != nil || n != 1 {
+			if err == nil {
+				err = ErrLeaseConflict
+			}
 			return result, err
 		}
-		// 审计：失联回收与已派发操作数（未知外部效果进入核对）。
+		// No WorkUnit reconcile state exists. Preserve the claimed/running
+		// barrier for actions even when no Operation is linked. Lease expiry
+		// alone does not establish that an external effect was never issued.
+		if activeUnit && !holdAction {
+			if _, err := tx.Exec(`UPDATE work_units SET state='ready', updated_at=?
+WHERE unit_id=? AND lease_generation=? AND state IN ('claimed','running')`, now, lease.UnitID, lease.LeaseGeneration); err != nil {
+				return result, err
+			}
+		}
 		if err := recordAudit(tx, AuditEvent{
 			TaskID: lease.TaskID, UnitID: lease.UnitID, Event: "lease_reclaimed", Actor: "system",
-			Summary: fmt.Sprintf("回收过期租约（已派发操作 %d，进入核对）", dispatchedOps), OccurredAt: now,
+			Summary: detail, OccurredAt: now,
 		}); err != nil {
 			return result, err
 		}
 		result.Reclaimed++
-		result.PendingOps += dispatchedOps
+		for _, op := range operations {
+			pendingOps[op] = true
+		}
 	}
+	result.PendingOps = len(pendingOps)
 	result.Reason = "租约过期失联回收"
 	return result, nil
+}
+
+// An Operation is tied to the leased step, never to all work under the task.
+func reconcileLeasedActionOperations(tx *sql.Tx, task, step string, stamp int64) ([]string, error) {
+	if step == "" {
+		return nil, nil
+	}
+	rows, err := tx.Query(`SELECT operation_id,state FROM operations
+WHERE task_id=? AND step_id=? AND state IN ('dispatched','running','reconcile')`, task, step)
+	if err != nil {
+		return nil, err
+	}
+	var ids, newlyUnknown []string
+	for rows.Next() {
+		var id, state string
+		if err = rows.Scan(&id, &state); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+		if state != string(V3OperationReconcile) {
+			newlyUnknown = append(newlyUnknown, id)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range newlyUnknown {
+		if _, err = transitionOperation(tx, id, V3OperationReconcile, stamp); err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
 }
 
 // ---------------------------------------------------------------------------
