@@ -106,6 +106,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/admissions/{key}", s.admission)
 	api.HandleFunc("GET /api/v1/decisions", s.listDecisions)
 	api.HandleFunc("GET /api/v1/attention", s.listAttention)
+	api.HandleFunc("GET /api/v1/attention/events", s.attentionEvents)
 	api.HandleFunc("GET /api/v1/attention/{id}", s.attentionDetail)
 	api.HandleFunc("GET /api/v1/approvals", s.listDecisions)
 	api.HandleFunc("POST /api/v1/approvals/{id}/decision", s.decideApproval)

@@ -355,6 +355,9 @@ ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec
 	if _, err = tx.Exec("DELETE FROM benchmark_target_holds WHERE step_id=?", d.step); err != nil {
 		return err
 	}
+	if err = recordBenchmarkAttentionTerminal(tx, d, stamp); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

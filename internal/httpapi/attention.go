@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -48,4 +49,28 @@ func (s Server) attentionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, http.StatusOK, item)
+}
+
+func (s Server) attentionEvents(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 50
+	var err error
+	if raw := q.Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+	}
+	if err != nil || limit < 1 || limit > 100 {
+		fail(w, http.StatusBadRequest, "invalid_attention_limit", "无效的待处理事件页大小")
+		return
+	}
+	page, err := s.Store.ReadAttentionFeed(r.Context(), s.principal(r), q.Get("after"), limit)
+	if errors.Is(err, work.ErrAttentionCursorReset) {
+		fail(w, http.StatusConflict, "attention_cursor_reset", err.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, http.StatusOK, page)
 }

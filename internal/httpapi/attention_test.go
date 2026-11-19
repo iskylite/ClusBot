@@ -54,4 +54,13 @@ func TestAttentionWithoutModelRequiresLogin(t *testing.T) {
 	if resp.Code != http.StatusNotFound || !strings.Contains(resp.Body.String(), "attention_not_found") {
 		t.Fatalf("missing item detail got %d %s", resp.Code, resp.Body)
 	}
+	resp = req(http.MethodGet, "/api/v1/attention/events", "", cookie)
+	var feed work.AttentionFeedPage
+	if err := json.Unmarshal(resp.Body.Bytes(), &feed); err != nil || resp.Code != http.StatusOK || feed.Cursor == "" || feed.Events == nil {
+		t.Fatalf("empty feed without a model: %d %s %v", resp.Code, resp.Body, err)
+	}
+	resp = req(http.MethodGet, "/api/v1/attention/events?after=stale", "", cookie)
+	if resp.Code != http.StatusConflict || !strings.Contains(resp.Body.String(), "attention_cursor_reset") {
+		t.Fatalf("stale cursor must request resnapshot: %d %s", resp.Code, resp.Body)
+	}
 }

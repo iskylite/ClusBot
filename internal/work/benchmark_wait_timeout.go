@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -16,7 +17,7 @@ func (s *Store) applyBenchmarkTimeouts(ctx context.Context, stamp int64) error {
 	}
 	defer tx.Rollback()
 	rows, err := tx.QueryContext(ctx, `SELECT c.command_id,c.target_id,c.target_version,c.payload_digest,
-b.step_id,b.task_id,b.operation_id,b.phase,b.call_until,r.stop_requested,
+b.step_id,b.task_id,b.operation_id,b.phase,b.call_until,r.stop_requested,r.actor,
 w.match_key,w.wait_version,w.state,o.state
 FROM outbox_commands c
 JOIN waits w ON w.wait_id=c.target_id AND w.task_id=c.task_id AND w.kind='external'
@@ -30,16 +31,16 @@ ORDER BY c.next_attempt_at,c.command_id LIMIT 50`, stamp)
 		return err
 	}
 	type candidate struct {
-		key, waitID, fingerprint, step, task, operation, phase, matchKey, waitState, opState string
-		version, currentVersion                                                              int
-		leaseUntil                                                                           int64
-		stopping                                                                             bool
+		key, waitID, fingerprint, step, task, operation, phase, matchKey, waitState, opState, actor string
+		version, currentVersion                                                                     int
+		leaseUntil                                                                                  int64
+		stopping                                                                                    bool
 	}
 	var list []candidate
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.key, &c.waitID, &c.version, &c.fingerprint, &c.step, &c.task, &c.operation,
-			&c.phase, &c.leaseUntil, &c.stopping, &c.matchKey, &c.currentVersion, &c.waitState, &c.opState); err != nil {
+			&c.phase, &c.leaseUntil, &c.stopping, &c.actor, &c.matchKey, &c.currentVersion, &c.waitState, &c.opState); err != nil {
 			rows.Close()
 			return err
 		}
@@ -84,6 +85,10 @@ AND i.payload_digest=? AND e.closed_wait=0
 				return err
 			}
 			detail = "仅提前查询已存在的作业，未重发、未确认结果"
+			itemID := "benchmark-timeout:" + c.key
+			if err := enqueueAttentionFeed(tx, c.actor, itemID+":recheck", itemID, "benchmark_recheck_scheduled", "result_pending", stamp); err != nil {
+				return err
+			}
 		}
 		failure := ""
 		if disposition == "acknowledged" {
@@ -104,4 +109,20 @@ WHERE command_id=?`, disposition, failure, stamp, c.key); err != nil {
 		}
 	}
 	return tx.Commit()
+}
+
+// recordBenchmarkAttentionTerminal records terminal evidence only for a card
+// already created by the verified timeout consumer, never for every job.
+func recordBenchmarkAttentionTerminal(tx *sql.Tx, d benchmarkDispatch, stamp int64) error {
+	_, err := tx.Exec(`INSERT INTO attention_feed_events(actor,sequence,event_key,item_id,kind,state,occurred_at)
+SELECT e.actor,coalesce((SELECT max(sequence) FROM attention_feed_events WHERE actor=e.actor),0)+1,
+ e.item_id||':terminal',e.item_id,'benchmark_result_recorded','result_recorded',?
+FROM attention_feed_events e
+JOIN benchmark_runs r ON r.actor=e.actor AND r.task_id=?
+JOIN operations o ON o.operation_id=? AND o.task_id=r.task_id AND o.step_id=?
+JOIN waits w ON w.wait_id='benchmark:'||o.step_id AND w.match_key=o.operation_id AND w.wait_version=1
+WHERE e.kind='benchmark_recheck_scheduled' AND e.event_key='benchmark-timeout:timer:'||w.wait_id||':follow-up:recheck'
+ AND o.state IN ('succeeded','failed','cancelled')
+ON CONFLICT(actor,event_key) DO NOTHING`, stamp, d.task, d.operation, d.step)
+	return err
 }

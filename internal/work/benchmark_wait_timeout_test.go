@@ -137,4 +137,9 @@ JOIN waits w ON w.wait_id=c.target_id WHERE b.task_id=? AND c.kind='wait_timeout
 	if _, err := s.ReadAttention(ctx, "another:actor", attentionID, now()); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("foreign timeout detail revealed: %v", err)
 	}
+	feed, err := s.ReadAttentionFeed(ctx, actor, "", 5)
+	if err != nil || len(feed.Events) != 2 || feed.Events[0].Kind != "benchmark_recheck_scheduled" ||
+		feed.Events[1].Kind != "benchmark_result_recorded" || feed.Events[1].ItemID != attentionID {
+		t.Fatalf("benchmark feed missed or repeated durable transition: %+v %v", feed, err)
+	}
 }
