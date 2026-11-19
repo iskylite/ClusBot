@@ -29,11 +29,27 @@ type DiscoveryAdmission struct {
 	Role            string `json:"role"`
 }
 
+// Historical builds could overwrite the candidate address using a different
+// scope while retaining the original scope. Use only the last successful
+// receipt in the original scope. Candidates with no such receipt fail closed.
+const scopedDiscoveryCandidate = `SELECT c.candidate_id,c.source,c.scope,c.serial,
+d.address,d.seen_at,c.state,c.admitted_ref,c.check_task_id
+FROM discovery_candidates c JOIN discovery_observations d ON d.rowid=(
+ SELECT x.rowid FROM discovery_observations x
+ JOIN discovery_plans p ON p.plan_id=x.plan_id
+ JOIN discovery_occurrences o ON o.plan_id=x.plan_id AND o.scheduled_at=x.scheduled_at
+ WHERE x.candidate_id=c.candidate_id AND p.source=c.source AND p.scope=c.scope AND o.status='done'
+ ORDER BY x.seen_at DESC,x.scheduled_at DESC,x.plan_id DESC,x.ordinal DESC LIMIT 1
+)`
+
 func (s *Store) ListDiscoveryCandidates(ctx context.Context, actor string) ([]DiscoveryCandidate, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT c.candidate_id,c.source,c.scope,c.serial,c.address,c.seen_at,c.state,c.admitted_ref,c.check_task_id FROM discovery_candidates c
+	stamp := now()
+	rows, err := s.db.QueryContext(ctx, scopedDiscoveryCandidate+`
 WHERE EXISTS(SELECT 1 FROM authorizations a WHERE a.subject=? AND a.action='discover' AND a.object_ref=c.source
-AND a.scope_label=c.scope AND a.revoked_at=0 AND a.valid_from<=? AND a.expires_at>?)
-ORDER BY c.seen_at DESC,c.candidate_id LIMIT 500`, actor, now(), now())
+AND a.scope_label=c.scope AND a.revoked_at=0 AND a.valid_from<=? AND a.expires_at>?
+AND CASE WHEN json_valid(a.param_constraints) THEN json_extract(a.param_constraints,'$.source')=c.source
+AND json_extract(a.param_constraints,'$.scope')=c.scope ELSE 0 END)
+ORDER BY d.seen_at DESC,c.candidate_id LIMIT 500`, actor, stamp, stamp)
 	if err != nil {
 		return nil, err
 	}
@@ -63,18 +79,18 @@ func (s *Store) AdmitDiscoveryCandidate(ctx context.Context, actor string, req D
 		return c, err
 	}
 	defer tx.Rollback()
-	c.ID = req.Candidate
-	if err = tx.QueryRow(`SELECT source,scope,serial,address,seen_at,state,admitted_ref,check_task_id FROM discovery_candidates WHERE candidate_id=?`, c.ID).
-		Scan(&c.Source, &c.Scope, &c.Serial, &c.Address, &c.SeenAt, &c.State, &c.Asset, &c.CheckTask); err != nil {
-		return c, err
+	err = tx.QueryRowContext(ctx, scopedDiscoveryCandidate+" WHERE c.candidate_id=?", req.Candidate).
+		Scan(&c.ID, &c.Source, &c.Scope, &c.Serial, &c.Address, &c.SeenAt, &c.State, &c.Asset, &c.CheckTask)
+	if err != nil {
+		return DiscoveryCandidate{}, err
 	}
 	stamp := now()
 	ok, err := discoveryGranted(tx, actor, c.Source, c.Scope, false, stamp)
 	if err != nil {
-		return c, err
+		return DiscoveryCandidate{}, err
 	}
 	if !ok {
-		return c, ErrAuthorizationDenied
+		return DiscoveryCandidate{}, sql.ErrNoRows
 	}
 	if c.Serial != req.ConfirmedSerial || c.SeenAt != req.ExpectedSeenAt || (c.State != "observed" && c.State != "admitted") {
 		return c, fmt.Errorf("%w：身份或观测版本冲突，不可纳管", ErrConflict)

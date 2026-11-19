@@ -347,10 +347,12 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 		}
 
 		if _, err = tx.Exec(`INSERT INTO discovery_candidates(candidate_id,source,scope,serial,address,seen_at,state) VALUES(?,?,?,?,?,?,?)
-ON CONFLICT(candidate_id) DO UPDATE SET address=excluded.address,seen_at=excluded.seen_at,
+ON CONFLICT(candidate_id) DO UPDATE SET
+address=CASE WHEN discovery_candidates.scope=excluded.scope THEN excluded.address ELSE discovery_candidates.address END,
+seen_at=CASE WHEN discovery_candidates.scope=excluded.scope THEN excluded.seen_at ELSE discovery_candidates.seen_at END,
 state=CASE WHEN discovery_candidates.state='conflict' OR discovery_candidates.scope<>excluded.scope OR excluded.state='conflict'
 THEN 'conflict' WHEN discovery_candidates.admitted_ref<>'' THEN 'admitted' ELSE excluded.state END
-WHERE discovery_candidates.seen_at<=excluded.seen_at`, candidate, d.source, d.scope, o.Serial, ip, stamp, state); err != nil {
+WHERE discovery_candidates.scope<>excluded.scope OR discovery_candidates.seen_at<=excluded.seen_at`, candidate, d.source, d.scope, o.Serial, ip, stamp, state); err != nil {
 			return err
 		}
 		if _, err = tx.Exec(`INSERT INTO discovery_observations VALUES(?,?,?,?,?,?)`, d.plan, d.at, i, candidate, ip, stamp); err != nil {

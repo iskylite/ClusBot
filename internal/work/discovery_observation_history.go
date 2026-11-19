@@ -93,3 +93,21 @@ WHERE d.plan_id=? AND o.status='done'`
 	}
 	return out, rows.Err()
 }
+
+// Do not trust or rewrite historical candidate addresses; the scoped read
+// projects immutable receipts. Quarantine older candidates whose later
+// cross-scope receipt may have been recorded without marking conflict.
+func migrateDiscoveryObservationCandidateIndex(tx *sql.Tx) error {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS discovery_observations_by_candidate
+ON discovery_observations(candidate_id,seen_at DESC,scheduled_at DESC,plan_id DESC,ordinal DESC)`); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE discovery_candidates AS c SET state='conflict'
+WHERE c.state<>'conflict' AND EXISTS(
+ SELECT 1 FROM discovery_observations x
+ JOIN discovery_plans p ON p.plan_id=x.plan_id
+ JOIN discovery_occurrences o ON o.plan_id=x.plan_id AND o.scheduled_at=x.scheduled_at
+ WHERE x.candidate_id=c.candidate_id AND (p.source<>c.source OR p.scope<>c.scope) AND o.status='done'
+)`)
+	return err
+}
