@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -180,6 +181,10 @@ func (s *Store) PreflightBenchmark(ctx context.Context, actor string, ref Benchm
 		return BenchmarkPreflight{}, err
 	}
 	defer tx.Rollback()
+	return preflightBenchmarkTx(ctx, tx, actor, ref, provider)
+}
+
+func preflightBenchmarkTx(ctx context.Context, tx *sql.Tx, actor string, ref BenchmarkProfileRef, provider BenchmarkProvider) (BenchmarkPreflight, error) {
 	p, err := readBenchmarkProfile(tx, ref.Profile, ref.Version)
 	if err != nil {
 		return BenchmarkPreflight{}, err

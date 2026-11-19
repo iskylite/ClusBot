@@ -132,3 +132,24 @@ func (s Server) benchmarkEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusAccepted, map[string]bool{"duplicate": dup})
 }
+
+func (s Server) benchmarkAdmissionPreview(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.BenchmarkAdmissionPreviewInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.PreviewBenchmarkAdmissionAI(r.Context(), s.principal(r), in, s.BenchmarkProvider, s.Settings.InterpretBenchmarkAdmission)
+	switch {
+	case errors.Is(err, work.ErrBenchmarkAdmissionScale):
+		fail(w, http.StatusConflict, "benchmark_scale_unverified", err.Error())
+	case errors.Is(err, work.ErrBenchmarkAdmissionClarify):
+		fail(w, http.StatusBadRequest, "benchmark_admission_clarify", err.Error())
+	case errors.Is(err, work.ErrBenchmarkAdmissionModel):
+		fail(w, http.StatusBadGateway, "benchmark_admission_model_failed", err.Error())
+	case err != nil:
+		benchmarkError(w, err)
+	default:
+		jsonResponse(w, http.StatusOK, out)
+	}
+}
