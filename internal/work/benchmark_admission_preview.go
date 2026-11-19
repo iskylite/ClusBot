@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ type BenchmarkAdmissionModelInput struct {
 type BenchmarkAdmissionModel func(context.Context, BenchmarkAdmissionModelInput, int) (string, error)
 
 type BenchmarkAdmissionPreview struct {
+	PreviewID        string                      `json:"preview_id"`
 	State            string                      `json:"state"`
 	Selection        BenchmarkAdmissionCandidate `json:"selection"`
 	Preflight        BenchmarkPreflight          `json:"preflight"`
@@ -79,6 +81,10 @@ func (s *Store) benchmarkAdmissionVisible(ctx context.Context, actor, text strin
 		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
 	}
 	defer tx.Rollback()
+	return benchmarkAdmissionVisibleTx(ctx, tx, actor, text, provider)
+}
+
+func benchmarkAdmissionVisibleTx(ctx context.Context, tx *sql.Tx, actor, text string, provider BenchmarkProvider) (BenchmarkAdmissionCandidate, BenchmarkPreflight, error) {
 	tokens := benchmarkAdmissionTokens.FindAllString(strings.ToUpper(text), 65)
 	if len(tokens) == 0 || len(tokens) > 64 {
 		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionClarify
@@ -108,7 +114,10 @@ WHERE p.target IN (SELECT value FROM json_each(?)) ORDER BY p.target LIMIT 2`, t
 	if len(candidates) != 1 {
 		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionClarify
 	}
-	want := candidates[0]
+	return benchmarkAdmissionCandidateTx(ctx, tx, actor, candidates[0], provider)
+}
+
+func benchmarkAdmissionCandidateTx(ctx context.Context, tx *sql.Tx, actor string, want BenchmarkAdmissionCandidate, provider BenchmarkProvider) (BenchmarkAdmissionCandidate, BenchmarkPreflight, error) {
 	flight, err := preflightBenchmarkTx(ctx, tx, actor, want.Profile, provider)
 	if err != nil {
 		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
@@ -144,7 +153,20 @@ WHERE p.target IN (SELECT value FROM json_each(?)) ORDER BY p.target LIMIT 2`, t
 		}
 		identity = append(identity, []any{a.ObjectRef, a.Identity, a.Revision, a.OwnershipEpoch})
 	}
-	want.inventoryFingerprint = digest(toJSON(identity))
+	profile, err := readBenchmarkProfile(tx, want.Profile.Profile, want.Profile.Version)
+	if err != nil {
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
+	}
+	var authorizations []any
+	stamp := now()
+	for _, c := range profile.Cases {
+		_, grants, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
+		if err != nil {
+			return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
+		}
+		authorizations = append(authorizations, []any{c.Key, grants})
+	}
+	want.inventoryFingerprint = digest(toJSON([]any{identity, authorizations, profile}))
 	return want, flight, nil
 }
 
@@ -184,14 +206,25 @@ func (s *Store) PreviewBenchmarkAdmissionAI(ctx context.Context, actor string, i
 	if err := parseBenchmarkAdmissionModel(answer, in.Text, before); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
-	fresh, preflight, err := s.benchmarkAdmissionVisible(ctx, actor, in.Text, provider)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	defer tx.Rollback()
+	fresh, preflight, err := benchmarkAdmissionVisibleTx(ctx, tx, actor, in.Text, provider)
 	if err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	if before.Target != fresh.Target || before.Profile != fresh.Profile || !slices.Equal(before.AssetRefs, fresh.AssetRefs) || before.inventoryFingerprint != fresh.inventoryFingerprint {
-		return BenchmarkAdmissionPreview{}, fmt.Errorf("%w：目标绑定或资产范围已变化，请重新预览", ErrConflict)
+		return BenchmarkAdmissionPreview{}, fmt.Errorf("%w：目标绑定、资产身份或授权已变化，请重新预览", ErrConflict)
 	}
-	return BenchmarkAdmissionPreview{State: "preview_only", Selection: fresh, Preflight: preflight}, nil
+	out := BenchmarkAdmissionPreview{PreviewID: id(), State: "preview_only", Selection: fresh, Preflight: preflight}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_admission_previews
+(preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at) VALUES(?,?,?,?,?,?,?)`,
+		out.PreviewID, actor, fresh.Target, fresh.Profile.Profile, fresh.Profile.Version, fresh.inventoryFingerprint, now()); err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	return out, tx.Commit()
 }
 
 func parseBenchmarkAdmissionModel(raw, text string, want BenchmarkAdmissionCandidate) error {

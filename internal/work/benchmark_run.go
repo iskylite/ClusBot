@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -163,6 +164,9 @@ func benchmarkAsset(tx *sql.Tx, ref string) (OpsAsset, error) {
 }
 
 func (s *Store) SubmitBenchmarkRun(ctx context.Context, actor string, request BenchmarkRunRequest, provider BenchmarkProvider) (string, error) {
+	if strings.HasPrefix(request.RequestKey, benchmarkAdmissionConfirmPrefix) {
+		return "", ErrBenchmarkInput
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err

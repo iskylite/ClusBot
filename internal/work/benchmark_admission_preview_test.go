@@ -2,10 +2,12 @@ package work
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -61,7 +63,7 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 		t.Fatal("fixture must be outside the old fixed phrase route")
 	}
 	out, err := preview(actor, spoken, model(yes))
-	if err != nil || out.State != "preview_only" || out.ExecutionStarted ||
+	if err != nil || out.PreviewID == "" || out.State != "preview_only" || out.ExecutionStarted ||
 		out.Selection.Profile != (BenchmarkProfileRef{"full", 1}) || out.Preflight.FacilityStatus != "not_verified" || !out.Preflight.CanQueue {
 		t.Fatalf("wrong local admission preview: %+v %v", out, err)
 	}
@@ -110,4 +112,78 @@ func TestBenchmarkAdmissionAIIsOnlyAuthorizedPreview(t *testing.T) {
 		sideEffects != 0 || p.started != 0 || p.looked != 0 || p.read != 0 {
 		t.Fatalf("preview caused dispatch or reservations: %d %v", sideEffects, err)
 	}
+	confirm := BenchmarkAdmissionConfirmationInput{Action: "accept_benchmark_admission"}
+	accept := func(who, ref string, in BenchmarkAdmissionConfirmationInput, provider BenchmarkProvider) (BenchmarkAdmissionConfirmation, error) {
+		return s.ConfirmBenchmarkAdmission(ctx, who, ref, in, provider)
+	}
+	if _, err := accept("other", out.PreviewID, confirm, p); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("foreign actor could confirm: %v", err)
+	}
+	if _, err := accept(actor, out.PreviewID, BenchmarkAdmissionConfirmationInput{Action: "preview"}, p); !errors.Is(err, ErrBenchmarkInput) {
+		t.Fatalf("invalid action can queue: %v", err)
+	}
+	if _, err := accept(actor, out.PreviewID, confirm, p); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("moved published binding did not invalidate preview: %v", err)
+	}
+	if err := s.SetBenchmarkChatTarget(ctx, actor, "POD7", &BenchmarkProfileRef{Profile: "full", Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := accept(actor, out.PreviewID, confirm, nil); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("missing current capability could queue: %v", err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec("UPDATE ops_assets SET revision=revision+1 WHERE object_ref='node-1'")
+	if _, err := accept(actor, out.PreviewID, confirm, p); !errors.Is(err, ErrBenchmarkAdmissionPreviewStale) {
+		t.Fatalf("changed asset identity/revision could queue: %v", err)
+	}
+	exec("UPDATE ops_assets SET revision=revision-1 WHERE object_ref='node-1'")
+	exec("UPDATE authorizations SET revoked_at=? WHERE action='benchmark.execute' AND subject=?", now(), actor)
+	if _, err := accept(actor, out.PreviewID, confirm, p); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("revoked grant could queue: %v", err)
+	}
+	exec("UPDATE authorizations SET revoked_at=0 WHERE action='benchmark.execute' AND subject=?", actor)
+	if _, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{benchmarkAdmissionConfirmPrefix + out.PreviewID, "full", 1}, p); !errors.Is(err, ErrBenchmarkInput) {
+		t.Fatalf("raw submission could claim server reference key: %v", err)
+	}
+	results, errs := make(chan BenchmarkAdmissionConfirmation, 2), make(chan error, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Go(func() {
+			receipt, err := accept(actor, out.PreviewID, confirm, p)
+			results <- receipt
+			errs <- err
+		})
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	var task string
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for result := range results {
+		if result.State != "accepted" || result.TaskID == "" || task != "" && task != result.TaskID {
+			t.Fatalf("confirmation not idempotent: %+v previous=%s", result, task)
+		}
+		task = result.TaskID
+	}
+	if again, err := accept(actor, out.PreviewID, confirm, nil); err != nil || again.TaskID != task {
+		t.Fatalf("stable replay requires no provider: %+v %v", again, err)
+	}
+	var runs, ops, audit int
+	if err := s.db.QueryRow("SELECT (SELECT count(*) FROM benchmark_runs),(SELECT count(*) FROM operations),(SELECT count(*) FROM runtime_audit WHERE event='benchmark_admission_confirmed')").
+		Scan(&runs, &ops, &audit); err != nil || runs != 1 || ops != 0 || audit != 1 {
+		t.Fatalf("confirmation effects wrong: runs=%d operations=%d audit=%d error=%v", runs, ops, audit, err)
+	}
+	if p.started != 0 || p.looked != 0 || p.read != 0 {
+		t.Fatal("confirmation dispatched a supplier operation")
+	}
+
 }

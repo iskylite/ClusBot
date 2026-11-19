@@ -153,3 +153,25 @@ func (s Server) benchmarkAdmissionPreview(w http.ResponseWriter, r *http.Request
 		jsonResponse(w, http.StatusOK, out)
 	}
 }
+
+func (s Server) confirmBenchmarkAdmission(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if !validID(r.PathValue("id")) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	var in work.BenchmarkAdmissionConfirmationInput
+	if !decode(w, r, &in) {
+		return
+	}
+	ok, err := s.Store.ConfirmBenchmarkAdmission(r.Context(), s.principal(r), r.PathValue("id"), in, s.BenchmarkProvider)
+	if errors.Is(err, work.ErrBenchmarkAdmissionPreviewStale) {
+		fail(w, http.StatusConflict, "benchmark_admission_preview_stale", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, ok)
+}

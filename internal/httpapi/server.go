@@ -123,6 +123,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/domain/benchmark-chat-targets/{target}", s.benchmarkChatTarget)
 	api.HandleFunc("POST /api/v1/domain/benchmark-preflight", s.benchmarkPreflight)
 	api.HandleFunc("POST /api/v1/domain/benchmark-admission/preview", s.benchmarkAdmissionPreview)
+	api.HandleFunc("POST /api/v1/domain/benchmark-admission/preview/{id}/confirm", s.confirmBenchmarkAdmission)
 	api.HandleFunc("GET /api/v1/domain/benchmark-profiles/{key}/draft", s.readBenchmarkDraft)
 	api.HandleFunc("PUT /api/v1/domain/benchmark-profiles/{key}/draft", s.saveBenchmarkDraft)
 	api.HandleFunc("POST /api/v1/domain/benchmark-profiles/{key}/draft/publish", s.publishBenchmarkDraft)
