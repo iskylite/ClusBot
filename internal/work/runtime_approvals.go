@@ -95,6 +95,28 @@ FROM approvals WHERE request_key=?`, requestKey).
 	if err != nil {
 		return Approval{}, err
 	}
+	// 内容/权限/版本变化：旧确认无效（需重判）。
+	if expectedVersions.ContractRevision > 0 && existing.ContractRevision != expectedVersions.ContractRevision {
+		return Approval{}, fmt.Errorf("%w：合同版本已变化（%d≠%d），旧确认无效需重判", ErrApprovalStale, existing.ContractRevision, expectedVersions.ContractRevision)
+	}
+	if expectedVersions.AssetRevision > 0 && existing.AssetRevision != expectedVersions.AssetRevision {
+		return Approval{}, fmt.Errorf("%w：资产版本已变化（%d≠%d），旧确认无效需重判", ErrApprovalStale, existing.AssetRevision, expectedVersions.AssetRevision)
+	}
+	if expectedVersions.PolicyVersion > 0 && existing.PolicyVersion != expectedVersions.PolicyVersion {
+		return Approval{}, fmt.Errorf("%w：策略版本已变化（%d≠%d），旧确认无效需重判", ErrApprovalStale, existing.PolicyVersion, expectedVersions.PolicyVersion)
+	}
+	// A named approver is a constraint, not a grant of confirm permission.
+	if existing.DecidedBy != "" && existing.DecidedBy != decidedBy {
+		return Approval{}, fmt.Errorf("%w：无权确认该请求", ErrAuthorizationDenied)
+	}
+	// 无权确认：决定者必须有确认权限（确认不能补足缺失权限）。
+	authDecision, err := decideAuthorization(tx, decidedBy, "confirm", existing.ObjectRef, "", now, false)
+	if err != nil {
+		return Approval{}, err
+	}
+	if authDecision.Outcome != "allowed" {
+		return Approval{}, fmt.Errorf("%w：决定者 %s 无权确认该动作（确认不能补足缺失权限）", ErrAuthorizationDenied, decidedBy)
+	}
 	// 重复人工决定返回原决定；到期不伪装成已执行的人工决定。
 	if existing.Decision == "expired" {
 		return Approval{}, ErrApprovalExpired
@@ -108,21 +130,6 @@ FROM approvals WHERE request_key=?`, requestKey).
 			return Approval{}, err
 		}
 		return Approval{}, ErrApprovalExpired
-	}
-	// 内容/权限/版本变化：旧确认无效（需重判）。
-	if expectedVersions.ContractRevision > 0 && existing.ContractRevision != expectedVersions.ContractRevision {
-		return Approval{}, fmt.Errorf("%w：合同版本已变化（%d≠%d），旧确认无效需重判", ErrApprovalStale, existing.ContractRevision, expectedVersions.ContractRevision)
-	}
-	if expectedVersions.AssetRevision > 0 && existing.AssetRevision != expectedVersions.AssetRevision {
-		return Approval{}, fmt.Errorf("%w：资产版本已变化（%d≠%d），旧确认无效需重判", ErrApprovalStale, existing.AssetRevision, expectedVersions.AssetRevision)
-	}
-	// 无权确认：决定者必须有确认权限（确认不能补足缺失权限）。
-	authDecision, err := decideAuthorization(tx, decidedBy, "confirm", existing.ObjectRef, "", now, false)
-	if err != nil {
-		return Approval{}, err
-	}
-	if authDecision.Outcome != "allowed" {
-		return Approval{}, fmt.Errorf("%w：决定者 %s 无权确认该动作（确认不能补足缺失权限）", ErrAuthorizationDenied, decidedBy)
 	}
 	// 决定（条件更新，只一次）。
 	res, err := tx.Exec(`UPDATE approvals SET decision=?, decided_at=?, decided_by=? WHERE approval_id=? AND decision='pending'`,
@@ -209,17 +216,14 @@ func (s *Store) DecideApproval(ctx context.Context, approvalID, decision, decide
 		return Approval{}, err
 	}
 	defer tx.Rollback()
-	var a Approval
-	err = tx.QueryRowContext(ctx, `SELECT approval_id,subject,action,object_ref,params_digest,
-contract_revision,policy_version,asset_revision,decided_by,expires_at,decision,decided_at,request_key,created_at
-FROM approvals WHERE approval_id=?`, approvalID).
-		Scan(&a.ApprovalID, &a.Subject, &a.Action, &a.ObjectRef, &a.ParamsDigest,
-			&a.ContractRevision, &a.PolicyVersion, &a.AssetRevision, &a.DecidedBy,
-			&a.ExpiresAt, &a.Decision, &a.DecidedAt, &a.RequestKey, &a.CreatedAt)
+	// Match the owner used by the attention reads. An unknown or foreign
+	// ID looks identical, even if the caller can confirm the same object.
+	var requestKey string
+	err = tx.QueryRowContext(ctx, `SELECT request_key FROM approvals WHERE approval_id=? AND subject=?`, approvalID, decidedBy).Scan(&requestKey)
 	if err != nil {
 		return Approval{}, err
 	}
-	updated, err := decideApproval(tx, a.RequestKey, decision, decidedBy, Approval{}, now())
+	updated, err := decideApproval(tx, requestKey, decision, decidedBy, Approval{}, now())
 	if errors.Is(err, ErrApprovalExpired) {
 		// Commit the authoritative expiry and its feed event, even though the
 		// requested human decision cannot be given after the deadline.
