@@ -3,10 +3,11 @@ import { Check, FolderOpen, LoaderCircle } from 'lucide-react'
 import { api, type DiscoveredModel, type ModelAttributes, type ModelProtocol, type ModelSettings, type Settings } from './api'
 
 import {ModelRolesSettings} from './ModelRolesSettings'
+import {SkillDirectorySettings} from './SkillDirectorySettings'
 
 const message = (error: unknown) => error instanceof Error ? error.message : '请求未完成，请重试'
 
-export function SettingsPage({ onSaved,openConnections }: { onSaved: (value: Settings) => void; openConnections:()=>void }) {
+export function SettingsPage({ onSaved,openConnections,openProposals }: { onSaved: (value: Settings) => void; openConnections:()=>void; openProposals:()=>void }) {
   const [settings, setSettings] = useState<Settings>()
   const [error, setError] = useState('')
 
@@ -23,13 +24,14 @@ export function SettingsPage({ onSaved,openConnections }: { onSaved: (value: Set
 
   return <main className="main settings-page">
     <header className="page-heading"><h1>设置</h1></header>
-    <nav aria-label="模型设置分区" className="model-settings-nav">
-      <a href="#model-default">默认模型</a><a href="#model-profiles">模型档案</a><a href="#model-roles">角色绑定</a>
+    <nav aria-label="设置分区" className="model-settings-nav">
+      <a href="#model-default">默认模型</a><a href="#model-profiles">模型档案</a><a href="#model-roles">角色绑定</a><a href="#skill-directory">Skill 目录</a>
     </nav>
     {settings ? <ModelForm initial={settings} onSaved={onSaved}/> : error ?
       <p className="error" role="alert">{error}</p> :
       <p className="muted" role="status">正在加载设置…</p>}
     <ModelRolesSettings/>
+    <SkillDirectorySettings openProposals={openProposals}/>
     <section className="settings-card" aria-labelledby="settings-connections-title">
       <h2 id="settings-connections-title">MCP 工具与连接</h2>
       <p className="muted">管理连接、试连和工具授权。保存连接不试连；会话选择在对话内单独设置。</p>

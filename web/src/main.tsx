@@ -340,7 +340,7 @@ function Workspace({logout}: {logout: () => void}) {
     {section==='artifacts' && <Artifacts key={JSON.stringify([id,scope,artifactTask])} selected={id} scope={scope} taskID={artifactTask} navigate={navigate}/>}
     {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage selected={id} sourceId={source} navigate={navigate}/>)}
     {section==='connections' && <ConnectionsPage selected={id} navigate={navigate}/>}
-    {section==='settings' && <SettingsPage onSaved={setSettings} openConnections={()=>navigate('/connections')}/>}
+    {section==='settings' && <SettingsPage onSaved={setSettings} openConnections={()=>navigate('/connections')} openProposals={()=>navigate('/memory/skill-proposals')}/>}
     {newWork&&<NewWorkDialog scope={scope} send={submitTask} onReceipt={onTask} onDismiss={dismissNewWork}/>}
   </div></VisionContext.Provider>
 }
