@@ -1302,7 +1302,7 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 			if findErr == nil {
 				boundaryErr := requireOrdinaryTaskFollowup(tx, existing.ID)
 				if boundaryErr != nil {
-					specialized = errors.Is(boundaryErr, ErrDiscoveryRecoveryUnsupported) || errors.Is(boundaryErr, ErrDeterministicTaskRecoveryUnsupported)
+					specialized = isDedicatedTaskBoundary(boundaryErr)
 					if !specialized || task || changesDelivery || len(reads) > 0 || delivery.ReplaceMaterials {
 						return Run{}, boundaryErr
 					}
@@ -1622,7 +1622,7 @@ func (s *Store) Detail(key string, isTask bool) (Detail, error) {
 	if isTask {
 		boundaryErr := requireOrdinaryTaskFollowup(tx, d.Task.ID)
 		switch {
-		case errors.Is(boundaryErr, ErrDiscoveryRecoveryUnsupported), errors.Is(boundaryErr, ErrDeterministicTaskRecoveryUnsupported):
+		case isDedicatedTaskBoundary(boundaryErr):
 			specializedTask = d.Task.ID
 		case boundaryErr != nil:
 			return d, boundaryErr

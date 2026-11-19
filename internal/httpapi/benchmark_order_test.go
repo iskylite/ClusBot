@@ -137,6 +137,20 @@ func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dedicated, err := a.store.Detail(id, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []struct{ path, body string }{
+		{"/task", `{"client_request_id":"benchmark-no-model-generic-task","text":"继续办理"}`},
+		{"/messages", `{"client_request_id":"benchmark-no-model-generic-delivery","text":"修改验收条件","acceptance_criteria":"不要再测","revision":1}`},
+	} {
+		status, out := a.post("/api/v1/conversations/"+dedicated.Conversation.ID+req.path, req.body)
+		if status != http.StatusConflict || out["code"] != "benchmark_recovery_unsupported" {
+			t.Fatalf("dedicated task action waited for model or was accepted: %d %+v", status, out)
+		}
+	}
+
 	get := func(id string, auth bool, status int) *http.Response {
 		t.Helper()
 		req := a.request(http.MethodGet, "/api/v1/domain/benchmarks/"+id, "")

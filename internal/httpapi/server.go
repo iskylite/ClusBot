@@ -526,7 +526,7 @@ func (s Server) submit(task bool) http.HandlerFunc {
 			}
 		}
 		if task || delivery.Criteria != nil || delivery.Filename != nil || len(reads) > 0 || delivery.ReplaceMaterials {
-			if err := s.Store.CheckDeterministicFollowupConversation(r.Context(), r.PathValue("id")); err != nil {
+			if err := s.Store.CheckDedicatedFollowupConversation(r.Context(), r.PathValue("id")); err != nil {
 				writeError(w, err)
 				return
 			}

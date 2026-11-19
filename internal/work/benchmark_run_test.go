@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 type benchFixtureProvider struct {
@@ -341,5 +343,107 @@ func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
 	decision := submissionClassification{DelegationResult: DelegationResult{Route: &RouteDecision{Kind: "resume", TaskID: task, Revision: current.Revision}}}
 	if _, err := submitWorkTx(ctx, tx, "router-benchmark-recovery", "fixture", "继续原基准", "", "", false, Delivery{}, &decision, nil); !errors.Is(err, ErrBenchmarkRecoveryUnsupported) {
 		t.Fatalf("router resume bypassed the benchmark guard: %v", err)
+	}
+}
+
+func TestBenchmarkGenericRouteKeepsDedicatedTask(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "benchmark-continuation.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const actor = "user:session"
+	binding := BenchmarkBinding{Connection: "bench-test", Revision: 1, Tool: "test", Validator: benchmarkValidatorV1}
+	grant := DomainBenchmarkGrant{Revision: 1, Connection: binding.Connection, Tool: binding.Tool, ExpiresAt: now() + 120000}
+	if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "local-fixture", Benchmark: []DomainBenchmarkGrant{grant}}}); err != nil {
+		t.Fatal(err)
+	}
+	cases := []BenchmarkCase{{Key: "first", Binding: binding, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}
+	if err := s.PublishBenchmarkProfile(ctx, actor, BenchmarkProfile{Key: "guard-bench", Version: 1, Cases: cases}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &benchFixtureProvider{loseReply: true}
+	for _, route := range []string{"implicit-held", "implicit-chat", "explicit-task", "router-followup", "router-goal", "edit-goal"} {
+		t.Run(route, func(t *testing.T) {
+			task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{RequestKey: "benchmark-" + route, Profile: "guard-bench", Version: 1}, provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if route == "implicit-held" {
+				if worked, err := s.runBenchmarkOnce(ctx, provider); err != nil || !worked {
+					t.Fatalf("local fake in-flight setup: %v / %v", worked, err)
+				}
+			}
+			priorProgress, err := s.BenchmarkProgress(ctx, actor, task)
+			if err != nil || len(priorProgress.Cases) != 1 || (route == "implicit-held" && priorProgress.Cases[0].TargetHolds != 1) {
+				t.Fatalf("invalid benchmark baseline: %+v / %v", priorProgress, err)
+			}
+			before, err := s.Detail(task, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			goal := "错误地改成其他目标"
+			switch route {
+			case "implicit-chat", "implicit-held", "explicit-task":
+				run, err := s.SubmitWithDelivery(ctx, "submit-"+route, "问一下基准怎么做", "", before.Conversation.ID, route == "explicit-task", Delivery{})
+				if route == "explicit-task" {
+					if !errors.Is(err, ErrBenchmarkRecoveryUnsupported) || run.ID != "" {
+						t.Fatalf("explicit generic action must conflict: %+v / %v", run, err)
+					}
+				} else {
+					if err != nil || run.ID == "" || run.TaskID != "" || run.ConversationID != before.Conversation.ID {
+						t.Fatalf("discussion must remain independent: %+v / %v", run, err)
+					}
+					claimed, err := s.claim(ctx)
+					if err != nil || claimed.ID != run.ID || claimed.TaskID != "" {
+						t.Fatalf("discussion not independently claimed: %+v / %v", claimed, err)
+					}
+					s.execute(ctx, testProvider(func(_ context.Context, _ []Message, asTask bool, _ int, emit func(string) error) (*TokenUsage, error) {
+						if asTask {
+							return nil, ErrState
+						}
+						return nil, emit("独立的解释")
+					}), claimed, RunLimits{OutputTokens: 64, ActiveTime: time.Minute, ModelTimeout: time.Minute})
+					if events, res, err := s.Events(run.ID, 0); err != nil || res.Status != "completed" || len(events) == 0 {
+						t.Fatalf("unrelated discussion did not complete: %+v / %v", res, err)
+					}
+				}
+
+			case "router-followup", "router-goal":
+				kind := "follow_up"
+				if route == "router-goal" {
+					kind = "set_goal"
+				}
+				routed, err := s.SubmitRoutedChat(ctx, "submit-"+route, "调整"+before.Task.Title, "", "", Delivery{}, func(_ context.Context, text string, _ []Message, _ []RouteCandidate, _ int) (DelegationResult, error) {
+					decision := RouteDecision{Kind: kind, TaskID: task, Revision: before.Task.Revision, Fragment: text}
+					if kind == "set_goal" {
+						decision.Goal = goal
+					}
+					return DelegationResult{Route: &decision}, nil
+				})
+				if route == "router-followup" && (!errors.Is(err, ErrBenchmarkRecoveryUnsupported) || routed.ID != "") {
+					t.Fatalf("generic Router follow-up not refused: %+v / %v", routed, err)
+				}
+
+			case "edit-goal":
+				_, _ = s.EditTask(ctx, task, TaskEdit{Revision: before.Task.Revision, Goal: &goal})
+			}
+			after, err := s.Detail(task, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var generic int
+			if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM runs WHERE task_id=?", task).Scan(&generic); err != nil {
+				t.Fatal(err)
+			}
+			progress, err := s.BenchmarkProgress(ctx, actor, task)
+			if err != nil || !reflect.DeepEqual(priorProgress, progress) {
+				t.Fatalf("dedicated case disturbed: %+v / %v", progress, err)
+			}
+			if generic != 0 || *after.Task != *before.Task || after.Run != nil {
+				t.Errorf("generic=%d; mirror before=%+v after=%+v", generic, before.Task, after.Task)
+			}
+		})
 	}
 }

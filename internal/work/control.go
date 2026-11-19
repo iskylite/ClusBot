@@ -153,9 +153,9 @@ OR EXISTS(SELECT 1 FROM maintenance_tasks WHERE task_id=?)`, taskID, taskID).Sca
 	return exists, err
 }
 
-// CheckDeterministicFollowupConversation rejects explicit task writes before
+// CheckDedicatedFollowupConversation rejects explicit task writes before
 // admission (including model-off installations). Submission repeats the guard.
-func (s *Store) CheckDeterministicFollowupConversation(ctx context.Context, conversationID string) error {
+func (s *Store) CheckDedicatedFollowupConversation(ctx context.Context, conversationID string) error {
 	if conversationID == "" {
 		return nil
 	}
@@ -167,16 +167,27 @@ func (s *Store) CheckDeterministicFollowupConversation(ctx context.Context, conv
 	if err != nil {
 		return err
 	}
-	deterministic, err := deterministicDomainTask(s.db, taskID)
-	if err == nil && deterministic {
-		return ErrDeterministicTaskRecoveryUnsupported
-	}
-	return err
+	return requireNotBenchmarkOrDeterministic(s.db, taskID)
+}
+
+func isDedicatedTaskBoundary(err error) bool {
+	return errors.Is(err, ErrBenchmarkRecoveryUnsupported) || errors.Is(err, ErrDeterministicTaskRecoveryUnsupported) || errors.Is(err, ErrDiscoveryRecoveryUnsupported)
 }
 
 func requireOrdinaryTaskFollowup(q recordsQuerier, taskID string) error {
-	if err := requireNotDiscoveryRecovery(q, taskID); err != nil {
+	if err := requireNotBenchmarkOrDeterministic(q, taskID); err != nil {
 		return err
+	}
+	return requireNotDiscoveryRecovery(q, taskID)
+}
+
+func requireNotBenchmarkOrDeterministic(q recordsQuerier, taskID string) error {
+	var benchmark bool
+	if err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
+		return err
+	}
+	if benchmark {
+		return ErrBenchmarkRecoveryUnsupported
 	}
 	deterministic, err := deterministicDomainTask(q, taskID)
 	if err != nil {
@@ -188,25 +199,14 @@ func requireOrdinaryTaskFollowup(q recordsQuerier, taskID string) error {
 	return nil
 }
 
-func requireGenericTaskRecovery(q recordsQuerier, taskID string) error {
-	var benchmark bool
-	if err := q.QueryRow("SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=?)", taskID).Scan(&benchmark); err != nil {
-		return err
-	}
-	if benchmark {
-		return ErrBenchmarkRecoveryUnsupported
-	}
-	return requireOrdinaryTaskFollowup(q, taskID)
-}
-
 // CheckGenericTaskRecovery lets the HTTP entry point explain the domain guard
 // even when the personal model is unavailable. The write path checks again.
 func (s *Store) CheckGenericTaskRecovery(taskID string) error {
-	return requireGenericTaskRecovery(s.db, taskID)
+	return requireOrdinaryTaskFollowup(s.db, taskID)
 }
 
 func resumeTaskTx(tx *sql.Tx, taskID, requestKey string, revision int, action string) (Run, error) {
-	if err := requireGenericTaskRecovery(tx, taskID); err != nil {
+	if err := requireOrdinaryTaskFollowup(tx, taskID); err != nil {
 		return Run{}, err
 	}
 	retry := action == "retry"
