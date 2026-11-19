@@ -71,6 +71,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-admission", s.setBenchmarkAdmissionRole)
 	api.HandleFunc("GET /api/v1/settings/model/roles/benchmark-revision", s.readBenchmarkRevisionRole)
 	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-revision", s.setBenchmarkRevisionRole)
+	api.HandleFunc("GET /api/v1/settings/model/roles/benchmark-execution", s.readBenchmarkExecutionRole)
+	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-execution", s.setBenchmarkExecutionRole)
 	api.HandleFunc("POST /api/v1/settings/model/profiles", s.saveModelProfile)
 	api.HandleFunc("PUT /api/v1/settings/model/profiles/{id}", s.saveModelProfile)
 	api.HandleFunc("DELETE /api/v1/settings/model/profiles/{id}", s.deleteModelProfile)
@@ -425,6 +427,10 @@ func (s Server) submit(task bool) http.HandlerFunc {
 				run, err = s.Store.SuggestBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target, s.Settings.InterpretBenchmarkExecution)
 			} else {
 				run, err = s.Store.SubmitBenchmarkExecutionChat(r.Context(), key, s.principal(r), conversation, in.Text, in.Scope, *target)
+			}
+			if errors.Is(err, work.ErrBenchmarkExecutionModelBinding) {
+				fail(w, 409, "benchmark_execution_model_binding_unavailable", err.Error())
+				return
 			}
 			if errors.Is(err, work.ErrBenchmarkExecutionClarify) {
 				fail(w, 400, "benchmark_execution_clarify", err.Error())

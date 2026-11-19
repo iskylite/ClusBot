@@ -43,6 +43,8 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 		v.EgressFields = []string{"submitted_text", "published_target", "published_profile_and_version"}
 	case work.BenchmarkRevisionModelRole:
 		v.EgressFields = []string{"submitted_text", "editable_case_keys", "editable_parameter_keys"}
+	case work.BenchmarkExecutionModelRole:
+		v.EgressFields = []string{"submitted_text", "pending_case_keys", "pending_case_positions"}
 	}
 	key := keyValue(p.Settings)
 	switch {
@@ -81,6 +83,15 @@ func (s *Settings) ReadBenchmarkRevisionRole(ctx context.Context) (BenchmarkAdmi
 
 func (s *Settings) SetBenchmarkRevisionRole(ctx context.Context, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
 	return s.setModelRole(ctx, work.BenchmarkRevisionModelRole, in)
+}
+
+func (s *Settings) ReadBenchmarkExecutionRole(ctx context.Context) (BenchmarkAdmissionRoleView, error) {
+	view, _, _, err := s.modelRole(ctx, work.BenchmarkExecutionModelRole)
+	return view, err
+}
+
+func (s *Settings) SetBenchmarkExecutionRole(ctx context.Context, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
+	return s.setModelRole(ctx, work.BenchmarkExecutionModelRole, in)
 }
 
 func (s *Settings) setModelRole(ctx context.Context, role string, in BenchmarkAdmissionRoleInput) (BenchmarkAdmissionRoleView, error) {
@@ -123,7 +134,13 @@ func (s *Settings) setModelRole(ctx context.Context, role string, in BenchmarkAd
 }
 
 func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, bool, error) {
-	v, value, key, err := s.modelRole(ctx, work.BenchmarkAdmissionModelRole)
+	return s.inheritedModelRoleProvider(ctx, work.BenchmarkAdmissionModelRole, work.ErrBenchmarkAdmissionModelBinding)
+}
+
+// Resolve exactly one selection for this model call. Explicit bindings never
+// try the default, including when a profile or credential no longer matches.
+func (s *Settings) inheritedModelRoleProvider(ctx context.Context, role string, unavailable error) (*Provider, bool, error) {
+	v, value, key, err := s.modelRole(ctx, role)
 	if err != nil {
 		return nil, false, err
 	}
@@ -131,7 +148,7 @@ func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, b
 		p, err := s.provider(ctx)
 		return p, false, err
 	}
-	p, err := s.profileForModelRole(v, value, key, work.ErrBenchmarkAdmissionModelBinding)
+	p, err := s.profileForModelRole(v, value, key, unavailable)
 	return p, true, err
 }
 

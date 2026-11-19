@@ -8,6 +8,19 @@ import (
 
 const BenchmarkAdmissionModelRole = "benchmark_admission"
 const BenchmarkRevisionModelRole = "benchmark_revision"
+const BenchmarkExecutionModelRole = "benchmark_execution"
+
+func migrateBenchmarkExecutionModelRole(tx *sql.Tx) error {
+	_, err := tx.Exec(`CREATE TABLE model_role_bindings_next (
+ role TEXT PRIMARY KEY CHECK(role IN ('benchmark_admission','benchmark_revision','benchmark_execution')),
+ revision INTEGER NOT NULL, profile_id TEXT NOT NULL DEFAULT '', profile_revision INTEGER NOT NULL DEFAULT 0,
+ credential_binding TEXT NOT NULL DEFAULT ''
+);
+INSERT INTO model_role_bindings_next SELECT role,revision,profile_id,profile_revision,credential_binding FROM model_role_bindings;
+DROP TABLE model_role_bindings;
+ALTER TABLE model_role_bindings_next RENAME TO model_role_bindings;`)
+	return err
+}
 
 func migrateBenchmarkRevisionModelRole(tx *sql.Tx) error {
 	// Preserve the original role, including its credential fingerprint and
@@ -70,7 +83,7 @@ func (s *Store) ReadModelRole(ctx context.Context, role string) (ModelRoleBindin
 }
 
 func (s *Store) SaveModelRole(ctx context.Context, in ModelRoleBinding) (ModelRoleBinding, error) {
-	if (in.Role != BenchmarkAdmissionModelRole && in.Role != BenchmarkRevisionModelRole) || in.Revision < 0 ||
+	if (in.Role != BenchmarkAdmissionModelRole && in.Role != BenchmarkRevisionModelRole && in.Role != BenchmarkExecutionModelRole) || in.Revision < 0 ||
 		(in.ProfileID == "" && (in.ProfileRevision != 0 || in.CredentialBinding != "")) ||
 		(in.ProfileID != "" && (in.ProfileRevision < 1 || in.CredentialBinding == "")) {
 		return ModelRoleBinding{}, ErrState

@@ -470,4 +470,31 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		t.Fatalf("repeat confirmed twice, reinterpreted, or dispatched: %+v", later)
 	}
 
+	// This candidate is still waiting, but a bound profile may not be
+	// contacted after its credential changed, nor may the default replace it.
+	const execRolePath = "/api/v1/settings/model/roles/benchmark-execution"
+	var execRole model.BenchmarkAdmissionRoleView
+	jsonCall(http.MethodPut, execRolePath, binding, &execRole, http.StatusOK)
+	if execRole.Role != "benchmark_execution" || execRole.Status != "locally_configured" {
+		t.Fatalf("execution role isn't independently available: %+v", execRole)
+	}
+	t.Setenv("CLUSBOT_HTTP_FIXTURE_REVISION_KEY", "must-not-be-used")
+	natural["client_request_id"] = "unavailable-execution-model"
+	for range 2 {
+		var unavailable map[string]string
+		jsonCall(http.MethodPost, messagePath, natural, &unavailable, http.StatusConflict)
+		if unavailable["code"] != "benchmark_execution_model_binding_unavailable" {
+			t.Fatalf("unavailable model not actionable: %+v", unavailable)
+		}
+	}
+	t.Setenv("CLUSBOT_HTTP_FIXTURE_REVISION_KEY", "rotated-fixture-revision-key")
+	var lost map[string]string
+	jsonCall(http.MethodPost, messagePath, natural, &lost, http.StatusConflict)
+	if lost["code"] != "benchmark_execution_model_binding_unavailable" {
+		t.Fatalf("restoring the profile reattempted the old request: %+v", lost)
+	}
+	if executionModelCalls.Load() != 1 || profileCalls.Load() != 1 || provider.starts.Load() != 1 {
+		t.Fatal("credential change contacted a model or dispatched")
+	}
+
 }

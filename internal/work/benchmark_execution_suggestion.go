@@ -11,6 +11,8 @@ import (
 
 const benchmarkExecutionSuggestedEvent = "benchmark.execution_suggested"
 
+var ErrBenchmarkExecutionModelBinding = errors.New("基准执行建议的模型档案不可用，请检查角色绑定、档案版本或凭据")
+
 type BenchmarkExecutionSuggestion struct {
 	TaskID       string `json:"task_id"`
 	StepID       string `json:"step_id"`
@@ -167,8 +169,11 @@ func (s *Store) SuggestBenchmarkExecutionChat(ctx context.Context, request, acto
 	}
 	classified, err := s.classifySubmission(ctx, request, fingerprint, conversation, text, nil, func(call context.Context, current string, _ []Message, limit int) (DelegationResult, error) {
 		raw, err := interpret(call, BenchmarkExecutionModelInput{Text: current, Cases: candidates}, limit)
+		if errors.Is(err, ErrBenchmarkExecutionModelBinding) {
+			return DelegationResult{Route: &RouteDecision{Kind: "benchmark_execution_binding_unavailable"}}, nil
+		}
 		if err != nil {
-			return DelegationResult{Requests: 1}, errors.New("默认模型未能生成执行建议")
+			return DelegationResult{Requests: 1}, errors.New("当前模型未能生成执行建议")
 		}
 		result := DelegationResult{Requests: 1, Route: &RouteDecision{Kind: "benchmark_execution_clarify"}}
 		key := parseExecutionSuggestion(raw, current)
@@ -182,6 +187,9 @@ func (s *Store) SuggestBenchmarkExecutionChat(ctx context.Context, request, acto
 	})
 	if err != nil {
 		return Run{}, err
+	}
+	if classified.Route != nil && classified.Route.Kind == "benchmark_execution_binding_unavailable" {
+		return Run{}, ErrBenchmarkExecutionModelBinding
 	}
 	if classified.Route == nil || classified.Route.Kind != "benchmark_execution_suggestion" {
 		return Run{}, ErrBenchmarkExecutionClarify

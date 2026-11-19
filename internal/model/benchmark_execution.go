@@ -14,9 +14,9 @@ func (s *Settings) InterpretBenchmarkExecution(ctx context.Context, input work.B
 	if s == nil || s.Store == nil || s.Demo {
 		return "", work.ErrClassification
 	}
-	p, err := s.provider(ctx)
+	p, _, err := s.inheritedModelRoleProvider(ctx, work.BenchmarkExecutionModelRole, work.ErrBenchmarkExecutionModelBinding)
 	if err != nil {
-		return "", work.ErrClassification
+		return "", err
 	}
 	return interpretRevisionWithProvider(ctx, p, input, benchmarkExecutionInstructions, limit)
 }
