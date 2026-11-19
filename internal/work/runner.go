@@ -699,6 +699,10 @@ func (s *Store) Events(runID string, after int64) ([]Event, Run, error) {
 	if err != nil {
 		return nil, Run{}, err
 	}
+	var privateReply bool
+	if err := tx.QueryRow("SELECT "+revokedMCPReply("?"), runID).Scan(&privateReply); err != nil {
+		return nil, Run{}, err
+	}
 	rows, err := tx.Query("SELECT seq,kind,data FROM run_events WHERE run_id=? AND seq>? ORDER BY seq LIMIT 128", runID, after)
 	if err != nil {
 		return nil, Run{}, err
@@ -709,6 +713,9 @@ func (s *Store) Events(runID string, after int64) ([]Event, Run, error) {
 		if err = rows.Scan(&e.Seq, &e.Kind, &e.Data); err != nil {
 			rows.Close()
 			return nil, Run{}, err
+		}
+		if privateReply && e.Kind == "message.delta" {
+			e.Kind, e.Data = "message.content_unavailable", `{"reason":"source_unavailable"}`
 		}
 		events = append(events, e)
 	}

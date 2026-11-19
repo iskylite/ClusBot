@@ -247,6 +247,7 @@ type Run struct {
 	TaskID                       string                            `json:"task_id,omitempty"`
 	Status                       string                            `json:"status"`
 	Response                     string                            `json:"response"`
+	ResponseUnavailable          bool                              `json:"response_unavailable,omitempty"`
 	Error                        string                            `json:"error,omitempty"`
 	ErrorCode                    string                            `json:"error_code,omitempty"`
 	Usage                        *ExecutionUsage                   `json:"usage,omitempty"`
@@ -261,22 +262,23 @@ type Run struct {
 }
 
 type Message struct {
-	TaskRef          *MessageTaskRef `json:"task_ref,omitempty"`
-	ID               int64           `json:"id,omitempty"`
-	RunID            string          `json:"run_id,omitempty"`
-	AssetQueryTaskID string          `json:"asset_query_task_id,omitempty"`
-	Role             string          `json:"role"`
-	Text             string          `json:"text"`
-	Materials        []Material      `json:"materials,omitempty"`
-	ReplaceMaterials bool            `json:"replace_materials,omitempty"`
-	MemoryRefs       []MemoryRef     `json:"memory_refs,omitempty"`
-	Incomplete       bool            `json:"incomplete,omitempty"`
-	RequiredInput    bool            `json:"-"`
-	Memories         []Memory        `json:"-"`
-	Experience       *ExperienceRef  `json:"-"`
-	Skill            *SkillVersion   `json:"-"`
-	Read             *TaskRead       `json:"-"`
-	Reads            []TaskRead      `json:"-"`
+	TaskRef            *MessageTaskRef `json:"task_ref,omitempty"`
+	ID                 int64           `json:"id,omitempty"`
+	RunID              string          `json:"run_id,omitempty"`
+	AssetQueryTaskID   string          `json:"asset_query_task_id,omitempty"`
+	Role               string          `json:"role"`
+	Text               string          `json:"text"`
+	ContentUnavailable bool            `json:"content_unavailable,omitempty"`
+	Materials          []Material      `json:"materials,omitempty"`
+	ReplaceMaterials   bool            `json:"replace_materials,omitempty"`
+	MemoryRefs         []MemoryRef     `json:"memory_refs,omitempty"`
+	Incomplete         bool            `json:"incomplete,omitempty"`
+	RequiredInput      bool            `json:"-"`
+	Memories           []Memory        `json:"-"`
+	Experience         *ExperienceRef  `json:"-"`
+	Skill              *SkillVersion   `json:"-"`
+	Read               *TaskRead       `json:"-"`
+	Reads              []TaskRead      `json:"-"`
 }
 
 type Conversation struct {
@@ -287,17 +289,18 @@ type Conversation struct {
 }
 
 type Artifact struct {
-	ID         string      `json:"id"`
-	TaskID     string      `json:"task_id"`
-	Name       string      `json:"name"`
-	Content    string      `json:"content,omitempty"`
-	Digest     string      `json:"sha256"`
-	CreatedAt  int64       `json:"created_at"`
-	RunID      string      `json:"run_id,omitempty"`
-	TaskTitle  string      `json:"task_title,omitempty"`
-	Scope      string      `json:"scope_label,omitempty"`
-	AcceptedAt int64       `json:"accepted_at,omitempty"`
-	Acceptance *Acceptance `json:"acceptance,omitempty"`
+	ID                 string      `json:"id"`
+	TaskID             string      `json:"task_id"`
+	Name               string      `json:"name"`
+	Content            string      `json:"content,omitempty"`
+	ContentUnavailable bool        `json:"content_unavailable,omitempty"`
+	Digest             string      `json:"sha256"`
+	CreatedAt          int64       `json:"created_at"`
+	RunID              string      `json:"run_id,omitempty"`
+	TaskTitle          string      `json:"task_title,omitempty"`
+	Scope              string      `json:"scope_label,omitempty"`
+	AcceptedAt         int64       `json:"accepted_at,omitempty"`
+	Acceptance         *Acceptance `json:"acceptance,omitempty"`
 }
 
 type Event struct {
@@ -999,7 +1002,8 @@ func addEvent(tx *sql.Tx, runID, kind string, data any) error {
 	return err
 }
 
-const runColumns = "id,conversation_id,coalesce(task_id,''),status,response,error,error_code,usage_tracked,model_requests,reported_requests,active_ms,time_partial,input_tokens,output_tokens,last_input_tokens,execution_generation,admission_output_used"
+var runColumns = "id,conversation_id,coalesce(task_id,''),status,response,error,error_code,usage_tracked,model_requests,reported_requests,active_ms,time_partial,input_tokens,output_tokens,last_input_tokens,execution_generation,admission_output_used,response<>'' AND " + revokedMCPReply("runs.id")
+
 const taskColumns = "id,conversation_id,title,goal,scope_label,acceptance_criteria,required_filename,status,status_reason,reason,state_changed_at,revision,updated_at,completed_at,requirements_changed,priority"
 
 type scanner interface{ Scan(...any) error }
@@ -1010,7 +1014,10 @@ func scanRun(row scanner) (Run, error) {
 	var usage ExecutionUsage
 	var reported int
 	err := row.Scan(&r.ID, &r.ConversationID, &r.TaskID, &r.Status, &r.Response, &r.Error, &r.ErrorCode,
-		&tracked, &usage.ModelRequests, &reported, &usage.ActiveMS, &usage.TimePartial, &usage.InputTokens, &usage.OutputTokens, &usage.LastInputTokens, &r.Generation, &r.admissionOutput)
+		&tracked, &usage.ModelRequests, &reported, &usage.ActiveMS, &usage.TimePartial, &usage.InputTokens, &usage.OutputTokens, &usage.LastInputTokens, &r.Generation, &r.admissionOutput, &r.ResponseUnavailable)
+	if r.ResponseUnavailable {
+		r.Response = ""
+	}
 	if tracked {
 		usage.UnreportedRequests = usage.ModelRequests - reported
 		r.Usage = &usage
@@ -1539,7 +1546,8 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 		CASE WHEN ? AND msg.role='user' THEN coalesce((SELECT e.task_id FROM inbox_events e
         JOIN domain_query_tasks q ON q.task_id=e.task_id WHERE e.source='chat' AND e.event_id=(
             SELECT request_key FROM submissions WHERE run_id=msg.run_id LIMIT 1) LIMIT 1),'') ELSE '' END,
-        msg.role='assistant' AND length(msg.text)>0 AND EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND (r.control='stop' OR r.error_code IN ('stop','stopped')))
+        msg.role='assistant' AND length(msg.text)>0 AND EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND (r.control='stop' OR r.error_code IN ('stop','stopped'))),
+		msg.role='assistant' AND `+revokedMCPReply("msg.run_id")+`
 		FROM (`+selection+`) AS msg ORDER BY msg.seq`, append([]any{withMemoryRefs, withMemoryRefs}, args...)...)
 	if err != nil {
 		return nil, err
@@ -1549,8 +1557,17 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 	for rows.Next() {
 		var item Message
 		var refs, memories, runID string
-		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.AssetQueryTaskID, &item.Incomplete); err != nil {
+		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.AssetQueryTaskID, &item.Incomplete, &item.ContentUnavailable); err != nil {
 			return nil, err
+		}
+		if item.ContentUnavailable {
+			if !withMemoryRefs {
+				continue
+			}
+			item.Text = "此回复可能包含已撤权来源的内容，现不可查看。"
+			item.RunID = runID
+			items = append(items, item)
+			continue
 		}
 		if err = json.Unmarshal([]byte(refs), &item.Materials); err != nil {
 			return nil, err
@@ -1664,11 +1681,14 @@ ORDER BY memory_command,rowid DESC LIMIT 1`, key, isTask, discoveryTask, discove
 		}
 		d.TaskUsage = &usage
 		var a Artifact
-		err = tx.QueryRow("SELECT id,task_id,name,content,sha256,created_at FROM artifacts WHERE task_id=? ORDER BY rowid DESC LIMIT 1", d.Task.ID).Scan(&a.ID, &a.TaskID, &a.Name, &a.Content, &a.Digest, &a.CreatedAt)
+		err = tx.QueryRow("SELECT id,task_id,name,content,sha256,created_at,"+revokedMCPReply("artifacts.run_id")+" FROM artifacts WHERE task_id=? ORDER BY rowid DESC LIMIT 1", d.Task.ID).Scan(&a.ID, &a.TaskID, &a.Name, &a.Content, &a.Digest, &a.CreatedAt, &a.ContentUnavailable)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return d, err
 		}
 		if err == nil {
+			if a.ContentUnavailable {
+				a.Content = ""
+			}
 			d.Artifact = &a
 			d.ArtifactVersions, err = listArtifacts(tx, d.Task.ID, "", "", "", 20)
 			if err != nil {
@@ -1708,7 +1728,7 @@ const artifactListColumns = `a.id,a.task_id,a.name,a.sha256,a.created_at,a.run_i
 coalesce((SELECT max(accepted_at) FROM task_acceptances WHERE task_id=a.task_id AND artifact_id=a.id),0)`
 
 func listArtifacts(q rowsQueryer, taskID, scope, after, runID string, limit int) ([]Artifact, error) {
-	rows, err := q.Query("SELECT "+artifactListColumns+` FROM artifacts a JOIN tasks t ON t.id=a.task_id
+	rows, err := q.Query("SELECT "+artifactListColumns+","+revokedMCPReply("a.run_id")+` FROM artifacts a JOIN tasks t ON t.id=a.task_id
 WHERE (?='' OR a.task_id=?) AND (?='' OR t.scope_label=?) AND (?='' OR a.run_id=?)
 AND (?='' OR a.rowid < (SELECT rowid FROM artifacts WHERE id=?))
 ORDER BY a.rowid DESC LIMIT ?`, taskID, taskID, scope, scope, runID, runID, after, after, limit)
@@ -1719,7 +1739,7 @@ ORDER BY a.rowid DESC LIMIT ?`, taskID, taskID, scope, scope, runID, runID, afte
 	items := []Artifact{}
 	for rows.Next() {
 		var a Artifact
-		if err = rows.Scan(&a.ID, &a.TaskID, &a.Name, &a.Digest, &a.CreatedAt, &a.RunID, &a.TaskTitle, &a.Scope, &a.AcceptedAt); err != nil {
+		if err = rows.Scan(&a.ID, &a.TaskID, &a.Name, &a.Digest, &a.CreatedAt, &a.RunID, &a.TaskTitle, &a.Scope, &a.AcceptedAt, &a.ContentUnavailable); err != nil {
 			return nil, err
 		}
 		items = append(items, a)
@@ -1734,7 +1754,7 @@ func (s *Store) Artifact(id string) (Artifact, error) {
 	}
 	defer tx.Rollback()
 	var a Artifact
-	err = tx.QueryRow("SELECT "+artifactListColumns+",a.content FROM artifacts a JOIN tasks t ON t.id=a.task_id WHERE a.id=?", id).
+	err = tx.QueryRow("SELECT "+artifactListColumns+",a.content FROM artifacts a JOIN tasks t ON t.id=a.task_id WHERE a.id=? AND NOT "+revokedMCPReply("a.run_id"), id).
 		Scan(&a.ID, &a.TaskID, &a.Name, &a.Digest, &a.CreatedAt, &a.RunID, &a.TaskTitle, &a.Scope, &a.AcceptedAt, &a.Content)
 	if err != nil {
 		return a, err

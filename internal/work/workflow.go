@@ -251,7 +251,7 @@ LEFT JOIN workflow_accepted_outputs a ON a.task_id=p.prerequisite_id`, run.ID, r
 
 func (s *Store) workflowInputs(ctx context.Context, run Run) ([]WorkflowEvidence, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT i.task_id,i.step_key,coalesce(i.artifact_id,''),coalesce(i.acceptance_revision,0),coalesce(i.sha256,''),
-coalesce(a.content,'') FROM workflow_run_inputs i
+CASE WHEN `+revokedMCPReply("a.run_id")+` THEN '' ELSE coalesce(a.content,'') END FROM workflow_run_inputs i
 LEFT JOIN artifacts a ON a.id=i.artifact_id AND a.sha256=i.sha256 AND a.task_id=i.task_id
 WHERE i.run_id=? AND i.generation=? ORDER BY i.step_key`, run.ID, run.Generation)
 	if err != nil {
@@ -296,9 +296,10 @@ func checkWorkflowEvidence(tx *sql.Tx, runID string, generation int) error {
 	err := tx.QueryRow(`SELECT EXISTS(
 SELECT 1 FROM workflow_run_inputs i JOIN tasks t ON t.id=i.task_id
 LEFT JOIN workflow_accepted_outputs a ON a.task_id=i.task_id
+LEFT JOIN artifacts e ON e.id=i.artifact_id
 WHERE i.run_id=? AND i.generation=? AND (
   (i.artifact_id IS NULL AND t.status<>'cancelled')
-  OR (i.artifact_id IS NOT NULL AND (a.artifact_id IS NOT i.artifact_id OR a.revision IS NOT i.acceptance_revision OR a.sha256 IS NOT i.sha256))
+  OR (i.artifact_id IS NOT NULL AND (a.artifact_id IS NOT i.artifact_id OR a.revision IS NOT i.acceptance_revision OR a.sha256 IS NOT i.sha256 OR `+revokedMCPReply("e.run_id")+`))
 ))`, runID, generation).Scan(&stale)
 	if err != nil {
 		return err

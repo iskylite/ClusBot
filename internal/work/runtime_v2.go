@@ -116,6 +116,22 @@ func (s *Store) withManifestRecorder(ctx context.Context, run Run) context.Conte
 				return err
 			}
 
+			if len(manifest.Messages) > 0 {
+				messageIDs, err := json.Marshal(manifest.Messages)
+				if err != nil {
+					return err
+				}
+				var unavailable bool
+				err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM json_each(?) v
+JOIN messages msg ON msg.seq=v.value WHERE msg.role='assistant' AND `+revokedMCPReply("msg.run_id")+`)`, string(messageIDs)).Scan(&unavailable)
+				if err != nil {
+					return err
+				}
+				if unavailable {
+					return ErrReadCheckpoint
+				}
+			}
+
 			var skillGoal string
 			if len(manifest.Skills) != 0 {
 				if err := tx.QueryRowContext(ctx, "SELECT goal FROM tasks WHERE id=?", run.TaskID).Scan(&skillGoal); err != nil {
@@ -146,7 +162,7 @@ func (s *Store) withManifestRecorder(ctx context.Context, run Run) context.Conte
 			for id, hash := range manifest.Experience {
 				var valid bool
 				if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artifacts a JOIN tasks t ON t.id=a.task_id
-JOIN conversations c ON c.id=t.conversation_id WHERE a.id=? AND a.sha256=? AND c.archived=0)`,
+JOIN conversations c ON c.id=t.conversation_id WHERE a.id=? AND a.sha256=? AND c.archived=0 AND NOT `+revokedMCPReply("a.run_id")+`)`,
 					id, hash).Scan(&valid); err != nil {
 					return err
 				}

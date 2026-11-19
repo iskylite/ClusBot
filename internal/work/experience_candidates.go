@@ -79,7 +79,7 @@ FROM task_acceptances x JOIN tasks t ON t.id=x.task_id JOIN conversations c ON c
 JOIN artifacts a ON a.id=x.artifact_id JOIN runs r ON r.id=a.run_id
 LEFT JOIN run_bindings b ON b.run_id=r.id AND b.generation=r.execution_generation
 LEFT JOIN task_revisions v ON v.task_id=t.id AND v.revision=b.task_revision
-WHERE t.id=? AND x.artifact_id=? AND x.revision=? AND x.sha256=? AND c.archived=0
+WHERE t.id=? AND x.artifact_id=? AND x.revision=? AND x.sha256=? AND c.archived=0 AND NOT `+revokedMCPReply("a.run_id")+`
 AND (v.task_id IS NOT NULL OR t.revision=x.revision)
 ON CONFLICT DO NOTHING`, id(), string(cues), taskID, artifactID, revision, hash)
 	return err
@@ -95,7 +95,7 @@ func (s *Store) CaptureAcceptedExperience(ctx context.Context, taskID, artifactI
 	var content, hash string
 	err = tx.QueryRow(`SELECT x.revision,a.content,x.sha256 FROM workflow_accepted_outputs x
 JOIN artifacts a ON a.id=x.artifact_id JOIN tasks t ON t.id=x.task_id JOIN conversations c ON c.id=t.conversation_id
-WHERE x.task_id=? AND x.artifact_id=? AND c.archived=0`, taskID, artifactID).Scan(&revision, &content, &hash)
+WHERE x.task_id=? AND x.artifact_id=? AND c.archived=0 AND NOT `+revokedMCPReply("a.run_id"), taskID, artifactID).Scan(&revision, &content, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ExperienceCandidate{}, ErrExperienceSource
 	}
@@ -150,7 +150,7 @@ AND (v.task_id IS NOT NULL OR r.rowid=(SELECT max(rowid) FROM runs WHERE task_id
 	if counterArtifact != "" {
 		var content string
 		err = tx.QueryRow(`SELECT a.sha256,a.content FROM artifacts a JOIN runs r ON r.id=a.run_id
-WHERE a.id=? AND a.task_id=? AND r.rowid<?`, counterArtifact, taskID, runOrder).Scan(&counterDigest, &content)
+WHERE a.id=? AND a.task_id=? AND r.rowid<? AND NOT `+revokedMCPReply("a.run_id"), counterArtifact, taskID, runOrder).Scan(&counterDigest, &content)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ExperienceCandidate{}, ErrExperienceSource
 		}
@@ -180,10 +180,11 @@ VALUES(?,?,?,?,nullif(?,''),?,?,?,?) ON CONFLICT DO NOTHING`,
 	return result, tx.Commit()
 }
 
-const candidateSelect = `SELECT e.id,e.task_id,e.scope_label,e.goal,e.criteria,e.format_cues,
+var candidateSelect = `SELECT e.id,e.task_id,e.scope_label,e.goal,e.criteria,e.format_cues,
 coalesce(e.artifact_id,''),coalesce(e.acceptance_revision,0),coalesce(e.message_seq,0),e.source_digest,
 coalesce(e.counter_artifact_id,''),e.counter_digest,e.status,e.revision,e.created_at,coalesce(m.text,''),coalesce(source.content,''),coalesce(counter.content,''),
 c.archived=0 AND t.scope_label=e.scope_label AND t.goal=e.goal
+AND NOT ` + revokedMCPReply("source.run_id") + ` AND NOT ` + revokedMCPReply("counter.run_id") + `
 AND (e.message_seq IS NULL OR (m.role='user' AND m.conversation_id=t.conversation_id))
 AND (e.artifact_id IS NULL OR EXISTS(SELECT 1 FROM workflow_accepted_outputs a
 WHERE a.task_id=e.task_id AND a.artifact_id=e.artifact_id AND a.revision=e.acceptance_revision AND a.sha256=e.source_digest))

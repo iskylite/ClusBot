@@ -58,7 +58,7 @@ func loadExperience(ctx context.Context, tx *sql.Tx, source, hash string, revisi
 JOIN tasks t ON t.id=a.task_id
 JOIN task_acceptances x ON x.artifact_id=a.id AND x.task_id=t.id AND x.sha256=a.sha256
 JOIN conversations c ON c.id=t.conversation_id
-WHERE a.id=? AND a.sha256=? AND x.revision=? AND c.archived=0`,
+WHERE a.id=? AND a.sha256=? AND x.revision=? AND c.archived=0 AND NOT `+revokedMCPReply("a.run_id"),
 		source, hash, revision).Scan(&example, &title)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrReadCheckpoint
@@ -98,7 +98,7 @@ JOIN task_revisions v ON v.task_id=earlier.id AND v.revision=b.task_revision
 WHERE earlier.id<>? AND earlier.scope_label=? AND v.scope_label=earlier.scope_label
 AND lower(trim(v.goal))=lower(trim(?))
 AND c.archived=0
-AND earlier.id NOT IN (SELECT value FROM json_each(?))
+AND earlier.id NOT IN (SELECT value FROM json_each(?)) AND NOT `+revokedMCPReply("a.run_id")+`
 ORDER BY x.accepted_at DESC,x.revision DESC,a.id LIMIT 1`, taskID, scope, goal, excludedTasks).Scan(&source, &hash, &revision)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil

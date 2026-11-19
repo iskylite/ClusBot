@@ -45,22 +45,23 @@ func (s *Store) ModelCredentialBinding(key string) string {
 func readResumeStatus(tx *sql.Tx, runID string) (string, error) {
 	var version int
 	var status, control, reason string
-	var room, canRetry bool
+	var room, canRetry, sourceUnavailable bool
 	err := tx.QueryRow(`SELECT c.version,r.status,r.control,r.error_code,
 c.output_budget-c.output_used>=16*(1+(SELECT count(*) FROM run_reads d WHERE d.run_id=r.id AND d.model_round IS NULL AND d.status='queued'))
 AND c.active_budget_ms>r.active_ms AND r.model_requests<?
 AND (c.automatic_tools=1 OR NOT EXISTS(SELECT 1 FROM run_reads WHERE run_id=r.id)
 OR EXISTS(SELECT 1 FROM run_reads WHERE run_id=r.id AND status IN ('queued','completed','reused'))),
-r.task_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_reads d WHERE d.run_id=r.id AND d.status NOT IN ('completed','reused'))
+r.task_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM run_reads d WHERE d.run_id=r.id AND d.status NOT IN ('completed','reused')),
+EXISTS(SELECT 1 FROM run_reads rr WHERE rr.run_id=r.id AND rr.connection_id IS NOT NULL AND NOT `+exactMCPAuthority("rr")+`)
 FROM run_read_checkpoints c JOIN runs r ON r.id=c.run_id WHERE c.run_id=?`, maxReadModelRequests, runID).
-		Scan(&version, &status, &control, &reason, &room, &canRetry)
+		Scan(&version, &status, &control, &reason, &room, &canRetry, &sourceUnavailable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
 	}
-	if version != readCheckpointVersion || status != "interrupted" || control == "stop" {
+	if sourceUnavailable || version != readCheckpointVersion || status != "interrupted" || control == "stop" {
 		return "unavailable", nil
 	}
 	switch reason {

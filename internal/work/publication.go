@@ -203,6 +203,9 @@ FROM tasks t JOIN runs r ON r.task_id=t.id LEFT JOIN artifacts a ON a.run_id=r.i
 	if currentRevision != revision || taskStatus != "waiting_user" || status != "completed" || currentArtifact != artifactID || digest(content) != p.Digest {
 		return Publication{}, ErrState
 	}
+	if err := checkMCPReplyAvailable(tx, p.RunID); err != nil {
+		return Publication{}, err
+	}
 	if requiredFile != "" && requiredFile != filename {
 		return Publication{}, ErrDeliveryPending
 	}
@@ -297,6 +300,11 @@ func (s *Store) beginPublication(ctx context.Context, key, decision string, revi
 	}
 	if revision != p.taskRevision || currentRevision != revision || taskStatus != "waiting_user" || digest(content) != p.Digest {
 		return p, nil, ErrState
+	}
+	if decision == "approve" {
+		if err := checkMCPReplyAvailable(tx, p.RunID); err != nil {
+			return p, nil, err
+		}
 	}
 	p.Decision = decision
 	var payload *string

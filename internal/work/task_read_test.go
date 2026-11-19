@@ -2,10 +2,13 @@ package work
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -257,5 +260,150 @@ func TestTaskReadRechecksPermissionAfterSubmission(t *testing.T) {
 	var calls int
 	if err = store.db.QueryRow("SELECT count(*) FROM connection_calls").Scan(&calls); err != nil || calls != 0 {
 		t.Fatalf("revoked tool reached dispatch: %d, %v", calls, err)
+	}
+}
+
+func TestMCPDerivedReplyDoesNotReappearAfterRevocation(t *testing.T) {
+	ctx := t.Context()
+	store, read := taskReadFixture(t)
+	run, err := store.SubmitWithDelivery(ctx, "derived-read", "用户原文应保留", "", "", true, Delivery{Read: &read})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "样例服务状态：可用"
+	provider := testProvider(func(_ context.Context, messages []Message, _ bool, _ int, emit func(string) error) (*TokenUsage, error) {
+		for _, message := range messages {
+			if message.Read != nil && message.Read.Result != nil && message.Read.Result.Text == marker {
+				return nil, emit(message.Read.Result.Text)
+			}
+		}
+		return nil, errors.New("fake model did not get fixture read")
+	})
+	store.execute(ctx, provider, run, RunLimits{OutputTokens: 64, ActiveTime: time.Minute, ModelTimeout: time.Minute})
+	before, err := store.Detail(run.TaskID, true)
+	if err != nil || before.Artifact == nil || before.Artifact.Content != marker || before.Run.Status != "completed" {
+		t.Fatalf("expected genuine direct answer and artifact: %+v %v", before, err)
+	}
+	if err := store.OpenWorkspace(filepath.Join(t.TempDir(), "workspace")); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.RequestPublication(ctx, run.TaskID, before.Artifact.ID, "本地验证.md", "before-revocation-publication", before.Task.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEvents, _, err := store.Events(run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A separately authored reply in the same conversation has no MCP source.
+	unrelated := "同会话的无关回复仍可查看"
+	unrelatedRun := id()
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO runs(id,conversation_id,status,response,created_at) VALUES(?,?,'completed',?,?)`, unrelatedRun, run.ConversationID, unrelated, now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO messages(conversation_id,run_id,role,text) VALUES(?,?,'assistant',?)`, run.ConversationID, unrelatedRun, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetToolPermission(ctx, read.ConnectionID, read.ToolName, read.ToolVersion, read.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DecidePublication(ctx, pending.ID, "approve", pending.taskRevision); !errors.Is(err, ErrReadNeedsSelection) {
+		t.Fatalf("previous approval could newly publish revoked content: %v", err)
+	}
+	detail, err := store.Detail(run.TaskID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := store.RunRecord(ctx, run.ID, run.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.MessageHistory(ctx, run.ConversationID, 0, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	model, err := store.modelMessages(ctx, run.ConversationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, state, err := store.Events(run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := store.Artifact(before.Artifact.ID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]any{"detail": detail, "run history": record, "messages": history, "model input": model, "events": events, "event state": state, "artifact": artifact} {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), marker) {
+			t.Errorf("%s re-exposed revoked source", name)
+		}
+	}
+	if len(events) != len(beforeEvents) {
+		t.Fatalf("SSE changed the retained sequence length: %d vs %d", len(events), len(beforeEvents))
+	}
+	for n, original := range beforeEvents {
+		if events[n].Seq != original.Seq || (original.Kind == "message.delta" && events[n].Kind != "message.content_unavailable") ||
+			(original.Kind != "message.delta" && events[n] != original) {
+			t.Fatalf("SSE changed cursor/order or unrelated event: %+v -> %+v", original, events[n])
+		}
+	}
+	if !record.ResponseUnavailable || len(record.Messages) < 2 || !record.Messages[1].ContentUnavailable ||
+		detail.Artifact == nil || !detail.Artifact.ContentUnavailable ||
+		len(detail.ArtifactVersions) == 0 || !detail.ArtifactVersions[0].ContentUnavailable {
+		t.Fatalf("missing explicit unavailability marker: %+v %+v", record, detail.Artifact)
+	}
+	latestModel, err := json.Marshal(model)
+	if err != nil || !strings.Contains(string(latestModel), unrelated) || strings.Contains(string(latestModel), "此回复可能包含已撤权来源") {
+		t.Fatalf("unrelated reply missing or redacted text passed into model: %s / %v", latestModel, err)
+	}
+	var raw string
+	if err := store.db.QueryRowContext(ctx, "SELECT response FROM runs WHERE id=?", run.ID).Scan(&raw); err != nil || raw != marker {
+		t.Fatalf("run audit changed: %q %v", raw, err)
+	}
+	if state.Status != "completed" || len(history.Items) == 0 || history.Items[0].Text != "用户原文应保留" {
+		t.Fatalf("actual status or user message changed: %+v %+v", detail.Run, history.Items)
+	}
+}
+
+func TestMCPRevokedFinishedReadIsNoLongerAReadyCheckpoint(t *testing.T) {
+	ctx := t.Context()
+	store, read := taskReadFixture(t)
+	run, err := store.SubmitWithDelivery(ctx, "revoked-checkpoint", "恢复读取", "", "", true, Delivery{Read: &read})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err = store.claim(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.runTaskRead(ctx, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.db.ExecContext(ctx, `INSERT INTO run_read_checkpoints(run_id,version,provider_binding,context_digest,output_budget,active_budget_ms)
+VALUES (?,?,'local-test','local-test',128,60000)`, run.ID, readCheckpointVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.finish(run, "interrupted", "", runAccounting{errorCode: "model_timeout"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Detail(run.TaskID, true)
+	if err != nil || before.ReadCheckpoint != "ready" {
+		t.Fatalf("valid checkpoint is not ready: %q / %v", before.ReadCheckpoint, err)
+	}
+	if err = store.SetToolPermission(ctx, read.ConnectionID, read.ToolName, read.ToolVersion, read.Revision, false); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.Detail(run.TaskID, true)
+	if err != nil || after.ReadCheckpoint != "unavailable" || after.Run.Status != "interrupted" {
+		t.Fatalf("revoked checkpoint is not unavailable, or status changed: %+v / %v", after, err)
 	}
 }

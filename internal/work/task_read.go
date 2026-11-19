@@ -198,6 +198,27 @@ func listTaskReads(ctx context.Context, q taskReadQuerier, runID string) ([]Task
 	return reads, rows.Err()
 }
 
+// revokedMCPReply conservatively classifies direct Run outputs. A returned
+// source may have informed the answer; this does not infer sentence-level or
+// downstream dependencies. runID is an internal SQL expression.
+func revokedMCPReply(runID string) string {
+	return `EXISTS(SELECT 1 FROM runs reply JOIN run_reads rr ON rr.run_id IN (reply.id, reply.read_failure_run_id)
+WHERE reply.id=` + runID + ` AND rr.connection_id IS NOT NULL
+AND (rr.run_id=reply.id AND rr.status IN ('completed','reused','tool_error')
+OR rr.run_id=reply.read_failure_run_id AND rr.status='tool_error'
+AND EXISTS(SELECT 1 FROM runs prev WHERE prev.id=rr.run_id AND prev.task_id=reply.task_id))
+AND (rr.result<>'' OR rr.call_id IS NOT NULL) AND NOT ` + exactMCPAuthority("rr") + `)`
+}
+
+func checkMCPReplyAvailable(tx *sql.Tx, runID string) error {
+	var unavailable bool
+	err := tx.QueryRow("SELECT "+revokedMCPReply("?"), runID).Scan(&unavailable)
+	if err == nil && unavailable {
+		return ErrReadNeedsSelection
+	}
+	return err
+}
+
 // Recheck persisted source identity immediately before building an outbound
 // model request. A completed/reused result is not new authorization to send it.
 func (s *Store) checkTaskReadModelAuthority(ctx context.Context, runID string) error {
