@@ -204,6 +204,7 @@ type Store struct {
 	db               *sql.DB // 写连接（单写职责），由 writer 持有
 	writer           *writerDB
 	readPool         *readPool
+	storageLocation  sqliteStorageLocation
 	workspace        *workspace
 	materials        *workspace
 	uploads          *os.Root
@@ -344,7 +345,7 @@ func Open(path string) (*Store, error) {
 	if poolErr != nil {
 		readPool = nil
 	}
-	return &Store{db: writer.db, writer: writer, readPool: readPool, connectionKey: randBytes()}, nil
+	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes()}, nil
 }
 
 // initializeDatabase 校验并按需迁移数据库到当前 schema 版本。

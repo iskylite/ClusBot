@@ -29,3 +29,8 @@ func (s Server) saveRetentionPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func (s Server) storageSnapshot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, http.StatusOK, s.Store.ReadStorageSnapshot(r.Context()))
+}
