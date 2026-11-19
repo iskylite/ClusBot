@@ -78,3 +78,31 @@ func (s Server) testModelProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]int64{"duration_ms": duration.Milliseconds(), "revision": int64(in.Revision)})
 }
+
+func (s Server) readBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	out, err := s.Settings.ReadBenchmarkAdmissionRole(r.Context())
+	if err != nil {
+		writeModelSettingsError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) setBenchmarkAdmissionRole(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in model.BenchmarkAdmissionRoleInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.ProfileID != "" && !validID(in.ProfileID) {
+		writeModelSettingsError(w, model.InvalidSettings("档案标识无效"))
+		return
+	}
+	out, err := s.Settings.SetBenchmarkAdmissionRole(r.Context(), in)
+	if err != nil {
+		writeModelSettingsError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

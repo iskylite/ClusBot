@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	ErrBenchmarkAdmissionClarify = errors.New("无法确定一条可预览的全套基准委托，请明确单个已绑定目标，不搭带规模或运行条件")
-	ErrBenchmarkAdmissionScale   = errors.New("当前无法核实请求的卡数、拓扑或运行条件，不能用其他规模代替")
-	ErrBenchmarkAdmissionModel   = errors.New("没有取得有效的基准委托模型建议")
+	ErrBenchmarkAdmissionClarify      = errors.New("无法确定一条可预览的全套基准委托，请明确单个已绑定目标，不搭带规模或运行条件")
+	ErrBenchmarkAdmissionScale        = errors.New("当前无法核实请求的卡数、拓扑或运行条件，不能用其他规模代替")
+	ErrBenchmarkAdmissionModelBinding = errors.New("基准受理模型档案已不可用，请检查绑定、版本或凭据")
+	ErrBenchmarkAdmissionModel        = errors.New("没有取得有效的基准委托模型建议")
 )
 
 type BenchmarkAdmissionPreviewInput struct {
@@ -200,6 +201,9 @@ func (s *Store) PreviewBenchmarkAdmissionAI(ctx context.Context, actor string, i
 		}
 		return interpret(call, BenchmarkAdmissionModelInput{in.Text, []BenchmarkAdmissionCandidate{before}}, budget)
 	}()
+	if errors.Is(err, ErrBenchmarkAdmissionModelBinding) {
+		return BenchmarkAdmissionPreview{}, err
+	}
 	if err != nil || call.Err() != nil {
 		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionModel
 	}

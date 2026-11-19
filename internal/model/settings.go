@@ -214,7 +214,10 @@ func (s *Settings) provider(ctx context.Context) (*Provider, error) {
 		return nil, err
 	}
 	value := s.effective(stored)
-	key := keyValue(value)
+	return s.providerForValue(value, keyValue(value))
+}
+
+func (s *Settings) providerForValue(value work.ModelSettings, key string) (*Provider, error) {
 	provider, err := NewProvider(value.BaseURL, value.ModelID, key, value.Protocol)
 	if err != nil {
 		return nil, err

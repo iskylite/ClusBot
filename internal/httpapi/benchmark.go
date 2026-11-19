@@ -145,6 +145,8 @@ func (s Server) benchmarkAdmissionPreview(w http.ResponseWriter, r *http.Request
 		fail(w, http.StatusConflict, "benchmark_scale_unverified", err.Error())
 	case errors.Is(err, work.ErrBenchmarkAdmissionClarify):
 		fail(w, http.StatusBadRequest, "benchmark_admission_clarify", err.Error())
+	case errors.Is(err, work.ErrBenchmarkAdmissionModelBinding):
+		fail(w, http.StatusConflict, "benchmark_admission_model_binding_unavailable", err.Error())
 	case errors.Is(err, work.ErrBenchmarkAdmissionModel):
 		fail(w, http.StatusBadGateway, "benchmark_admission_model_failed", err.Error())
 	case err != nil:

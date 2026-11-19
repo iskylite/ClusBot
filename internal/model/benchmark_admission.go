@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"clusbot/internal/work"
 )
@@ -16,11 +17,32 @@ func (s *Settings) InterpretBenchmarkAdmission(ctx context.Context, input work.B
 	if s == nil || s.Store == nil || s.Demo {
 		return "", work.ErrBenchmarkAdmissionModel
 	}
-	p, err := s.provider(ctx)
+	p, profile, err := s.benchmarkAdmissionProvider(ctx)
+	if errors.Is(err, work.ErrBenchmarkAdmissionModelBinding) {
+		return "", err
+	}
 	if err != nil {
 		return "", work.ErrBenchmarkAdmissionModel
 	}
-	body, err := json.Marshal(input)
+	var payload any = input
+	if profile {
+		// Explicit role routing may change destination. Never include asset
+		// references, connection metadata, prior messages or credentials
+		// in this profile's model input.
+		type candidate struct {
+			Target  string                   `json:"target"`
+			Profile work.BenchmarkProfileRef `json:"profile"`
+		}
+		data := struct {
+			Text       string      `json:"text"`
+			Candidates []candidate `json:"candidates"`
+		}{Text: input.Text}
+		for _, c := range input.Candidates {
+			data.Candidates = append(data.Candidates, candidate{Target: c.Target, Profile: c.Profile})
+		}
+		payload = data
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", work.ErrBenchmarkAdmissionModel
 	}
