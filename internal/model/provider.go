@@ -285,12 +285,7 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 		result.observeModel(result.Model)
 	}
 	if err == nil && ctx.Err() == nil && recordReceipt != nil {
-		receipt := work.ModelReceipt{Protocol: p.protocol, State: "not_reported"}
-		if result.modelConflict {
-			receipt.State = "conflicting"
-		} else if acceptableReceiptModel(result.reportedModel, p.key) {
-			receipt.State, receipt.ReportedModel = "reported", result.reportedModel
-		}
+		receipt := p.responseModelReceipt(result)
 		if recordErr := recordReceipt(ctx, receipt); recordErr != nil {
 			// Receipt persistence is observational: never reissue a model call
 			// or manufacture a receipt due to local storage unavailability.
@@ -561,6 +556,16 @@ func boundWithExcerptPolicy(request *responseRequest, limit int, contextTokens *
 		}
 	}
 	return nil, work.ErrModelRequestBudget
+}
+
+func (p *Provider) responseModelReceipt(result responseData) work.ModelReceipt {
+	receipt := work.ModelReceipt{Protocol: p.protocol, State: "not_reported"}
+	if result.modelConflict {
+		receipt.State = "conflicting"
+	} else if acceptableReceiptModel(result.reportedModel, p.key) {
+		receipt.State, receipt.ReportedModel = "reported", result.reportedModel
+	}
+	return receipt
 }
 
 func acceptableReceiptModel(model, credential string) bool {

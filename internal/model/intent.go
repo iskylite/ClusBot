@@ -61,19 +61,34 @@ func (s *Settings) ClassifyDelegation(ctx context.Context, text string, history 
 func (s *Settings) classify(ctx context.Context, text string, history []work.Message, candidates []work.RouteCandidate, limit int, routing bool) (work.DelegationResult, error) {
 	var provider *Provider
 	var err error
+	var provenance *work.RouterModelProvenance
 	if routing {
 		// Live and recovered, not-yet-classified admissions use the same policy
 		// at call selection. Existing classification receipts are not re-run.
 		// Resolve once: in-flight calls keep their endpoint/model/credential.
-		provider, _, err = s.inheritedModelRoleProvider(ctx, work.GeneralRouterModelRole, errGeneralRouterBinding)
+		var view BenchmarkAdmissionRoleView
+		provider, view, err = s.inheritedModelRoleSelection(ctx, work.GeneralRouterModelRole, errGeneralRouterBinding)
+		provenance = &work.RouterModelProvenance{
+			Source: view.Source, RoleRevision: view.Revision, ProfileID: view.ProfileID,
+			ProfileRevision: view.ProfileRevision, State: "selection_unavailable",
+		}
+		if provider != nil {
+			provenance.State, provenance.Protocol = "not_observed", provider.protocol
+			if view.Source == "legacy_default" {
+				provenance.DefaultRevision = provider.configRevision
+			}
+			if acceptableReceiptModel(provider.model, provider.key) {
+				provenance.RequestedModel = provider.model
+			}
+		}
 		if errors.Is(err, errGeneralRouterBinding) {
-			return work.DelegationResult{}, err
+			return work.DelegationResult{RouterModel: provenance}, err
 		}
 	} else {
 		provider, err = s.provider(ctx)
 	}
 	if err != nil {
-		return work.DelegationResult{}, errors.New("无法读取分类模型设置，请检查模型连接后重新发送")
+		return work.DelegationResult{RouterModel: provenance}, errors.New("无法读取分类模型设置，请检查模型连接后重新发送")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
@@ -95,7 +110,7 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 			Benchmark *work.BenchmarkRouterSuggestion `json:"benchmark_candidate,omitempty"`
 		}{History: history, Current: text, Tasks: candidates, Pending: work.RouterPending(ctx), Benchmark: benchmark})
 		if err != nil {
-			return work.DelegationResult{}, err
+			return work.DelegationResult{RouterModel: provenance}, err
 		}
 		var intent strings.Builder
 		response, err := provider.requestStream(ctx, responseRequest{
@@ -112,10 +127,10 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 		})
 		if errors.Is(err, work.ErrModelRequestBudget) {
 			if len(history) == 0 {
-				return work.DelegationResult{}, errors.New("当前消息超过分类模型输入上限，请缩短消息后重新发送")
+				return work.DelegationResult{RouterModel: provenance}, errors.New("当前消息超过分类模型输入上限，请缩短消息后重新发送")
 			}
-			// This failure happens before an HTTP request is sent; trimming whole
-			// history turns does not spend additional requests or hide actual use.
+			// Preserve history-trimming behavior for both local and server budget
+			// rejections. Neither supplies a complete model identity receipt.
 			first := 1
 			for first < len(history) && history[first].Role != "user" {
 				first++
@@ -123,7 +138,7 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 			history = history[first:]
 			continue
 		}
-		result := work.DelegationResult{Usage: normalizedUsage(response.Usage), Requests: 1}
+		result := work.DelegationResult{Usage: normalizedUsage(response.Usage), Requests: 1, RouterModel: provenance}
 		if err != nil {
 			if ctx.Err() != nil {
 				return result, errors.New("委托分类请求已超时或取消，请重新发送")
@@ -135,6 +150,10 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 			return result, errors.New("未取得完整的委托分类回复，请重新发送")
 		}
 		if routing {
+			if ctx.Err() == nil {
+				receipt := provider.responseModelReceipt(response)
+				provenance.State, provenance.ReportedModel = receipt.State, receipt.ReportedModel
+			}
 			var route work.RouteDecision
 			if err = json.Unmarshal([]byte(intent.String()), &route); err != nil {
 				return result, errors.New("模型未返回有效的路由决定，请重新发送")

@@ -655,19 +655,26 @@ func (s Server) admission(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "invalid_admission_key", "受理标识无效")
 		return
 	}
-	receipt, err := s.Store.ReadAdmission(r.Context(), key)
+	receipt, err := s.Store.ReadOwnedAdmission(r.Context(), key, s.principal(r))
 	if err != nil {
 		fail(w, 404, "admission_not_found", err.Error())
 		return
 	}
-	jsonResponse(w, 200, map[string]any{
+	body := map[string]any{
 		"receipt_id":      receipt.ReceiptID,
 		"request_key":     receipt.RequestKey,
 		"state":           receipt.State,
 		"task_id":         receipt.TaskID,
 		"conversation_id": receipt.ConversationID,
 		"reason":          receipt.Reason,
-	})
+	}
+	if receipt.ClassificationState != "" {
+		body["classification_state"] = receipt.ClassificationState
+	}
+	if receipt.RouterModel != nil {
+		body["router_model"] = receipt.RouterModel
+	}
+	jsonResponse(w, 200, body)
 }
 
 // submitAssetAcceptance 受理一个资产验收状态只读查询（A2：Chat 明确意图 → V3 Task/Step）。

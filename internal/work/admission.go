@@ -16,10 +16,11 @@ var (
 )
 
 type DelegationResult struct {
-	Task     bool
-	Route    *RouteDecision
-	Usage    *TokenUsage
-	Requests int
+	Task        bool
+	Route       *RouteDecision
+	Usage       *TokenUsage
+	Requests    int
+	RouterModel *RouterModelProvenance
 }
 
 type DelegationClassifier func(context.Context, string, []Message, int) (DelegationResult, error)
@@ -122,17 +123,21 @@ func (s *Store) classifySubmission(ctx context.Context, key, fingerprint, conver
 
 func (s *Store) classifyOnce(ctx context.Context, key, fingerprint, conversationID, text string, history []Message, classify DelegationClassifier) (submissionClassification, error) {
 	var result submissionClassification
-	var savedFingerprint, state, failure, route string
+	var savedFingerprint, state, failure, route, model string
 	var usage TokenUsage
-	err := s.db.QueryRowContext(ctx, `SELECT fingerprint,state,is_task,requests,input_tokens,output_tokens,active_ms,output_used,error,route
+	err := s.db.QueryRowContext(ctx, `SELECT fingerprint,state,is_task,requests,input_tokens,output_tokens,active_ms,output_used,error,route,router_model_provenance
 FROM submission_classifications WHERE request_key=?`, key).Scan(&savedFingerprint, &state, &result.Task, &result.Requests,
-		&usage.InputTokens, &usage.OutputTokens, &result.activeMS, &result.outputUsed, &failure, &route)
+		&usage.InputTokens, &usage.OutputTokens, &result.activeMS, &result.outputUsed, &failure, &route, &model)
 	if err == nil {
 		if savedFingerprint != fingerprint {
 			return result, ErrConflict
 		}
 		if usage.InputTokens != nil || usage.OutputTokens != nil {
 			result.Usage = &usage
+		}
+		result.RouterModel, err = decodeRouterModelProvenance(model)
+		if err != nil {
+			return result, err
 		}
 		if state == "completed" {
 			if route != "" {
@@ -211,13 +216,20 @@ VALUES(?,?,?,'running',1,?,?)`, key, fingerprint, conversationID, limit, now());
 		}
 		route = string(encoded)
 	}
+	if decision.RouterModel != nil {
+		encoded, err := json.Marshal(decision.RouterModel)
+		if err != nil {
+			return result, err
+		}
+		model = string(encoded)
+	}
 	// Request cancellation must not discard already incurred usage. Bound the
 	// independent receipt write, then leave uncertain identity intact on failure.
 	persistCtx, stop := context.WithTimeout(context.Background(), time.Second)
 	defer stop()
 	_, err = s.db.ExecContext(persistCtx, `UPDATE submission_classifications
-SET state=?,is_task=?,requests=?,input_tokens=?,output_tokens=?,active_ms=?,output_used=?,error=?,route=? WHERE request_key=? AND fingerprint=?`,
-		state, decision.Task, decision.Requests, inputTokens, outputTokens, result.activeMS, result.outputUsed, failure, route, key, fingerprint)
+SET state=?,is_task=?,requests=?,input_tokens=?,output_tokens=?,active_ms=?,output_used=?,error=?,route=?,router_model_provenance=? WHERE request_key=? AND fingerprint=?`,
+		state, decision.Task, decision.Requests, inputTokens, outputTokens, result.activeMS, result.outputUsed, failure, route, model, key, fingerprint)
 	if err != nil {
 		return result, fmt.Errorf("%w；分类回执暂未保存，不会自动重复请求，可明确选择重新判断并发送", ErrClassificationUnconfirmed)
 	}

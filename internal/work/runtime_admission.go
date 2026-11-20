@@ -46,7 +46,9 @@ type AdmissionReceipt struct {
 	// Duplicate 为 true 表示重复请求键返回原受理。
 	Duplicate bool
 	// Reason 是需要等待或用户决定的具体原因。
-	Reason string
+	Reason              string
+	ClassificationState string
+	RouterModel         *RouterModelProvenance
 }
 
 // admitChatInput 在模型分类前登记可信输入及请求键（P1-12.1）。
@@ -104,26 +106,40 @@ func admitChatInputWithFingerprint(tx *sql.Tx, requestKey, principal, text, fing
 // readAdmission 查询一个受理的当前状态（P1-12.5）。
 // 需要等待或用户决定时返回具体原因和对象；禁止因请求已受理就显示执行完成。
 func readAdmission(q recordsQuerier, requestKey string) (AdmissionReceipt, error) {
+	return readAdmissionForPrincipal(q, requestKey, "")
+}
+
+func readAdmissionForPrincipal(q recordsQuerier, requestKey, principal string) (AdmissionReceipt, error) {
 	var e InboxEvent
 	var taskID, runID sql.NullString
-	var conversationID, failure string
-	err := q.QueryRow(`SELECT e.event_id,e.task_id,e.run_id,e.state,e.failure,coalesce(r.conversation_id,'')
-FROM inbox_events e LEFT JOIN runs r ON r.id=e.run_id WHERE e.source='chat' AND e.event_id=?`, requestKey).
-		Scan(&e.EventID, &taskID, &runID, &e.State, &failure, &conversationID)
+	var conversationID, failure, classificationState, model string
+	err := q.QueryRow(`SELECT e.event_id,e.task_id,e.run_id,e.state,e.failure,coalesce(r.conversation_id,''),
+ coalesce(c.state,''),coalesce(c.router_model_provenance,'')
+FROM inbox_events e
+LEFT JOIN runs r ON r.id=e.run_id
+LEFT JOIN submission_classifications c ON c.request_key=e.event_id AND c.fingerprint=e.payload_digest
+WHERE e.source='chat' AND e.event_id=? AND (?='' OR e.principal=?)`, requestKey, principal, principal).
+		Scan(&e.EventID, &taskID, &runID, &e.State, &failure, &conversationID, &classificationState, &model)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdmissionReceipt{}, fmt.Errorf("受理 %s 不存在", requestKey)
 	}
 	if err != nil {
 		return AdmissionReceipt{}, err
 	}
+	provenance, err := decodeRouterModelProvenance(model)
+	if err != nil {
+		return AdmissionReceipt{}, err
+	}
 	e.TaskID = taskID.String
 	receipt := AdmissionReceipt{
-		ReceiptID:      e.EventID,
-		RequestKey:     e.EventID,
-		State:          e.State,
-		TaskID:         e.TaskID,
-		RunID:          runID.String,
-		ConversationID: conversationID,
+		ReceiptID:           e.EventID,
+		RequestKey:          e.EventID,
+		State:               e.State,
+		TaskID:              e.TaskID,
+		RunID:               runID.String,
+		ConversationID:      conversationID,
+		ClassificationState: classificationState,
+		RouterModel:         provenance,
 	}
 	// 受理不等于完成：按状态给出具体原因，不显示执行完成。
 	switch e.State {
@@ -359,6 +375,15 @@ func (s *Store) admitChat(ctx context.Context, requestKey, principal, conversati
 // 需要等待或用户决定时返回具体原因；关联了 Run/Task 后一并返回。
 func (s *Store) ReadAdmission(ctx context.Context, requestKey string) (AdmissionReceipt, error) {
 	return readAdmission(s.db, requestKey)
+}
+
+// ReadOwnedAdmission is the API projection. Other principals' receipts are
+// indistinguishable from a missing key even when the caller knows that key.
+func (s *Store) ReadOwnedAdmission(ctx context.Context, requestKey, principal string) (AdmissionReceipt, error) {
+	if principal == "" {
+		return AdmissionReceipt{}, fmt.Errorf("受理 %s 不存在", requestKey)
+	}
+	return readAdmissionForPrincipal(s.db, requestKey, principal)
 }
 
 // linkAdmissionToRun 把受理回执关联到后续建立的 Run/Task，并标记已处理（A1）。

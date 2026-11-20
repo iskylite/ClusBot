@@ -257,16 +257,22 @@ func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, b
 // Resolve exactly one selection for this model call. Explicit bindings never
 // try the default, including when a profile or credential no longer matches.
 func (s *Settings) inheritedModelRoleProvider(ctx context.Context, role string, unavailable error) (*Provider, bool, error) {
+	p, view, err := s.inheritedModelRoleSelection(ctx, role, unavailable)
+	return p, view.Source == "explicit_profile", err
+}
+
+// Return the selection snapshot, not a fresh read of potentially changed settings.
+func (s *Settings) inheritedModelRoleSelection(ctx context.Context, role string, unavailable error) (*Provider, BenchmarkAdmissionRoleView, error) {
 	v, value, key, err := s.modelRole(ctx, role)
 	if err != nil {
-		return nil, false, err
+		return nil, v, err
 	}
 	if v.Source == "legacy_default" {
 		p, err := s.provider(ctx)
-		return p, false, err
+		return p, v, err
 	}
 	p, err := s.profileForModelRole(v, value, key, unavailable)
-	return p, true, err
+	return p, v, err
 }
 
 func (s *Settings) profileForModelRole(v BenchmarkAdmissionRoleView, value work.ModelSettings, key string, unavailable error) (*Provider, error) {

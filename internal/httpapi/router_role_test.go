@@ -26,10 +26,14 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model != "router" {
 			t.Errorf("unexpected Router fixture model: %+v %v", req, err)
 		}
-		calls.Add(1)
+		attempt := calls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", `{"kind":"chat"}`)
-		fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"response\":{}}\n\n")
+		reported := "vendor/router-version"
+		if attempt == 2 {
+			reported = "local-fixture" // matches the credential; never a model identifier in evidence
+		}
+		fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"model\":%q}}\n\n", reported)
 	}))
 	defer srv.Close()
 	store, err := work.Open(filepath.Join(t.TempDir(), "router-role.sqlite"))
@@ -91,6 +95,18 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 		t.Fatalf("rebinding Router path changed admission replay: %+v %+v calls=%d", original, replay, calls.Load())
 	}
 
+	var saved, repeated struct {
+		RouterModel *work.RouterModelProvenance `json:"router_model"`
+	}
+	const liveReceipt = "/api/v1/admissions/router-role-live"
+	call(http.MethodGet, liveReceipt, "", http.StatusOK, &saved)
+	if saved.RouterModel == nil || saved.RouterModel.Source != "explicit_profile" ||
+		saved.RouterModel.ProfileID != profile.ID || saved.RouterModel.RoleRevision != role.Revision ||
+		saved.RouterModel.ProfileRevision != 1 || saved.RouterModel.State != "reported" ||
+		saved.RouterModel.RequestedModel != "router" || saved.RouterModel.ReportedModel != "vendor/router-version" {
+		t.Fatalf("missing exact classification evidence: %+v", saved.RouterModel)
+	}
+
 	base, err := store.ModelSettings(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +123,7 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 		t.Fatalf("configured role bypassed disabled default: %+v calls=%d", pending, calls.Load())
 	}
 	code, receipt := api.getAdmission("router-role-no-model")
-	if code != http.StatusOK || receipt["state"] != "received" {
+	if code != http.StatusOK || receipt["state"] != "received" || receipt["router_model"] != nil {
 		t.Fatalf("unclassified message did not remain in the existing durable admission: %d %+v", code, receipt)
 	}
 	base, err = store.ModelSettings(ctx)
@@ -126,6 +142,30 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 	code, receipt = api.getAdmission("router-role-no-model")
 	if code != http.StatusOK || receipt["state"] != "applied" || calls.Load() != 2 {
 		t.Fatalf("existing durable processing did not classify once using current pinned role: %d %+v calls=%d", code, receipt, calls.Load())
+	}
+	var recovered struct {
+		RouterModel *work.RouterModelProvenance `json:"router_model"`
+	}
+	call(http.MethodGet, "/api/v1/admissions/router-role-no-model", "", http.StatusOK, &recovered)
+	if recovered.RouterModel == nil || recovered.RouterModel.State != "not_reported" ||
+		recovered.RouterModel.RequestedModel != "router" || recovered.RouterModel.ReportedModel != "" {
+		t.Fatalf("credential leaked or model evidence fabricated: %+v", recovered.RouterModel)
+	}
+	call(http.MethodGet, liveReceipt, "", http.StatusOK, &repeated)
+	if repeated.RouterModel == nil || *repeated.RouterModel != *saved.RouterModel || calls.Load() != 2 {
+		t.Fatalf("stored model evidence changed after restoring a different default: %+v", repeated.RouterModel)
+	}
+	// Stale credentials prevent selection before any outgoing model request.
+	t.Setenv("CLUSBOT_ROUTER_HTTP_FIXTURE", "another-local-fixture")
+	call(http.MethodPost, route, `{"client_request_id":"router-role-stale","text":"这条不能回退到其他模型"}`, http.StatusBadGateway, nil)
+	var failed struct {
+		RouterModel *work.RouterModelProvenance `json:"router_model"`
+	}
+	call(http.MethodGet, "/api/v1/admissions/router-role-stale", "", http.StatusOK, &failed)
+	if failed.RouterModel == nil || failed.RouterModel.State != "selection_unavailable" ||
+		failed.RouterModel.ProfileID != profile.ID || failed.RouterModel.RequestedModel != "" ||
+		failed.RouterModel.ReportedModel != "" || calls.Load() != 2 {
+		t.Fatalf("invalid binding misrepresented as a model call: %+v calls=%d", failed.RouterModel, calls.Load())
 	}
 
 }
