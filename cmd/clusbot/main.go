@@ -58,12 +58,13 @@ type config struct {
 		KeyRef   string `yaml:"api_key_ref"`
 	} `yaml:"model"`
 	Runtime struct {
-		MaxActiveRuns           int `yaml:"max_active_runs"`
-		MaxPendingExplicitTasks int `yaml:"max_pending_explicit_tasks"`
-		MaxRunSeconds           int `yaml:"max_run_seconds"`
-		ModelTimeoutSeconds     int `yaml:"model_timeout_seconds"`
-		MaxOutputTokens         int `yaml:"max_output_tokens"`
-		MaxModelRequestBytes    int `yaml:"max_model_request_bytes"`
+		MaxActiveRuns            int  `yaml:"max_active_runs"`
+		MaxPendingExplicitTasks  int  `yaml:"max_pending_explicit_tasks"`
+		MaxRunSeconds            int  `yaml:"max_run_seconds"`
+		ModelTimeoutSeconds      int  `yaml:"model_timeout_seconds"`
+		MaxOutputTokens          int  `yaml:"max_output_tokens"`
+		MaxModelRequestBytes     int  `yaml:"max_model_request_bytes"`
+		ModelRunPriorityFairness bool `yaml:"model_run_priority_fairness"`
 	} `yaml:"runtime"`
 }
 
@@ -320,9 +321,10 @@ func run() error {
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	workers := db.Start(ctx, settings, cfg.Runtime.MaxActiveRuns, work.RunLimits{
-		ActiveTime:   time.Duration(cfg.Runtime.MaxRunSeconds) * time.Second,
-		ModelTimeout: time.Duration(cfg.Runtime.ModelTimeoutSeconds) * time.Second,
-		OutputTokens: cfg.Runtime.MaxOutputTokens,
+		ActiveTime:               time.Duration(cfg.Runtime.MaxRunSeconds) * time.Second,
+		ModelTimeout:             time.Duration(cfg.Runtime.ModelTimeoutSeconds) * time.Second,
+		OutputTokens:             cfg.Runtime.MaxOutputTokens,
+		ModelRunPriorityFairness: cfg.Runtime.ModelRunPriorityFairness,
 	})
 	approvalWorker := db.StartApprovalWorker(ctx)
 	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })

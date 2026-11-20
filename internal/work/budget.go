@@ -15,9 +15,10 @@ var (
 )
 
 type RunLimits struct {
-	ActiveTime   time.Duration
-	ModelTimeout time.Duration
-	OutputTokens int
+	ActiveTime               time.Duration
+	ModelTimeout             time.Duration
+	OutputTokens             int
+	ModelRunPriorityFairness bool
 }
 
 type TokenUsage struct {

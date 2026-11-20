@@ -94,16 +94,15 @@ func (s *Store) claim(ctx context.Context) (Run, error) {
 	if pending {
 		return Run{}, sql.ErrNoRows
 	}
+	s.runtimeMu.Lock()
+	fairPriority := s.admissionLimits.ModelRunPriorityFairness
+	s.runtimeMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Run{}, err
 	}
 	defer tx.Rollback()
-	run, err := scanRun(tx.QueryRow("SELECT " + runColumns + ` FROM runs WHERE status='queued'
-AND NOT EXISTS(SELECT 1 FROM workflow_blocked_tasks w WHERE w.task_id=runs.task_id)
-AND NOT EXISTS(SELECT 1 FROM run_queue_order q WHERE q.after_run_id=runs.id)
-ORDER BY CASE (SELECT priority FROM tasks WHERE id=runs.task_id) WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1 END,
-rowid LIMIT 1`))
+	run, err := selectModelRun(ctx, tx, fairPriority)
 	if err != nil {
 		return Run{}, err
 	}
