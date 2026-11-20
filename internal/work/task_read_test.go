@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -355,6 +356,22 @@ func TestMCPDerivedReplyDoesNotReappearAfterRevocation(t *testing.T) {
 			(original.Kind != "message.delta" && events[n] != original) {
 			t.Fatalf("SSE changed cursor/order or unrelated event: %+v -> %+v", original, events[n])
 		}
+	}
+	// Reconnect from a cursor issued before revocation must preserve the same
+	// sequence and redaction as a full stream, not resurrect source content.
+	priorCursor := -1
+	for i := 1; i < len(beforeEvents); i++ {
+		if beforeEvents[i].Kind == "message.delta" {
+			priorCursor = i - 1
+			break
+		}
+	}
+	if priorCursor < 0 {
+		t.Fatal("fixture did not emit a resumable reply fragment")
+	}
+	replayed, _, err := store.ReplayRunEvents(run.ID, beforeEvents[priorCursor].Seq)
+	if err != nil || !slices.Equal(replayed, events[priorCursor+1:]) {
+		t.Fatalf("resumed stream did not preserve redaction: %+v (%v)", replayed, err)
 	}
 	if !record.ResponseUnavailable || len(record.Messages) < 2 || !record.Messages[1].ContentUnavailable ||
 		detail.Artifact == nil || !detail.Artifact.ContentUnavailable ||

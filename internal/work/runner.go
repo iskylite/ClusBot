@@ -723,7 +723,18 @@ func streamAnswer(ctx context.Context, provider Provider, input []Message, task 
 	return answer, err
 }
 
+var ErrRunEventCursorReset = errors.New("运行事件游标已失效")
+
+// ReplayRunEvents validates the client's cursor in the same snapshot as its first batch.
+func (s *Store) ReplayRunEvents(runID string, after int64) ([]Event, Run, error) {
+	return s.runEvents(runID, after, true)
+}
+
 func (s *Store) Events(runID string, after int64) ([]Event, Run, error) {
+	return s.runEvents(runID, after, false)
+}
+
+func (s *Store) runEvents(runID string, after int64, validateCursor bool) ([]Event, Run, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, Run{}, err
@@ -732,6 +743,16 @@ func (s *Store) Events(runID string, after int64) ([]Event, Run, error) {
 	run, err := scanRun(tx.QueryRow("SELECT "+runColumns+" FROM runs WHERE id=?", runID))
 	if err != nil {
 		return nil, Run{}, err
+	}
+	if validateCursor && after > 0 {
+		var exists bool
+		err = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM run_events WHERE seq=? AND run_id=?)", after, runID).Scan(&exists)
+		if err != nil {
+			return nil, Run{}, err
+		}
+		if !exists {
+			return nil, Run{}, ErrRunEventCursorReset
+		}
 	}
 	var privateReply bool
 	if err := tx.QueryRow("SELECT "+revokedMCPReply("?"), runID).Scan(&privateReply); err != nil {

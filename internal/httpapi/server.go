@@ -929,7 +929,12 @@ func (s Server) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("id")
-	events, run, err := s.Store.Events(key, after)
+	events, run, err := s.Store.ReplayRunEvents(key, after)
+	if errors.Is(err, work.ErrRunEventCursorReset) {
+		w.Header().Set("Cache-Control", "no-store")
+		fail(w, http.StatusConflict, "run_event_cursor_reset", "运行事件游标已失效，请重新读取运行详情")
+		return
+	}
 	if err != nil {
 		writeError(w, err)
 		return
