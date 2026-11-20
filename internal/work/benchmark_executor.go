@@ -101,7 +101,9 @@ JOIN benchmark_runs r ON r.task_id=b.task_id JOIN tasks t ON t.id=b.task_id
 JOIN task_states ts ON ts.task_id=b.task_id JOIN steps s ON s.step_id=b.step_id
 WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
   (b.phase='queued' AND (
-    r.stop_requested=1 OR t.status='cancelled' OR (t.status='active' AND ts.state IN ('pending','running') AND NOT EXISTS (
+    r.stop_requested=1 OR t.status='cancelled' OR (t.status='active' AND ts.state IN ('pending','running')
+    AND NOT EXISTS(SELECT 1 FROM benchmark_dispatch_gates g WHERE g.step_id=b.step_id AND g.held=1)
+    AND NOT EXISTS (
       SELECT 1 FROM step_dependencies e JOIN benchmark_cases p ON p.step_id=e.depends_on_step_id
       WHERE e.step_id=b.step_id AND p.phase NOT IN ('verified','incomplete','skipped')
     ))

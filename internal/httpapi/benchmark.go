@@ -241,6 +241,10 @@ func (s Server) benchmarkExecutionControl(w http.ResponseWriter, r *http.Request
 		return
 	}
 	result, err := s.Store.ApplyBenchmarkExecutionControl(r.Context(), s.principal(r), task, step, in)
+	if errors.Is(err, work.ErrBenchmarkDispatchNotPending) {
+		fail(w, http.StatusConflict, "benchmark_dispatch_not_pending", err.Error())
+		return
+	}
 	if errors.Is(err, work.ErrBenchmarkCaseNotPending) {
 		fail(w, http.StatusConflict, "benchmark_case_not_pending", err.Error())
 		return

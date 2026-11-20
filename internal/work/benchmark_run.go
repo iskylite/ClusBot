@@ -115,6 +115,7 @@ type BenchmarkCaseProgress struct {
 	TargetHolds      int                            `json:"target_holds"`
 	Targets          []BenchmarkCaseTarget          `json:"targets"`
 	ExecutionControl *BenchmarkCaseExecutionControl `json:"execution_control,omitempty"`
+	DispatchControl  *BenchmarkDispatchControl      `json:"dispatch_control,omitempty"`
 }
 
 // BenchmarkAssetScope counts unique frozen target references, not GPU/CU,
@@ -282,7 +283,7 @@ WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
 o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
-ec.action,ec.state,ec.plan_revision,
+ec.action,ec.state,ec.plan_revision,g.control_version,g.held,
 (SELECT count(*) FROM benchmark_target_holds h WHERE h.step_id=b.step_id),
 (SELECT json_group_array(json_object(
  'ref',v.value->>'ref','frozen_revision',v.value->>'revision','ownership_epoch',v.value->>'epoch',
@@ -298,6 +299,7 @@ LEFT JOIN operations o ON o.operation_id=b.operation_id AND o.task_id=b.task_id 
 LEFT JOIN waits w ON w.wait_id='benchmark:'||b.step_id AND w.task_id=b.task_id AND w.step_id=b.step_id
  AND w.kind='external' AND w.match_key=o.operation_id
 LEFT JOIN benchmark_execution_controls ec ON ec.step_id=b.step_id AND ec.task_id=b.task_id AND ec.action='skip_this_run'
+LEFT JOIN benchmark_dispatch_gates g ON g.step_id=b.step_id AND b.phase='queued'
 WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	if err != nil {
 		return p, err
@@ -307,10 +309,11 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		var c BenchmarkCaseProgress
 		var raw, targetsJSON string
 		var opID, opState, waitID, waitState sql.NullString
-		var waitRev, waitDeadline, controlRevision sql.NullInt64
+		var waitRev, waitDeadline, controlRevision, gateVersion sql.NullInt64
+		var gateHeld sql.NullBool
 		var controlAction, controlState sql.NullString
 		if err := rows.Scan(&c.Key, &c.Phase, &c.JobID, &raw, &c.StepID, &c.StepState,
-			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &controlAction, &controlState, &controlRevision, &c.TargetHolds, &targetsJSON); err != nil {
+			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &controlAction, &controlState, &controlRevision, &gateVersion, &gateHeld, &c.TargetHolds, &targetsJSON); err != nil {
 			return p, err
 		}
 		if raw != "" {
@@ -321,6 +324,12 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		}
 		if controlAction.Valid {
 			c.ExecutionControl = &BenchmarkCaseExecutionControl{Action: controlAction.String, State: controlState.String, PlanRevision: int(controlRevision.Int64)}
+		}
+		if gateVersion.Valid && !p.StopRequested && (p.State == "pending" || p.State == "running" || p.State == "paused") {
+			c.DispatchControl = &BenchmarkDispatchControl{State: benchmarkDispatchEligible, ControlVersion: int(gateVersion.Int64)}
+			if gateHeld.Bool {
+				c.DispatchControl.State = benchmarkDispatchHeld
+			}
 		}
 		if waitID.Valid {
 			c.Wait = &BenchmarkWaitProgress{ID: waitID.String, Version: int(waitRev.Int64), State: waitState.String, RecheckAt: waitDeadline.Int64}

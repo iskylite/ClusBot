@@ -22,6 +22,7 @@ type BenchmarkReportCase struct {
 	CaseKey          string                         `json:"case_key"`
 	StepID           string                         `json:"step_id"`
 	ExecutionControl *BenchmarkCaseExecutionControl `json:"execution_control,omitempty"`
+	DispatchControl  *BenchmarkDispatchControl      `json:"dispatch_control,omitempty"`
 	Phase            string                         `json:"phase"`
 	OperationState   string                         `json:"operation_state,omitempty"`
 	ToolOutcome      string                         `json:"tool_outcome"`
@@ -48,7 +49,7 @@ func (s *Store) ReadBenchmarkReport(ctx context.Context, actor, task string) (Be
 		Profile: BenchmarkProfileRef{Profile: progress.Profile, Version: progress.Version}, PlanRevision: progress.PlanRevision,
 		AssetAcceptance: "not_evaluated", Cases: make([]BenchmarkReportCase, 0, len(progress.Cases))}
 	for _, c := range progress.Cases {
-		item := BenchmarkReportCase{CaseKey: c.Key, StepID: c.StepID, Phase: c.Phase, ExecutionControl: c.ExecutionControl,
+		item := BenchmarkReportCase{CaseKey: c.Key, StepID: c.StepID, Phase: c.Phase, ExecutionControl: c.ExecutionControl, DispatchControl: c.DispatchControl,
 			ToolOutcome: "not_started", RequiredEvidence: "not_evaluated", Performance: "not_evaluated", Targets: []BenchmarkReportTarget{}}
 		if c.Operation != nil {
 			item.OperationState = c.Operation.State
