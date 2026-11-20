@@ -25,15 +25,16 @@ import (
 )
 
 type Server struct {
-	Store             *work.Store
-	Token             string
-	Hosts             []string
-	Settings          *model.Settings
-	WorkspacePath     string
-	TicketProvider    *work.TicketProvider
-	BenchmarkProvider work.BenchmarkProvider
-	BenchmarkEvents   *work.BenchmarkEventReceiver
-	DiscoverySource   work.DiscoveryScanSource
+	Store                   *work.Store
+	Token                   string
+	Hosts                   []string
+	Settings                *model.Settings
+	WorkspacePath           string
+	TicketProvider          *work.TicketProvider
+	BenchmarkProvider       work.BenchmarkProvider
+	BenchmarkEvents         *work.BenchmarkEventReceiver
+	DiscoverySource         work.DiscoveryScanSource
+	MaxPendingExplicitTasks int
 }
 
 type submission struct {
@@ -179,7 +180,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/loans", s.lendAsset)
 	api.HandleFunc("POST /api/v1/loans/return", s.returnAsset)
 	api.HandleFunc("GET /api/v1/tasks", s.listTasks)
-	api.HandleFunc("POST /api/v1/tasks", s.submit(true))
+	api.HandleFunc("POST /api/v1/tasks", s.submit(true, true))
 	api.HandleFunc("GET /api/v1/tasks/{id}", s.detail(true))
 	api.HandleFunc("GET /api/v1/tasks/{id}/runs", s.taskRuns)
 	api.HandleFunc("GET /api/v1/tasks/{id}/manifest", s.taskManifest)
@@ -205,7 +206,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 		}
 		jsonResponse(w, 200, items)
 	})
-	api.HandleFunc("POST /api/v1/conversations", s.submit(false))
+	api.HandleFunc("POST /api/v1/conversations", s.submit(false, false))
 	api.HandleFunc("GET /api/v1/conversations/{id}", s.detail(false))
 	api.HandleFunc("GET /api/v1/conversations/history", s.conversationHistory)
 	api.HandleFunc("GET /api/v1/conversations/{id}/history", s.messageHistory)
@@ -217,14 +218,14 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/conversations/{id}/cancel", s.cancelConversation)
 	api.HandleFunc("PATCH /api/v1/conversations/{id}", s.changeConversation)
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)
-	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false))
+	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false, false))
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview", s.benchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-execution-suggestions/{run}/confirm", s.confirmBenchmarkExecutionSuggestion)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}", s.benchmarkRevisionRequestState)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}", s.reopenBenchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}/confirm", s.confirmBenchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/resume", s.resumeConversation)
-	api.HandleFunc("POST /api/v1/conversations/{id}/task", s.submit(true))
+	api.HandleFunc("POST /api/v1/conversations/{id}/task", s.submit(true, false))
 	api.HandleFunc("GET /api/v1/runs/{id}", s.runRecord(false))
 	api.HandleFunc("POST /api/v1/conversations/{id}/isolated-replies", s.submitIsolatedReply)
 	api.HandleFunc("GET /api/v1/runs/{id}/skill-binding", s.runSkillBinding)
@@ -385,7 +386,7 @@ func (s Server) login(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]bool{"authenticated": true})
 }
 
-func (s Server) submit(task bool) http.HandlerFunc {
+func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in submission
 		if !decode(w, r, &in) {
@@ -542,7 +543,20 @@ func (s Server) submit(task bool) http.HandlerFunc {
 		// A1 持久受理：在可信主体与请求校验之后、模型分类之前提交 Inbox。
 		// 同键同请求返回原回执，同键异请求返回冲突；可经 GET /api/v1/admissions/{key} 查询。
 		modelAvailable := s.ModelAvailable(r.Context())
-		admission, err := s.Store.AdmitChat(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, task, delivery, in.AttachmentIDs, modelAvailable)
+		var admission work.AdmissionResult
+		var err error
+		if explicitNewTask {
+			admission, err = s.Store.AdmitExplicitTask(r.Context(), key, s.principal(r), in.Text, in.Scope, delivery, in.AttachmentIDs, modelAvailable, s.MaxPendingExplicitTasks)
+		} else {
+			admission, err = s.Store.AdmitChat(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, task, delivery, in.AttachmentIDs, modelAvailable)
+		}
+		if errors.Is(err, work.ErrExplicitTaskQueueFull) {
+			w.Header().Set("Retry-After", "2")
+			jsonResponse(w, http.StatusTooManyRequests, map[string]string{
+				"code": "explicit_task_queue_full", "message": err.Error(), "request_key": key,
+			})
+			return
+		}
 		if err != nil {
 			writeError(w, err)
 			return

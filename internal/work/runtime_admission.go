@@ -260,6 +260,10 @@ type AdmissionResult struct {
 // modelAvailable 为 false 时输入仍被受理（状态 received），可后续查询等待原因；
 // 重启后待分类输入可经回执恢复。principal 来自可信认证（会话），不由请求方自证。
 func (s *Store) AdmitChat(ctx context.Context, requestKey, principal, conversationID, text, scope string, task bool, delivery Delivery, materialIDs []string, modelAvailable bool) (AdmissionResult, error) {
+	return s.admitChat(ctx, requestKey, principal, conversationID, text, scope, task, delivery, materialIDs, modelAvailable, false, 0)
+}
+
+func (s *Store) admitChat(ctx context.Context, requestKey, principal, conversationID, text, scope string, task bool, delivery Delivery, materialIDs []string, modelAvailable, explicitTask bool, explicitTaskLimit int) (AdmissionResult, error) {
 	if requestKey == "" || principal == "" {
 		return AdmissionResult{}, errors.New("受理缺少请求键或可信主体")
 	}
@@ -294,9 +298,27 @@ func (s *Store) AdmitChat(ctx context.Context, requestKey, principal, conversati
 			return AdmissionResult{}, err
 		}
 	}
+	if explicitTask && explicitTaskLimit > 0 && previous.ID == "" {
+		var alreadyAdmitted bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM inbox_events WHERE source='chat' AND event_id=?)`, requestKey).Scan(&alreadyAdmitted); err != nil {
+			return AdmissionResult{}, err
+		}
+		// Replay and conflict handling still belong to the same durable
+		// receipt path and take precedence over capacity for new requests.
+		if !alreadyAdmitted {
+			if err := checkExplicitTaskCapacity(tx, explicitTaskLimit); err != nil {
+				return AdmissionResult{}, err
+			}
+		}
+	}
 	receipt, err := admitChatInputWithFingerprint(tx, requestKey, principal, text, fingerprint, string(payload), now())
 	if err != nil {
 		return AdmissionResult{}, err
+	}
+	if explicitTask && previous.ID == "" && !receipt.Duplicate {
+		if _, err := tx.Exec(`UPDATE inbox_events SET explicit_task_admission=1 WHERE source='chat' AND event_id=?`, requestKey); err != nil {
+			return AdmissionResult{}, err
+		}
 	}
 	if receipt.Duplicate && receipt.State == "received" {
 		// Older receipts stored a summary only. The original client can supply the body again.

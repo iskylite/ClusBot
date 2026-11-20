@@ -58,11 +58,12 @@ type config struct {
 		KeyRef   string `yaml:"api_key_ref"`
 	} `yaml:"model"`
 	Runtime struct {
-		MaxActiveRuns        int `yaml:"max_active_runs"`
-		MaxRunSeconds        int `yaml:"max_run_seconds"`
-		ModelTimeoutSeconds  int `yaml:"model_timeout_seconds"`
-		MaxOutputTokens      int `yaml:"max_output_tokens"`
-		MaxModelRequestBytes int `yaml:"max_model_request_bytes"`
+		MaxActiveRuns           int `yaml:"max_active_runs"`
+		MaxPendingExplicitTasks int `yaml:"max_pending_explicit_tasks"`
+		MaxRunSeconds           int `yaml:"max_run_seconds"`
+		ModelTimeoutSeconds     int `yaml:"model_timeout_seconds"`
+		MaxOutputTokens         int `yaml:"max_output_tokens"`
+		MaxModelRequestBytes    int `yaml:"max_model_request_bytes"`
 	} `yaml:"runtime"`
 }
 
@@ -154,6 +155,9 @@ func run() error {
 	}
 	if cfg.Runtime.MaxActiveRuns < 1 || cfg.Runtime.MaxActiveRuns > 2 {
 		return errors.New("max_active_runs 必须为 1 或 2")
+	}
+	if cfg.Runtime.MaxPendingExplicitTasks < 0 || cfg.Runtime.MaxPendingExplicitTasks > work.MaxExplicitTaskAdmissionLimit {
+		return fmt.Errorf("max_pending_explicit_tasks 必须在 0 到 %d 之间，0 表示不限制显式新任务受理", work.MaxExplicitTaskAdmissionLimit)
 	}
 	if cfg.Runtime.MaxRunSeconds < 1 || cfg.Runtime.MaxRunSeconds > 86400 || cfg.Runtime.ModelTimeoutSeconds < 1 || cfg.Runtime.ModelTimeoutSeconds > 86400 {
 		return errors.New("max_run_seconds 和 model_timeout_seconds 必须在 1 到 86400 之间")
@@ -296,6 +300,7 @@ func run() error {
 
 	api := httpapi.Server{
 		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
+		MaxPendingExplicitTasks: cfg.Runtime.MaxPendingExplicitTasks,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
