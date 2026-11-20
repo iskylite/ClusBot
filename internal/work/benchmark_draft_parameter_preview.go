@@ -19,13 +19,15 @@ type BenchmarkDraftParameterInput struct {
 	AllowExpectedActualChange bool   `json:"allow_expected_actual_change"`
 }
 
-type BenchmarkDraftParameterPreview struct {
+type BenchmarkDraftEditPreview struct {
 	State            string              `json:"state"`
 	BaseVersion      int                 `json:"base_version"`
 	ExpectedRevision int                 `json:"expected_revision"`
 	ProposedProfile  BenchmarkProfile    `json:"proposed_profile"`
 	Changes          BenchmarkDraftDelta `json:"changes"`
 }
+
+type BenchmarkDraftParameterPreview = BenchmarkDraftEditPreview
 
 type BenchmarkDraftParameterModelInput struct {
 	Text      string `json:"text"`
@@ -35,24 +37,32 @@ type BenchmarkDraftParameterModelInput struct {
 
 type BenchmarkDraftParameterModel func(context.Context, BenchmarkDraftParameterModelInput, int) (string, error)
 
-func (s *Store) benchmarkDraftParameterBase(ctx context.Context, actor, key string, in BenchmarkDraftParameterInput) (BenchmarkDraft, int, error) {
+func (s *Store) benchmarkDraftPreviewBase(ctx context.Context, actor, key string, base, revision int) (BenchmarkDraft, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return BenchmarkDraft{}, 0, err
+		return BenchmarkDraft{}, err
 	}
 	defer tx.Rollback()
 	draft, err := loadBenchmarkDraft(ctx, tx, actor, key)
 	if err != nil {
-		return BenchmarkDraft{}, 0, err
+		return BenchmarkDraft{}, err
 	}
-	if draft.Published || draft.Revision != in.ExpectedRevision || draft.BaseVersion != in.BaseVersion {
-		return BenchmarkDraft{}, 0, fmt.Errorf("%w：未发布草稿或基线版本已变化，请刷新后重新预演", ErrConflict)
+	if draft.Published || draft.Revision != revision || draft.BaseVersion != base {
+		return BenchmarkDraft{}, fmt.Errorf("%w：未发布草稿或基线版本已变化，请刷新后重新预演", ErrConflict)
 	}
-	if err := guardBenchmarkDraftBase(ctx, tx, key, in.BaseVersion); err != nil {
-		return BenchmarkDraft{}, 0, err
+	if err := guardBenchmarkDraftBase(ctx, tx, key, base); err != nil {
+		return BenchmarkDraft{}, err
 	}
 	if draft.ValidationError != "" {
-		return BenchmarkDraft{}, 0, fmt.Errorf("%w：请先修复草稿已有校验问题", ErrBenchmarkInput)
+		return BenchmarkDraft{}, fmt.Errorf("%w：请先修复草稿已有校验问题", ErrBenchmarkInput)
+	}
+	return draft, nil
+}
+
+func (s *Store) benchmarkDraftParameterBase(ctx context.Context, actor, key string, in BenchmarkDraftParameterInput) (BenchmarkDraft, int, error) {
+	draft, err := s.benchmarkDraftPreviewBase(ctx, actor, key, in.BaseVersion, in.ExpectedRevision)
+	if err != nil {
+		return BenchmarkDraft{}, 0, err
 	}
 	for i, c := range draft.Profile.Cases {
 		if c.Key != in.CaseKey {

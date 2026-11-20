@@ -82,3 +82,21 @@ func (s Server) previewBenchmarkDraftParameter(w http.ResponseWriter, r *http.Re
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) previewBenchmarkDraftDependency(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in work.BenchmarkDraftDependencyInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.PreviewBenchmarkDraftDependency(r.Context(), s.principal(r), r.PathValue("key"), in, s.Settings.InterpretBenchmarkDraftDependency)
+	if errors.Is(err, work.ErrBenchmarkRevisionModel) {
+		fail(w, http.StatusBadGateway, "benchmark_draft_model_failed", err.Error())
+		return
+	}
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
