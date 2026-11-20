@@ -54,6 +54,65 @@ type BenchmarkDispatchControl struct {
 	ControlVersion int    `json:"control_version"`
 }
 
+type BenchmarkActionAvailability struct {
+	Enabled                bool   `json:"enabled"`
+	ReasonCode             string `json:"reason_code,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
+	ExpectedPlanRevision   int    `json:"expected_plan_revision"`
+	ExpectedControlVersion int    `json:"expected_control_version"`
+}
+
+type benchmarkActionBlock struct{ code, reason string }
+
+var (
+	benchmarkActionTaskStopping     = benchmarkActionBlock{"task_stopping", "任务正在停止，不能再修改测项控制"}
+	benchmarkActionTaskInactive     = benchmarkActionBlock{"task_not_active", "任务不再接受新操作"}
+	benchmarkActionNotPending       = benchmarkActionBlock{"case_not_pending", "测项已不再等待派发"}
+	benchmarkActionBoundWork        = benchmarkActionBlock{"execution_already_registered", "已有原作业、等待或占用记录，不能通过待派发控制改动"}
+	benchmarkActionHeld             = benchmarkActionBlock{"case_already_held", "该测项已经暂缓"}
+	benchmarkActionNotHeld          = benchmarkActionBlock{"case_not_held", "该测项当前没有暂缓"}
+	benchmarkActionAssetChanged     = benchmarkActionBlock{"frozen_asset_changed", "冻结目标的身份或版本已变化，请重新核对"}
+	benchmarkActionGrantUnavailable = benchmarkActionBlock{"frozen_authorization_unavailable", "原授权未生效、已失效或与当前测项不符"}
+	benchmarkActionInvalid          = benchmarkActionBlock{"case_definition_unavailable", "测项冻结定义无法核对"}
+)
+
+func benchmarkActionStateBlock(stopping bool, state, phase, operation string, bound bool) benchmarkActionBlock {
+	switch {
+	case stopping:
+		return benchmarkActionTaskStopping
+	case state != "pending" && state != "running" && state != "paused":
+		return benchmarkActionTaskInactive
+	case operation != "" || bound:
+		return benchmarkActionBoundWork
+	case phase != "queued":
+		return benchmarkActionNotPending
+	default:
+		return benchmarkActionBlock{}
+	}
+}
+
+func benchmarkActionGateBlock(action string, held bool) benchmarkActionBlock {
+	switch {
+	case action == benchmarkHoldBeforeDispatch && held:
+		return benchmarkActionHeld
+	case action == benchmarkResumeBeforeDispatch && !held:
+		return benchmarkActionNotHeld
+	default:
+		return benchmarkActionBlock{}
+	}
+}
+
+func benchmarkControlAssetMatches(target ticketTarget, revision, epoch int) bool {
+	return target.Revision == revision && target.Epoch == epoch
+}
+
+// Keep the bound-work check identical for read snapshots and mutations. An
+// orphaned/older row that is not in the displayed operation/Wait still blocks
+// these undispatched-only controls.
+const benchmarkHasBoundWorkSQL = `(EXISTS(SELECT 1 FROM operations o WHERE o.task_id=b.task_id AND o.step_id=b.step_id)
+ OR EXISTS(SELECT 1 FROM benchmark_target_holds h WHERE h.step_id=b.step_id)
+ OR EXISTS(SELECT 1 FROM waits w WHERE w.task_id=b.task_id AND w.step_id=b.step_id))`
+
 type BenchmarkExecutionControlInput struct {
 	Action                 string `json:"action"`
 	ExpectedPlanRevision   int    `json:"expected_plan_revision"`
@@ -142,14 +201,12 @@ FROM benchmark_execution_controls WHERE task_id=? AND actor=? AND request_id=?`,
 	var phase, operation, key, spec, targetsRaw, grantsRaw string
 	var hasBoundWork bool
 	if err := tx.QueryRowContext(ctx, `SELECT b.phase,b.operation_id,b.case_key,b.case_spec,b.frozen_targets,b.authorization_refs,
-(EXISTS(SELECT 1 FROM operations o WHERE o.task_id=b.task_id AND o.step_id=b.step_id)
- OR EXISTS(SELECT 1 FROM benchmark_target_holds h WHERE h.step_id=b.step_id)
- OR EXISTS(SELECT 1 FROM waits w WHERE w.task_id=b.task_id AND w.step_id=b.step_id))
+`+benchmarkHasBoundWorkSQL+`
 FROM benchmark_cases b WHERE b.task_id=? AND b.step_id=?`, task, step).
 		Scan(&phase, &operation, &key, &spec, &targetsRaw, &grantsRaw, &hasBoundWork); err != nil {
 		return BenchmarkExecutionControlReceipt{}, err
 	}
-	if stopping || state != "pending" && state != "running" && state != "paused" || phase != "queued" || operation != "" || hasBoundWork {
+	if benchmarkActionStateBlock(stopping, state, phase, operation, hasBoundWork).code != "" {
 		if gateAction {
 			return BenchmarkExecutionControlReceipt{}, ErrBenchmarkDispatchNotPending
 		}
@@ -162,7 +219,7 @@ FROM benchmark_cases b WHERE b.task_id=? AND b.step_id=?`, task, step).
 	}
 	if (in.ExpectedControlVersion == nil && out.ControlVersion != 0) ||
 		(in.ExpectedControlVersion != nil && *in.ExpectedControlVersion != out.ControlVersion) ||
-		(gateAction && held == (in.Action == benchmarkHoldBeforeDispatch)) {
+		benchmarkActionGateBlock(in.Action, held).code != "" {
 		return BenchmarkExecutionControlReceipt{}, fmt.Errorf("%w：暂缓状态已变化，请刷新后重试", ErrConflict)
 	}
 	var c BenchmarkCase
@@ -202,7 +259,7 @@ FROM benchmark_cases b WHERE b.task_id=? AND b.step_id=?`, task, step).
 		if err != nil {
 			return BenchmarkExecutionControlReceipt{}, err
 		}
-		if a.Revision != target.Revision || a.OwnershipEpoch != target.Epoch {
+		if !benchmarkControlAssetMatches(target, a.Revision, a.OwnershipEpoch) {
 			return BenchmarkExecutionControlReceipt{}, ErrAuthorizationDenied
 		}
 		if err := authorizeFrozenBenchmarkGrant(tx, actor, target.Ref, c, stamp, previous[target.Ref]); err != nil {

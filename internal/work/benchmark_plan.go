@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -214,17 +215,11 @@ func authorizeFrozenBenchmarkGrant(tx *sql.Tx, actor, target string, c Benchmark
 	return err
 }
 
+const liveBenchmarkGrantSQL = "subject=? AND action='benchmark.execute' AND revoked_at=0 AND valid_from<=? AND (expires_at=0 OR expires_at>?)"
+
 func matchBenchmarkAuthorization(tx *sql.Tx, actor, target string, c BenchmarkCase, stamp int64, frozenID string) (string, error) {
-	type parameters struct {
-		Revision   int                 `json:"revision"`
-		Connection string              `json:"connection"`
-		Tool       string              `json:"tool"`
-		Allowed    map[string][]string `json:"allowed"`
-	}
-	query := `SELECT auth_id,param_constraints FROM authorizations
-WHERE subject=? AND action='benchmark.execute' AND object_ref=? AND revoked_at=0
-AND valid_from<=? AND (expires_at=0 OR expires_at>?)`
-	args := []any{actor, target, stamp, stamp}
+	query := "SELECT auth_id,param_constraints FROM authorizations WHERE " + liveBenchmarkGrantSQL + " AND object_ref=?"
+	args := []any{actor, stamp, stamp, target}
 	if frozenID != "" {
 		query += " AND auth_id=?"
 		args = append(args, frozenID)
@@ -241,26 +236,7 @@ AND valid_from<=? AND (expires_at=0 OR expires_at>?)`
 		if err := rows.Scan(&aid, &raw); err != nil {
 			return "", err
 		}
-		var p parameters
-		dec := json.NewDecoder(strings.NewReader(raw))
-		dec.DisallowUnknownFields()
-		if dec.Decode(&p) != nil || !json.Valid([]byte(raw)) || p.Connection != c.Binding.Connection || p.Revision != c.Binding.Revision || p.Tool != c.Binding.Tool || len(p.Allowed) != len(c.Parameters) {
-			continue
-		}
-		match := true
-		for k, v := range c.Parameters {
-			allowed := false
-			for _, v1 := range p.Allowed[k] {
-				if v1 == v {
-					allowed = true
-				}
-			}
-			if !allowed {
-				match = false
-				break
-			}
-		}
-		if match {
+		if benchmarkGrantConstraintsMatch(raw, c) {
 			return aid, nil
 		}
 	}
@@ -268,6 +244,30 @@ AND valid_from<=? AND (expires_at=0 OR expires_at>?)`
 		return "", err
 	}
 	return "", fmt.Errorf("%w：未批准该资产、测试工具或参数", ErrAuthorizationDenied)
+}
+
+// This matcher is used by both the read-only action snapshot and writes.
+// It never exposes operator-supplied grant constraints in the response.
+func benchmarkGrantConstraintsMatch(raw string, c BenchmarkCase) bool {
+	type parameters struct {
+		Revision   int                 `json:"revision"`
+		Connection string              `json:"connection"`
+		Tool       string              `json:"tool"`
+		Allowed    map[string][]string `json:"allowed"`
+	}
+	var p parameters
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&p) != nil || !json.Valid([]byte(raw)) || p.Connection != c.Binding.Connection ||
+		p.Revision != c.Binding.Revision || p.Tool != c.Binding.Tool || len(p.Allowed) != len(c.Parameters) {
+		return false
+	}
+	for k, v := range c.Parameters {
+		if !slices.Contains(p.Allowed[k], v) {
+			return false
+		}
+	}
+	return true
 }
 
 func migrateV31Benchmark(tx *sql.Tx) error {

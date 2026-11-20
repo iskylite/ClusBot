@@ -104,18 +104,19 @@ type BenchmarkRunProgress struct {
 	Cases         []BenchmarkCaseProgress `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
-	Key              string                         `json:"key"`
-	Phase            string                         `json:"phase"`
-	JobID            string                         `json:"job_id,omitempty"`
-	Report           json.RawMessage                `json:"report,omitempty"`
-	StepID           string                         `json:"step_id"`
-	StepState        string                         `json:"step_state"`
-	Operation        *BenchmarkOperationProgress    `json:"operation,omitempty"`
-	Wait             *BenchmarkWaitProgress         `json:"wait,omitempty"`
-	TargetHolds      int                            `json:"target_holds"`
-	Targets          []BenchmarkCaseTarget          `json:"targets"`
-	ExecutionControl *BenchmarkCaseExecutionControl `json:"execution_control,omitempty"`
-	DispatchControl  *BenchmarkDispatchControl      `json:"dispatch_control,omitempty"`
+	Key              string                                 `json:"key"`
+	Phase            string                                 `json:"phase"`
+	JobID            string                                 `json:"job_id,omitempty"`
+	Report           json.RawMessage                        `json:"report,omitempty"`
+	StepID           string                                 `json:"step_id"`
+	StepState        string                                 `json:"step_state"`
+	Operation        *BenchmarkOperationProgress            `json:"operation,omitempty"`
+	Wait             *BenchmarkWaitProgress                 `json:"wait,omitempty"`
+	TargetHolds      int                                    `json:"target_holds"`
+	Targets          []BenchmarkCaseTarget                  `json:"targets"`
+	ExecutionControl *BenchmarkCaseExecutionControl         `json:"execution_control,omitempty"`
+	DispatchControl  *BenchmarkDispatchControl              `json:"dispatch_control,omitempty"`
+	Actions          map[string]BenchmarkActionAvailability `json:"actions"`
 }
 
 // BenchmarkAssetScope counts unique frozen target references, not GPU/CU,
@@ -276,24 +277,27 @@ func (s *Store) BenchmarkProgress(ctx context.Context, actor, taskID string) (Be
 	p.TaskID = taskID
 	p.AssetScope = BenchmarkAssetScope{Source: "frozen_targets", TargetRefs: []string{}}
 	seenTargets := map[string]bool{}
-	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision,r.stop_requested FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id
-WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision, &p.StopRequested)
+	var ownerCancelled bool
+	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision,r.stop_requested,owner.status='cancelled'
+FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id JOIN tasks owner ON owner.id=r.task_id
+WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision, &p.StopRequested, &ownerCancelled)
 	if err != nil {
 		return p, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
 o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
-ec.action,ec.state,ec.plan_revision,g.control_version,g.held,
+ec.action,ec.state,ec.plan_revision,g.control_version,g.held,b.operation_id,b.case_spec,b.authorization_refs,`+benchmarkHasBoundWorkSQL+`,
 (SELECT count(*) FROM benchmark_target_holds h WHERE h.step_id=b.step_id),
 (SELECT json_group_array(json_object(
  'ref',v.value->>'ref','frozen_revision',v.value->>'revision','ownership_epoch',v.value->>'epoch',
+ 'current_revision',a.revision,'current_epoch',a.ownership_epoch,
  'local_hold',CASE
    WHEN EXISTS(SELECT 1 FROM benchmark_target_holds h WHERE h.target_ref=v.value->>'ref' AND h.step_id=b.step_id) THEN 'held_by_case'
    WHEN EXISTS(SELECT 1 FROM benchmark_target_holds h WHERE h.target_ref=v.value->>'ref')
      OR EXISTS(SELECT 1 FROM quota_reservations q WHERE q.target_ref=v.value->>'ref' AND q.scope='target_hold'
        AND q.exclusive=1 AND q.state IN ('reserved','settled')) THEN 'held_elsewhere'
    ELSE 'not_locally_held' END) ORDER BY v.key)
- FROM json_each(b.frozen_targets) v)
+ FROM json_each(b.frozen_targets) v LEFT JOIN ops_assets a ON a.object_ref=v.value->>'ref')
 FROM benchmark_cases b JOIN steps s ON s.step_id=b.step_id AND s.task_id=b.task_id
 LEFT JOIN operations o ON o.operation_id=b.operation_id AND o.task_id=b.task_id AND o.step_id=b.step_id
 LEFT JOIN waits w ON w.wait_id='benchmark:'||b.step_id AND w.task_id=b.task_id AND w.step_id=b.step_id
@@ -305,15 +309,19 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		return p, err
 	}
 	defer rows.Close()
+	actionInputs := []benchmarkActionProjection{}
 	for rows.Next() {
 		var c BenchmarkCaseProgress
+		var facts benchmarkActionProjection
+		var operation string
+		var hasBoundWork bool
 		var raw, targetsJSON string
 		var opID, opState, waitID, waitState sql.NullString
 		var waitRev, waitDeadline, controlRevision, gateVersion sql.NullInt64
 		var gateHeld sql.NullBool
 		var controlAction, controlState sql.NullString
 		if err := rows.Scan(&c.Key, &c.Phase, &c.JobID, &raw, &c.StepID, &c.StepState,
-			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &controlAction, &controlState, &controlRevision, &gateVersion, &gateHeld, &c.TargetHolds, &targetsJSON); err != nil {
+			&opID, &opState, &waitID, &waitRev, &waitState, &waitDeadline, &controlAction, &controlState, &controlRevision, &gateVersion, &gateHeld, &operation, &facts.spec, &facts.grants, &hasBoundWork, &c.TargetHolds, &targetsJSON); err != nil {
 			return p, err
 		}
 		if raw != "" {
@@ -334,10 +342,13 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		if waitID.Valid {
 			c.Wait = &BenchmarkWaitProgress{ID: waitID.String, Version: int(waitRev.Int64), State: waitState.String, RecheckAt: waitDeadline.Int64}
 		}
-		if err := json.Unmarshal([]byte(targetsJSON), &c.Targets); err != nil {
+		if err := json.Unmarshal([]byte(targetsJSON), &facts.targets); err != nil {
 			return p, err
 		}
-		for _, target := range c.Targets {
+		c.Targets = make([]BenchmarkCaseTarget, 0, len(facts.targets))
+		for _, projected := range facts.targets {
+			target := projected.BenchmarkCaseTarget
+			c.Targets = append(c.Targets, target)
 			if target.Ref == "" || target.FrozenRevision < 1 {
 				return p, ErrState
 			}
@@ -347,10 +358,22 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 			}
 		}
 		p.Cases = append(p.Cases, c)
+		facts.block = benchmarkActionStateBlock(p.StopRequested || ownerCancelled, p.State, c.Phase, operation, hasBoundWork)
+		facts.version, facts.held = int(gateVersion.Int64), gateHeld.Bool
+		actionInputs = append(actionInputs, facts)
+	}
+	if err := rows.Err(); err != nil {
+		return p, err
+	}
+	if err := rows.Close(); err != nil {
+		return p, err
+	}
+	if err := projectBenchmarkCaseActions(ctx, tx, actor, &p, actionInputs); err != nil {
+		return p, err
 	}
 	slices.Sort(p.AssetScope.TargetRefs)
 	p.AssetScope.TargetCount = len(p.AssetScope.TargetRefs)
-	return p, rows.Err()
+	return p, nil
 }
 
 func (s *Store) RunBenchmarks(ctx context.Context, provider BenchmarkProvider) {
