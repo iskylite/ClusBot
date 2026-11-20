@@ -2,6 +2,7 @@ package work
 
 import (
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 )
 
@@ -19,7 +20,15 @@ type RouterModelProvenance struct {
 	State           string `json:"state"`
 }
 
+//go:embed submission_classifications.sql
+var submissionClassificationsSchema string
+
 func migrateRouterModelProvenance(tx *sql.Tx) error {
+	// Older installations upgraded through the baseline migrations may lack
+	// the table entirely: it previously existed only in the bootstrap schema.
+	if _, err := tx.Exec(submissionClassificationsSchema); err != nil {
+		return err
+	}
 	return addColumnIfMissing(tx, "submission_classifications", "router_model_provenance", `ALTER TABLE submission_classifications ADD COLUMN router_model_provenance TEXT NOT NULL DEFAULT ''`)
 }
 

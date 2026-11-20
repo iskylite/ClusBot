@@ -43,3 +43,31 @@ SELECT event_id,payload_digest,'','completed',1,0,received_at FROM inbox_events 
 		}
 	}
 }
+
+func TestRouterModelProvenanceRepairsMissingLegacyTable(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "sparse-admission.sqlite")
+	s, err := Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const schemaQuery = "SELECT sql FROM sqlite_schema WHERE type='table' AND name='submission_classifications'"
+	var freshSQL string
+	if err := s.db.QueryRow(schemaQuery).Scan(&freshSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("DROP TABLE submission_classifications; PRAGMA user_version=123"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	var upgradedSQL string
+	if err := s.db.QueryRow(schemaQuery).Scan(&upgradedSQL); err != nil || upgradedSQL != freshSQL {
+		t.Fatalf("legacy schema does not match fresh schema: %v; got %s", err, upgradedSQL)
+	}
+}
