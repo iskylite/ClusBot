@@ -37,7 +37,7 @@ type BenchmarkDraftParameterModelInput struct {
 
 type BenchmarkDraftParameterModel func(context.Context, BenchmarkDraftParameterModelInput, int) (string, error)
 
-func (s *Store) benchmarkDraftPreviewBase(ctx context.Context, actor, key string, base, revision int) (BenchmarkDraft, error) {
+func (s *Store) readPinnedBenchmarkDraft(ctx context.Context, actor, key string, base, revision int) (BenchmarkDraft, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return BenchmarkDraft{}, err
@@ -51,6 +51,14 @@ func (s *Store) benchmarkDraftPreviewBase(ctx context.Context, actor, key string
 		return BenchmarkDraft{}, fmt.Errorf("%w：未发布草稿或基线版本已变化，请刷新后重新预演", ErrConflict)
 	}
 	if err := guardBenchmarkDraftBase(ctx, tx, key, base); err != nil {
+		return BenchmarkDraft{}, err
+	}
+	return draft, nil
+}
+
+func (s *Store) benchmarkDraftPreviewBase(ctx context.Context, actor, key string, base, revision int) (BenchmarkDraft, error) {
+	draft, err := s.readPinnedBenchmarkDraft(ctx, actor, key, base, revision)
+	if err != nil {
 		return BenchmarkDraft{}, err
 	}
 	if draft.ValidationError != "" {

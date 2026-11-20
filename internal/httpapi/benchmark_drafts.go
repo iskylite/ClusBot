@@ -100,3 +100,17 @@ func (s Server) previewBenchmarkDraftDependency(w http.ResponseWriter, r *http.R
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s Server) previewBenchmarkDraftStructuredEdit(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var req work.BenchmarkDraftRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	out, err := s.Store.PreviewBenchmarkDraftStructuredEdit(r.Context(), s.principal(r), r.PathValue("key"), req)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

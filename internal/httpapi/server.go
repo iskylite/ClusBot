@@ -150,6 +150,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/domain/benchmark-profiles/{key}/draft/start-from-published", s.startBenchmarkDraftFromPublished)
 	api.HandleFunc("POST /api/v1/domain/benchmark-profiles/{key}/draft/preview-parameter-edit", s.previewBenchmarkDraftParameter)
 	api.HandleFunc("POST /api/v1/domain/benchmark-profiles/{key}/draft/preview-dependency-edit", s.previewBenchmarkDraftDependency)
+	api.HandleFunc("POST /api/v1/domain/benchmark-profiles/{key}/draft/preview-structured-edit", s.previewBenchmarkDraftStructuredEdit)
 	api.HandleFunc("PUT /api/v1/domain/benchmark-chat-targets/{target}", s.setBenchmarkChatTarget)
 	api.HandleFunc("DELETE /api/v1/domain/benchmark-chat-targets/{target}", s.clearBenchmarkChatTarget)
 	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)

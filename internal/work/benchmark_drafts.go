@@ -132,21 +132,31 @@ func (s *Store) ReadBenchmarkDraft(ctx context.Context, actor, key string) (Benc
 	return loadBenchmarkDraft(ctx, tx, actor, key)
 }
 
-func (s *Store) SaveBenchmarkDraft(ctx context.Context, actor, key string, req BenchmarkDraftRequest) (BenchmarkDraft, error) {
-	if actor == "" {
-		return BenchmarkDraft{}, ErrAuthorizationDenied
-	}
+// encodeBenchmarkDraftRequest applies the same document and revision limits
+// to a structured preview and to a subsequent explicit save.
+func encodeBenchmarkDraftRequest(key string, req BenchmarkDraftRequest) (BenchmarkProfile, []byte, error) {
 	const maxInt = int(^uint(0) >> 1)
 	if !validBenchKey(key) || req.ExpectedRevision < 0 || req.ExpectedRevision == maxInt || req.BaseVersion < 0 || req.BaseVersion == maxInt || len(req.Cases) > 64 {
-		return BenchmarkDraft{}, ErrBenchmarkInput
+		return BenchmarkProfile{}, nil, ErrBenchmarkInput
 	}
 	profile := BenchmarkProfile{Key: key, Version: req.BaseVersion + 1, Cases: req.Cases}
 	raw, err := json.Marshal(profile)
 	if err != nil {
-		return BenchmarkDraft{}, err
+		return BenchmarkProfile{}, nil, err
 	}
 	if len(raw) > benchmarkDraftMaxBytes {
-		return BenchmarkDraft{}, ErrBenchmarkInput
+		return BenchmarkProfile{}, nil, ErrBenchmarkInput
+	}
+	return profile, raw, nil
+}
+
+func (s *Store) SaveBenchmarkDraft(ctx context.Context, actor, key string, req BenchmarkDraftRequest) (BenchmarkDraft, error) {
+	if actor == "" {
+		return BenchmarkDraft{}, ErrAuthorizationDenied
+	}
+	_, raw, err := encodeBenchmarkDraftRequest(key, req)
+	if err != nil {
+		return BenchmarkDraft{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
