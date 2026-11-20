@@ -463,8 +463,13 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 		} else {
 			tools, err = s.automaticTaskTools(controlled, run)
 			automatic = automatic || len(tools) > 0
-			if automatic {
-				providerBinding += "\n" + automaticReadProtocol
+			if err == nil && automatic {
+				var offerDigest string
+				offerDigest, err = automaticToolOfferDigest(tools)
+				// Existing automatic checkpoints without an offer digest
+				// cannot prove the catalog they originally offered. The normal
+				// checkpoint comparison rejects those and any live drift.
+				providerBinding += "\n" + automaticReadProtocol + "\nautomatic-offer/v1:" + offerDigest
 			}
 		}
 	}

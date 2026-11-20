@@ -78,6 +78,28 @@ func (s *Store) automaticTaskTools(ctx context.Context, run Run) ([]taskTool, er
 	return tools, nil
 }
 
+// automaticToolOfferDigest binds the exact ordered model-visible data tool
+// definitions and their durable source revisions, including workspace tools.
+// Only this digest feeds the checkpoint binding; credentials, call arguments
+// and results are not included.
+func automaticToolOfferDigest(tools []taskTool) (string, error) {
+	type offered struct {
+		Definition                              TaskToolDefinition
+		SourceID, SourceTool, SourceToolVersion string
+		SourceRevision                          int
+	}
+	offer := make([]offered, 0, len(tools))
+	for _, tool := range tools {
+		source := tool.source.request
+		offer = append(offer, offered{tool.definition, source.ConnectionID, source.ToolName, source.ToolVersion, source.Revision})
+	}
+	data, err := json.Marshal(offer)
+	if err != nil {
+		return "", err
+	}
+	return digest(string(data)), nil
+}
+
 func (s *Store) streamWithAutomaticTools(ctx context.Context, runID string, started time.Time, model automaticTaskToolModel,
 	input []Message, tools []taskTool, reads []TaskRead, remaining int, limits RunLimits, emit func(context.Context, string) error) (TaskAnswer, error) {
 	saved, err := s.restoreReadRounds(ctx, runID, automaticReadProtocol, reads)
