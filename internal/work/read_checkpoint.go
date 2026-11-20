@@ -27,6 +27,8 @@ func recoverableAnswerLimit(remaining, generation int) int {
 	return remaining
 }
 
+var ErrTaskWorkerModelRoleUnavailable = errors.New("事项执行模型档案已不可用，请检查角色设置、版本、默认地址和凭据")
+
 var ErrReadCheckpoint = errors.New("本轮检查点不可继续，请补充要求后重新提交")
 var ErrConversationReplyRoleUnavailable = errors.New("普通对话回复模型档案已不可用，请检查角色设置、版本、默认地址和凭据")
 

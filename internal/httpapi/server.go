@@ -77,6 +77,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("PUT /api/v1/settings/model/roles/general-router", s.setGeneralRouterRole)
 	api.HandleFunc("GET /api/v1/settings/model/roles/conversation-reply", s.readConversationReplyRole)
 	api.HandleFunc("PUT /api/v1/settings/model/roles/conversation-reply", s.setConversationReplyRole)
+	api.HandleFunc("GET /api/v1/settings/model/roles/task-worker", s.readTaskWorkerRole)
+	api.HandleFunc("PUT /api/v1/settings/model/roles/task-worker", s.setTaskWorkerRole)
 	api.HandleFunc("POST /api/v1/settings/model/profiles", s.saveModelProfile)
 	api.HandleFunc("PUT /api/v1/settings/model/profiles/{id}", s.saveModelProfile)
 	api.HandleFunc("DELETE /api/v1/settings/model/profiles/{id}", s.deleteModelProfile)

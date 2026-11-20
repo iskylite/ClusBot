@@ -260,3 +260,50 @@ func TestConversationReplyRoleUpgradePreservesV119Pins(t *testing.T) {
 		t.Fatalf("new role could not be saved: %+v %v", role, err)
 	}
 }
+
+func TestTaskWorkerRoleUpgradePreservesV121Pins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "model-role-v121.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = migrateConversationReplyModelRole(tx); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	pin := ModelRoleBinding{Role: ConversationReplyModelRole, Revision: 9, ProfileID: "old-fixture", ProfileRevision: 3, CredentialBinding: "test-binding"}
+	if _, err = tx.Exec("INSERT INTO model_role_bindings VALUES(?,?,?,?,?)", pin.Role, pin.Revision, pin.ProfileID, pin.ProfileRevision, pin.CredentialBinding); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err = tx.Exec("PRAGMA user_version=121"); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, _, err := reopened.ReadModelRole(t.Context(), ConversationReplyModelRole)
+	if err != nil || got != pin {
+		t.Fatalf("previous Reply binding changed: %+v %v", got, err)
+	}
+	role, _, err := reopened.ReadModelRole(t.Context(), TaskWorkerModelRole)
+	if err != nil || role.Revision != 0 || role.ProfileID != "" {
+		t.Fatalf("upgrade activated a Worker binding: %+v %v", role, err)
+	}
+	if role, err = reopened.SaveModelRole(t.Context(), role); err != nil || role.Revision != 1 {
+		t.Fatalf("new role could not be saved: %+v %v", role, err)
+	}
+}

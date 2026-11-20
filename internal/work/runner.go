@@ -21,6 +21,19 @@ type TaskAnswer struct {
 	Usage    *TokenUsage
 }
 
+// TaskRunProvider supplies all model entry points from one immutable
+// selection. Production binds this once per execution attempt, not per hook.
+type TaskRunProvider interface {
+	Provider
+	textCheckpointProvider
+	taskReadProvider
+	multiTaskReadProvider
+}
+
+type taskRunResolver interface {
+	ResolveTaskRunProvider(context.Context) (TaskRunProvider, error)
+}
+
 type taskAnswerProvider interface {
 	StreamTaskAnswer(context.Context, []Message, int, func(string) error) (TaskAnswer, error)
 }
@@ -401,6 +414,18 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 	if err == nil && run.TaskID != "" {
 		request.Skill, err = s.skillForRun(controlled, run)
 	}
+	if err == nil && run.TaskID != "" && isolated.ProfileID == "" {
+		if resolver, ok := provider.(taskRunResolver); ok {
+			// In production a nil selection only denotes the existing demo
+			// adapter. An invalid explicit profile returns an error here,
+			// before any legacy fallback can invoke an external read.
+			var selected TaskRunProvider
+			selected, err = resolver.ResolveTaskRunProvider(controlled)
+			if err == nil && selected != nil {
+				provider = selected
+			}
+		}
+	}
 	var readModel TaskReadModel
 	var checkpointReadModel MultiTaskReadModel
 	var checkpointStream Provider
@@ -583,6 +608,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			status, reason, accounting.errorCode = "failed", ErrIsolatedReplyUnavailable.Error(), "isolated_reply_unavailable"
 		case errors.Is(err, ErrConversationReplyRoleUnavailable):
 			status, reason, accounting.errorCode = "failed", ErrConversationReplyRoleUnavailable.Error(), "conversation_reply_role_unavailable"
+		case errors.Is(err, ErrTaskWorkerModelRoleUnavailable):
+			status, reason, accounting.errorCode = "failed", ErrTaskWorkerModelRoleUnavailable.Error(), "task_worker_role_unavailable"
 		case errors.Is(err, ErrReadCheckpoint):
 			reason, accounting.errorCode = ErrReadCheckpoint.Error(), "read_checkpoint_unavailable"
 		case checkpointed:

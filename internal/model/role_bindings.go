@@ -49,6 +49,9 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 		v.EgressFields = []string{"submitted_text", "recent_history", "task_candidates", "pending_intents", "benchmark_candidate"}
 	case work.ConversationReplyModelRole:
 		v.EgressFields = []string{"submitted_text", "recent_history", "selected_text_materials", "selected_images_if_supported", "matching_user_memories"}
+	case work.TaskWorkerModelRole:
+		v.EgressFields = []string{"task_messages_history_and_requirements", "selected_text_materials", "selected_images_if_supported", "matching_user_memories",
+			"workflow_input_artifacts", "applicable_skill_and_experience", "authorized_read_tool_definitions_and_results", "current_run_model_tool_round_history"}
 	}
 	if b.ProfileID == "" {
 		return v, work.ModelSettings{}, "", nil
@@ -89,7 +92,7 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 				v.requestEnvelope.Attributes = *base.Attributes
 			}
 			value = boundRouterProfile(value, base)
-			if role == work.ConversationReplyModelRole &&
+			if (role == work.ConversationReplyModelRole || role == work.TaskWorkerModelRole) &&
 				(base.Attributes == nil || base.Attributes.Vision == nil || !*base.Attributes.Vision) {
 				// Selecting another model cannot newly authorize egress of images
 				// the effective default provider would have rejected locally.
@@ -154,7 +157,7 @@ func (s *Settings) SetConversationReplyRole(ctx context.Context, in Conversation
 }
 
 func defaultDestinationRole(role string) bool {
-	return role == work.GeneralRouterModelRole || role == work.ConversationReplyModelRole
+	return role == work.GeneralRouterModelRole || role == work.ConversationReplyModelRole || role == work.TaskWorkerModelRole
 }
 
 // Ordinary routing/reply roles preserve the existing trusted destination.

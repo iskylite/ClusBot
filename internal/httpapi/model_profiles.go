@@ -126,6 +126,28 @@ func (s Server) setConversationReplyRole(w http.ResponseWriter, r *http.Request)
 	jsonResponse(w, http.StatusOK, out)
 }
 
+func (s Server) readTaskWorkerRole(w http.ResponseWriter, r *http.Request) {
+	readModelRole(w, r, s.Settings.ReadTaskWorkerRole)
+}
+
+func (s Server) setTaskWorkerRole(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in model.TaskWorkerRoleInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.ProfileID != "" && !validID(in.ProfileID) {
+		writeModelSettingsError(w, model.InvalidSettings("档案标识无效"))
+		return
+	}
+	out, err := s.Settings.SetTaskWorkerRole(r.Context(), in)
+	if err != nil {
+		writeModelSettingsError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
 func readModelRole(w http.ResponseWriter, r *http.Request, read func(context.Context) (model.BenchmarkAdmissionRoleView, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	out, err := read(r.Context())
