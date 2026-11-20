@@ -246,3 +246,64 @@ func TestDiscoveryDelayedReceiptsDoNotRewindCandidateOrTriggerReverseDrift(t *te
 		t.Fatalf("a different source overwrote same-serial identity: %+v %v", items, err)
 	}
 }
+
+func TestDiscoveryConflictUsesOnlyValidCanonicalAddresses(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "canonical-address.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	source := orderedDiscoveryFixture{}
+	const actor = "operator"
+	start := now() + 2000
+	if _, err := s.GrantDiscovery(ctx, actor, DiscoveryGrant{Source: "inventory-1", Scope: "POD7", ExpiresAt: start + 60000}, source); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PublishDiscoveryPlan(ctx, actor, DiscoveryPlanRequest{ID: "canonical", Source: "inventory-1", Scope: "POD7", FirstAt: start, PeriodSeconds: 60}, source); err != nil {
+		t.Fatal(err)
+	}
+	tick, ok, err := s.claimDiscovery(ctx, source, start)
+	if !ok || err != nil {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	batch := []DiscoveryObservation{
+		{"aliased", "192.0.2.1"}, {"aliased", "::ffff:192.0.2.1"},
+		{"valid", "192.0.2.2"}, {"valid", "malformed"}, {"valid", "::ffff:0.0.0.0"},
+		{"different", "192.0.2.3"}, {"different", "::ffff:192.0.2.4"},
+		{"invalid-only", "::ffff:224.0.0.1"},
+	}
+	if err := s.settleDiscovery(ctx, tick, batch, nil, start); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"aliased": "observed", "valid": "observed", "different": "conflict"}
+	items, err := s.ListDiscoveryCandidates(ctx, actor)
+	if err != nil || len(items) != len(want) {
+		t.Errorf("candidates: %+v (%v)", items, err)
+	}
+	for _, item := range items {
+		if item.State != want[item.Serial] {
+			t.Errorf("%s state = %q, want %q", item.Serial, item.State, want[item.Serial])
+		}
+	}
+	rows, err := s.db.Query("SELECT ordinal,address FROM discovery_observations ORDER BY ordinal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	audit := map[int]string{0: "192.0.2.1", 1: "192.0.2.1", 2: "192.0.2.2", 5: "192.0.2.3", 6: "192.0.2.4"}
+	for rows.Next() {
+		var ordinal int
+		var ip string
+		if err := rows.Scan(&ordinal, &ip); err != nil {
+			t.Fatal(err)
+		}
+		if ip != audit[ordinal] {
+			t.Errorf("audit ordinal %d = %q, want %q", ordinal, ip, audit[ordinal])
+		}
+		delete(audit, ordinal)
+	}
+	if err := rows.Err(); err != nil || len(audit) != 0 {
+		t.Fatalf("missing audit entries %+v (%v)", audit, err)
+	}
+}

@@ -317,22 +317,34 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 	}
 	seen := map[string]string{}
 	conflicted := map[string]bool{}
-	accepted := 0
-	for _, o := range observed {
+	// Use the same validated addresses for conflict detection and persistence,
+	// preserving the original source ordinal for each accepted audit row.
+	addresses := make([]string, len(observed))
+	for i, o := range observed {
+		address, parseErr := netip.ParseAddr(o.Address)
+		if parseErr != nil || address.Zone() != "" || len(o.Serial) > 128 || strings.TrimSpace(o.Serial) != o.Serial {
+			continue
+		}
+		address = address.Unmap()
+		if address.IsUnspecified() || address.IsMulticast() {
+			continue
+		}
+		ip := address.String()
+		addresses[i] = ip
 		if o.Serial == "" {
 			continue
 		}
-		if prev, ok := seen[o.Serial]; ok && prev != o.Address {
+		if prev, ok := seen[o.Serial]; ok && prev != ip {
 			conflicted[o.Serial] = true
 		}
-		seen[o.Serial] = o.Address
+		seen[o.Serial] = ip
 	}
+	accepted := 0
 	for i, o := range observed {
-		address, parseErr := netip.ParseAddr(o.Address)
-		if parseErr != nil || address.Zone() != "" || address.IsUnspecified() || address.IsMulticast() || len(o.Serial) > 128 || strings.TrimSpace(o.Serial) != o.Serial {
+		ip := addresses[i]
+		if ip == "" {
 			continue
 		}
-		ip := address.Unmap().String()
 		identity := []string{d.source, "serial", o.Serial}
 		state := "observed"
 		if o.Serial == "" {
