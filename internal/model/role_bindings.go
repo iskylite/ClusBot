@@ -32,6 +32,7 @@ type BenchmarkAdmissionRoleView struct {
 	ProfileID       string   `json:"profile_id,omitempty"`
 	ProfileRevision int      `json:"profile_revision,omitempty"`
 	EgressFields    []string `json:"egress_fields,omitempty"`
+	requestEnvelope *roleRequestEnvelope
 }
 
 func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissionRoleView, work.ModelSettings, string, error) {
@@ -82,6 +83,10 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 			if !same {
 				v.Status = "default_destination_mismatch"
 				return v, work.ModelSettings{}, "", nil
+			}
+			v.requestEnvelope = &roleRequestEnvelope{Model: base.ModelID}
+			if base.Attributes != nil {
+				v.requestEnvelope.Attributes = *base.Attributes
 			}
 			value = boundRouterProfile(value, base)
 			if role == work.ConversationReplyModelRole &&
@@ -269,5 +274,6 @@ func (s *Settings) profileForModelRole(v BenchmarkAdmissionRoleView, value work.
 	if err != nil {
 		return nil, unavailable
 	}
+	p.roleEnvelope = v.requestEnvelope
 	return p, nil
 }

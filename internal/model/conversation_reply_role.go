@@ -25,11 +25,14 @@ func (s *Settings) conversationReplyProvider(ctx context.Context) (work.Provider
 	// Pin an explicit generation at the existing first checkpoint. An earlier
 	// checkpoint (including legacy default, or the same profile rebound after a
 	// clear) cannot be reinterpreted; an in-flight provider remains immutable.
-	caps, err := json.Marshal(p.attributes)
+	caps, err := json.Marshal(struct {
+		Selected  work.ModelAttributes
+		Inherited *roleRequestEnvelope
+	}{p.attributes, p.roleEnvelope})
 	if err != nil {
 		return nil, "", true, err
 	}
-	p.checkpointScope = fmt.Sprintf("conversation_reply/v1:%d:%s:%d:%x", view.Revision, view.ProfileID, view.ProfileRevision, sha256.Sum256(caps))
+	p.checkpointScope = fmt.Sprintf("conversation_reply/v2:%d:%s:%d:%x", view.Revision, view.ProfileID, view.ProfileRevision, sha256.Sum256(caps))
 	identity, _ := p.ReadCheckpointIdentity()
 	return conversationReplyStream{provider: p}, identity + "\nconversation/v1", true, nil
 }

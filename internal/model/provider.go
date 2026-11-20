@@ -28,6 +28,7 @@ type Provider struct {
 	credentialBinding    string
 	maxRequestBytes      int
 	checkpointScope      string
+	roleEnvelope         *roleRequestEnvelope
 	attributes           work.ModelAttributes
 }
 
@@ -79,6 +80,7 @@ type reasoningOptions struct {
 
 type responseRequest struct {
 	excerpted       []int64
+	compacted       bool
 	noRetry         bool               // classification/one-shot calls must not retry
 	Reasoning       *reasoningOptions  `json:"reasoning,omitempty"`
 	Model           string             `json:"model"`
@@ -238,28 +240,18 @@ func conversationRequest(messages []work.Message, task bool, maxOutputTokens int
 }
 
 func (p *Provider) requestStream(ctx context.Context, request responseRequest, emit func(string) error) (responseData, error) {
-	request.Model, request.Stream, request.Store = p.model, true, false
 	for _, item := range request.Input {
 		if message, ok := item.(responseMessage); ok && len(message.images) > 0 &&
 			(p.attributes.Vision == nil || !*p.attributes.Vision) {
 			return responseData{}, work.ErrImageUnsupported
 		}
 	}
-	if p.attributes.ReasoningEffort != "" {
-		request.Reasoning = &reasoningOptions{Effort: p.attributes.ReasoningEffort}
-	}
-	if cap := p.attributes.MaxOutputTokens; cap != nil && request.MaxOutputTokens > *cap {
-		request.MaxOutputTokens = max(1, *cap)
-	}
-	if window := p.attributes.ContextTokens; window != nil && request.MaxOutputTokens > *window/2 {
-		request.MaxOutputTokens = max(1, *window/2)
-	}
 	originalInput := request.Input
 	encode := json.Marshal
 	if p.protocol == ProtocolChat {
 		encode = marshalChatRequest
 	}
-	body, err := boundedModelRequest(&request, p.requestByteLimit(), p.attributes.ContextTokens, encode)
+	body, err := p.boundedWireRequest(&request, encode)
 	if err != nil {
 		return responseData{}, err
 	}
@@ -463,6 +455,10 @@ func (p *Provider) requestByteLimit() int {
 }
 
 func boundedModelRequest(request *responseRequest, limit int, contextTokens *int, encode func(any) ([]byte, error)) ([]byte, error) {
+	return boundWithExcerptPolicy(request, limit, contextTokens, encode, contextTokens != nil)
+}
+
+func boundWithExcerptPolicy(request *responseRequest, limit int, contextTokens *int, encode func(any) ([]byte, error), excerpts bool) ([]byte, error) {
 	// Compaction always applies a window: the configured one, or a default when
 	// unknown, so the 90% threshold holds even before /models or settings supply
 	// a value. The optional background excerpt below stays keyed to a configured
@@ -493,7 +489,10 @@ func boundedModelRequest(request *responseRequest, limit int, contextTokens *int
 	if err != nil || fits(body) {
 		return body, err
 	}
-	request.Instructions += " 较早对话已省略。如果引用对象无法从现有内容确定，请明确说明缺失的信息。"
+	if !request.compacted {
+		request.Instructions += " 较早对话已省略。如果引用对象无法从现有内容确定，请明确说明缺失的信息。"
+		request.compacted = true
+	}
 	input := request.Input
 	lastUser := -1
 	for i, item := range input {
@@ -531,7 +530,7 @@ func boundedModelRequest(request *responseRequest, limit int, contextTokens *int
 		}
 		if fits(body) {
 			// Keep bounded excerpts of omitted turns when there is still room.
-			if contextTokens == nil {
+			if !excerpts {
 				return body, nil
 			}
 			var history []string
