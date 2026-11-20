@@ -205,12 +205,8 @@ FROM benchmark_cases b WHERE b.task_id=? AND b.step_id=?`, task, step).
 		if a.Revision != target.Revision || a.OwnershipEpoch != target.Epoch {
 			return BenchmarkExecutionControlReceipt{}, ErrAuthorizationDenied
 		}
-		grant, err := benchmarkAuthorization(tx, actor, target.Ref, c, stamp)
-		if err != nil {
+		if err := authorizeFrozenBenchmarkGrant(tx, actor, target.Ref, c, stamp, previous[target.Ref]); err != nil {
 			return BenchmarkExecutionControlReceipt{}, err
-		}
-		if grant != previous[target.Ref] {
-			return BenchmarkExecutionControlReceipt{}, ErrAuthorizationDenied
 		}
 	}
 	if gateAction {

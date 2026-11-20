@@ -199,15 +199,39 @@ var ErrBenchmarkBinding = errors.New("基准绑定不可用")
 // benchmarkAuthorization checks explicitly approved per-object tool parameters.
 // A grant for a different tool or without enumerated values is not a wildcard.
 func benchmarkAuthorization(tx *sql.Tx, actor, target string, c BenchmarkCase, stamp int64) (string, error) {
+	return matchBenchmarkAuthorization(tx, actor, target, c, stamp, "")
+}
+
+// authorizeFrozenBenchmarkGrant is for already accepted work. A matching
+// additive grant must not displace or replace its pinned grant. Revoking the
+// pinned grant still blocks dispatch even when another grant would authorize
+// a newly accepted run.
+func authorizeFrozenBenchmarkGrant(tx *sql.Tx, actor, target string, c BenchmarkCase, stamp int64, frozenID string) error {
+	if frozenID == "" {
+		return ErrAuthorizationDenied
+	}
+	_, err := matchBenchmarkAuthorization(tx, actor, target, c, stamp, frozenID)
+	return err
+}
+
+func matchBenchmarkAuthorization(tx *sql.Tx, actor, target string, c BenchmarkCase, stamp int64, frozenID string) (string, error) {
 	type parameters struct {
 		Revision   int                 `json:"revision"`
 		Connection string              `json:"connection"`
 		Tool       string              `json:"tool"`
 		Allowed    map[string][]string `json:"allowed"`
 	}
-	rows, err := tx.Query(`SELECT auth_id,param_constraints FROM authorizations
+	query := `SELECT auth_id,param_constraints FROM authorizations
 WHERE subject=? AND action='benchmark.execute' AND object_ref=? AND revoked_at=0
-AND valid_from<=? AND (expires_at=0 OR expires_at>?) ORDER BY policy_version DESC,auth_id`, actor, target, stamp, stamp)
+AND valid_from<=? AND (expires_at=0 OR expires_at>?)`
+	args := []any{actor, target, stamp, stamp}
+	if frozenID != "" {
+		query += " AND auth_id=?"
+		args = append(args, frozenID)
+	} else {
+		query += " ORDER BY policy_version DESC,auth_id"
+	}
+	rows, err := tx.Query(query, args...)
 	if err != nil {
 		return "", err
 	}

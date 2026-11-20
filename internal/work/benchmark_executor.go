@@ -176,11 +176,11 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				reason = "目标身份、占用条件或版本已改变"
 				break
 			}
-			aid, e := benchmarkAuthorization(tx, d.actor, target.Ref, d.spec, stamp)
+			e = authorizeFrozenBenchmarkGrant(tx, d.actor, target.Ref, d.spec, stamp, auths[target.Ref])
 			if e != nil && !errors.Is(e, ErrAuthorizationDenied) {
 				return d, false, e
 			}
-			if e != nil || aid != auths[target.Ref] {
+			if e != nil {
 				reason = "冻结的执行授权已失效"
 				break
 			}
