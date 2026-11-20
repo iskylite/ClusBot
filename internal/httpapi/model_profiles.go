@@ -96,6 +96,14 @@ func (s Server) setBenchmarkExecutionRole(w http.ResponseWriter, r *http.Request
 	setModelRole(w, r, s.Settings.SetBenchmarkExecutionRole)
 }
 
+func (s Server) readGeneralRouterRole(w http.ResponseWriter, r *http.Request) {
+	readModelRole(w, r, s.Settings.ReadGeneralRouterRole)
+}
+
+func (s Server) setGeneralRouterRole(w http.ResponseWriter, r *http.Request) {
+	setModelRole(w, r, s.Settings.SetGeneralRouterRole)
+}
+
 func readModelRole(w http.ResponseWriter, r *http.Request, read func(context.Context) (model.BenchmarkAdmissionRoleView, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	out, err := read(r.Context())

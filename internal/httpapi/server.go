@@ -73,6 +73,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-revision", s.setBenchmarkRevisionRole)
 	api.HandleFunc("GET /api/v1/settings/model/roles/benchmark-execution", s.readBenchmarkExecutionRole)
 	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-execution", s.setBenchmarkExecutionRole)
+	api.HandleFunc("GET /api/v1/settings/model/roles/general-router", s.readGeneralRouterRole)
+	api.HandleFunc("PUT /api/v1/settings/model/roles/general-router", s.setGeneralRouterRole)
 	api.HandleFunc("POST /api/v1/settings/model/profiles", s.saveModelProfile)
 	api.HandleFunc("PUT /api/v1/settings/model/profiles/{id}", s.saveModelProfile)
 	api.HandleFunc("DELETE /api/v1/settings/model/profiles/{id}", s.deleteModelProfile)

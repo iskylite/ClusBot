@@ -204,4 +204,12 @@ func TestRevisionModelRoleUpgradePreservesAdmissionRole(t *testing.T) {
 	if err != nil || next.ProfileID != "" || next.Revision != 0 {
 		t.Fatalf("upgrade implicitly activated new destination: %+v %v", next, err)
 	}
+	router, _, err := s.ReadModelRole(ctx, GeneralRouterModelRole)
+	if err != nil || router.ProfileID != "" || router.Revision != 0 {
+		t.Fatalf("upgrade implicitly bound general router role: %+v %v", router, err)
+	}
+	router, err = s.SaveModelRole(ctx, ModelRoleBinding{Role: GeneralRouterModelRole})
+	if err != nil || router.Revision != 1 {
+		t.Fatalf("upgrade missing general router role storage: %+v %v", router, err)
+	}
 }

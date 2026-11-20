@@ -11,6 +11,8 @@ import (
 	"clusbot/internal/work"
 )
 
+var errGeneralRouterBinding = errors.New("常规路由模型档案已不可用，请检查绑定、版本、凭据和默认地址")
+
 const delegationInstructions = `判断 ClusBot 当前消息是否明确委托。只输出 TASK 或 CHAT。
 TASK：用户明确要求助手接手并完成具体工作、产出可审阅的成果、执行或核验明确事项。礼貌问句也可能是明确委托。可用历史理解“刚才的内容”等指代。
 CHAT：询问、解释、比较、探讨方案、询问是否有能力、未明确要求执行或交付，或意图不明。
@@ -57,7 +59,19 @@ func (s *Settings) ClassifyDelegation(ctx context.Context, text string, history 
 }
 
 func (s *Settings) classify(ctx context.Context, text string, history []work.Message, candidates []work.RouteCandidate, limit int, routing bool) (work.DelegationResult, error) {
-	provider, err := s.provider(ctx)
+	var provider *Provider
+	var err error
+	if routing {
+		// Live and recovered, not-yet-classified admissions use the same policy
+		// at call selection. Existing classification receipts are not re-run.
+		// Resolve once: in-flight calls keep their endpoint/model/credential.
+		provider, _, err = s.inheritedModelRoleProvider(ctx, work.GeneralRouterModelRole, errGeneralRouterBinding)
+		if errors.Is(err, errGeneralRouterBinding) {
+			return work.DelegationResult{}, err
+		}
+	} else {
+		provider, err = s.provider(ctx)
+	}
 	if err != nil {
 		return work.DelegationResult{}, errors.New("无法读取分类模型设置，请检查模型连接后重新发送")
 	}
