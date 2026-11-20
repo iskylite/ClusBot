@@ -25,6 +25,7 @@ type DomainBenchmarkGrant struct {
 	Connection string              `yaml:"connection" json:"connection"`
 	Tool       string              `yaml:"tool" json:"tool"`
 	Allowed    map[string][]string `yaml:"allowed" json:"allowed"`
+	ValidFrom  *int64              `yaml:"valid_from_unix_ms,omitempty" json:"-"`
 	ExpiresAt  int64               `yaml:"expires_at_unix_ms" json:"-"`
 }
 
@@ -69,6 +70,15 @@ func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEnt
 			if grant.Revision < 1 || !validBenchKey(grant.Connection) || !validBenchKey(grant.Tool) || grant.ExpiresAt <= stamp || len(grant.Allowed) > 32 {
 				return ErrBenchmarkInput
 			}
+			// Optional operator windows narrow this grant only. Import does
+			// not reserve resources, schedule work, or revoke other grants.
+			validFrom := stamp
+			if grant.ValidFrom != nil {
+				validFrom = *grant.ValidFrom
+				if validFrom <= 0 || validFrom >= grant.ExpiresAt {
+					return fmt.Errorf("%w：基准授权开始时间必须为正且早于到期时间", ErrBenchmarkInput)
+				}
+			}
 			for k, values := range grant.Allowed {
 				if !validBenchKey(k) || len(values) == 0 || len(values) > 64 {
 					return ErrBenchmarkInput
@@ -82,12 +92,14 @@ func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEnt
 			params := toJSON(grant)
 			var exists bool
 			if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM authorizations WHERE subject=? AND action='benchmark.execute'
-AND object_ref=? AND param_constraints=? AND expires_at=? AND revoked_at=0)`, principal, ref, params, grant.ExpiresAt).Scan(&exists); err != nil {
+AND object_ref=? AND param_constraints=? AND expires_at=? AND revoked_at=0
+AND ((? AND valid_from=created_at) OR (NOT ? AND valid_from=?)))`, principal, ref, params, grant.ExpiresAt,
+				grant.ValidFrom == nil, grant.ValidFrom == nil, validFrom).Scan(&exists); err != nil {
 				return err
 			}
 			if !exists {
 				if _, err := grantAuthorization(tx, Authorization{Subject: principal, Action: "benchmark.execute", ObjectRef: ref,
-					ParamConstraints: params, ExpiresAt: grant.ExpiresAt, ValidFrom: stamp, Source: "local-domain-asset-import", Owner: principal}, stamp); err != nil {
+					ParamConstraints: params, ExpiresAt: grant.ExpiresAt, ValidFrom: validFrom, Source: "local-domain-asset-import", Owner: principal}, stamp); err != nil {
 					return err
 				}
 			}

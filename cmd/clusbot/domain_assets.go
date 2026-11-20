@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -28,7 +29,15 @@ func runImportDomainAssets(args []string) error {
 		return err
 	}
 	defer source.Close()
-	decoder := yaml.NewDecoder(io.LimitReader(source, 1<<20))
+	const manifestLimit = 1 << 20
+	raw, err := io.ReadAll(io.LimitReader(source, manifestLimit+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > manifestLimit {
+		return errors.New("资产清单超过 1 MiB")
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(raw))
 	decoder.KnownFields(true)
 	var manifest struct {
 		Assets []work.DomainAssetEntry `yaml:"assets"`
@@ -38,6 +47,26 @@ func runImportDomainAssets(args []string) error {
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return errors.New("资产清单须为一个 YAML 文档")
+	}
+	// A typed pointer decodes explicit YAML null the same as an omitted
+	// field. Inspect only start nodes so blanks/null never enable a grant
+	// immediately by falling back to legacy behavior.
+	var windows struct {
+		Assets []struct {
+			Benchmark []struct {
+				Start yaml.Node `yaml:"valid_from_unix_ms"`
+			} `yaml:"benchmark_grants"`
+		} `yaml:"assets"`
+	}
+	if err := yaml.Unmarshal(raw, &windows); err != nil {
+		return err
+	}
+	for _, asset := range windows.Assets {
+		for _, grant := range asset.Benchmark {
+			if !grant.Start.IsZero() && grant.Start.ShortTag() != "!!int" {
+				return errors.New("基准授权 valid_from_unix_ms 必须是 UNIX 毫秒整数，留空请删除该字段")
+			}
+		}
 	}
 	if err := os.MkdirAll(*directory, 0700); err != nil {
 		return err
