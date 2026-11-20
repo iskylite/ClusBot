@@ -166,6 +166,12 @@ func (s *Settings) TextRunProvider(ctx context.Context, task bool) (work.Provide
 	if s.Demo {
 		return Demo{}, "demo/" + kind, nil
 	}
+	if !task {
+		reply, binding, explicit, err := s.conversationReplyProvider(ctx)
+		if err != nil || explicit {
+			return reply, binding, err
+		}
+	}
 	provider, err := s.provider(ctx)
 	if err != nil {
 		return nil, "", err

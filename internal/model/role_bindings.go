@@ -15,6 +15,15 @@ type BenchmarkAdmissionRoleInput struct {
 	ConfirmRequestTextEgress bool   `json:"confirm_request_text_egress,omitempty"`
 }
 
+// ConversationReplyRoleInput explicitly covers richer context than Router text.
+type ConversationReplyRoleInput struct {
+	Action                           string `json:"action"`
+	Revision                         int    `json:"revision"`
+	ProfileID                        string `json:"profile_id,omitempty"`
+	ProfileRevision                  int    `json:"profile_revision,omitempty"`
+	ConfirmConversationContextEgress bool   `json:"confirm_conversation_context_egress,omitempty"`
+}
+
 type BenchmarkAdmissionRoleView struct {
 	Role            string   `json:"role"`
 	Revision        int      `json:"revision"`
@@ -34,8 +43,11 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 		return BenchmarkAdmissionRoleView{}, work.ModelSettings{}, "", err
 	}
 	v := BenchmarkAdmissionRoleView{Role: b.Role, Revision: b.Revision, Source: "legacy_default", Status: "uses_existing_default"}
-	if role == work.GeneralRouterModelRole {
+	switch role {
+	case work.GeneralRouterModelRole:
 		v.EgressFields = []string{"submitted_text", "recent_history", "task_candidates", "pending_intents", "benchmark_candidate"}
+	case work.ConversationReplyModelRole:
+		v.EgressFields = []string{"submitted_text", "recent_history", "selected_text_materials", "selected_images_if_supported", "matching_user_memories"}
 	}
 	if b.ProfileID == "" {
 		return v, work.ModelSettings{}, "", nil
@@ -65,13 +77,19 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 		v.Status = "credential_changed"
 	default:
 		value := p.Settings
-		if role == work.GeneralRouterModelRole {
-			base, same := s.routerDefaultDestination(ctx, value, key)
+		if defaultDestinationRole(role) {
+			base, same := s.roleDefaultDestination(ctx, value, key)
 			if !same {
 				v.Status = "default_destination_mismatch"
 				return v, work.ModelSettings{}, "", nil
 			}
 			value = boundRouterProfile(value, base)
+			if role == work.ConversationReplyModelRole &&
+				(base.Attributes == nil || base.Attributes.Vision == nil || !*base.Attributes.Vision) {
+				// Selecting another model cannot newly authorize egress of images
+				// the effective default provider would have rejected locally.
+				value.Attributes.Vision = nil
+			}
 		}
 		v.Status = "locally_configured"
 		return v, value, key, nil
@@ -115,10 +133,27 @@ func (s *Settings) SetGeneralRouterRole(ctx context.Context, in BenchmarkAdmissi
 	return s.setModelRole(ctx, work.GeneralRouterModelRole, in)
 }
 
-// A general router receives the ordinary routing context, not just new text.
-// Match the effective default destination and credential on every resolution;
-// an alternate model ID at that destination never grants new egress or tools.
-func (s *Settings) routerDefaultDestination(ctx context.Context, profile work.ModelSettings, profileKey string) (work.ModelSettings, bool) {
+func (s *Settings) ReadConversationReplyRole(ctx context.Context) (BenchmarkAdmissionRoleView, error) {
+	view, _, _, err := s.modelRole(ctx, work.ConversationReplyModelRole)
+	return view, err
+}
+
+func (s *Settings) SetConversationReplyRole(ctx context.Context, in ConversationReplyRoleInput) (BenchmarkAdmissionRoleView, error) {
+	if in.Action == "bind_profile" && !in.ConfirmConversationContextEgress {
+		return BenchmarkAdmissionRoleView{}, InvalidSettings("请先明确同意所选模型处理普通对话上下文：本次文字、近期对话、已选材料和可用图片、匹配的个人记忆")
+	}
+	return s.setModelRole(ctx, work.ConversationReplyModelRole, BenchmarkAdmissionRoleInput{
+		Action: in.Action, Revision: in.Revision, ProfileID: in.ProfileID, ProfileRevision: in.ProfileRevision,
+		ConfirmRequestTextEgress: in.ConfirmConversationContextEgress,
+	})
+}
+
+func defaultDestinationRole(role string) bool {
+	return role == work.GeneralRouterModelRole || role == work.ConversationReplyModelRole
+}
+
+// Ordinary routing/reply roles preserve the existing trusted destination.
+func (s *Settings) roleDefaultDestination(ctx context.Context, profile work.ModelSettings, profileKey string) (work.ModelSettings, bool) {
 	stored, err := s.Store.ModelSettings(ctx)
 	if err != nil {
 		return work.ModelSettings{}, false
@@ -187,9 +222,9 @@ func (s *Settings) setModelRole(ctx context.Context, role string, in BenchmarkAd
 		if key == "" {
 			return BenchmarkAdmissionRoleView{}, InvalidSettings("档案的环境凭据尚不可用")
 		}
-		if role == work.GeneralRouterModelRole {
-			if _, same := s.routerDefaultDestination(ctx, p.Settings, key); !same {
-				return BenchmarkAdmissionRoleView{}, InvalidSettings("常规路由档案必须与有效默认模型使用同一协议、地址和环境凭据引用")
+		if defaultDestinationRole(role) {
+			if _, same := s.roleDefaultDestination(ctx, p.Settings, key); !same {
+				return BenchmarkAdmissionRoleView{}, InvalidSettings("角色档案必须与有效默认模型使用同一协议、地址和环境凭据引用")
 			}
 		}
 		b.ProfileID, b.ProfileRevision, b.CredentialBinding = p.ID, p.Settings.Revision, s.Store.ModelCredentialBinding(key)

@@ -27,6 +27,7 @@ type Provider struct {
 	configRevision       int
 	credentialBinding    string
 	maxRequestBytes      int
+	checkpointScope      string
 	attributes           work.ModelAttributes
 }
 

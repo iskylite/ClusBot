@@ -104,6 +104,28 @@ func (s Server) setGeneralRouterRole(w http.ResponseWriter, r *http.Request) {
 	setModelRole(w, r, s.Settings.SetGeneralRouterRole)
 }
 
+func (s Server) readConversationReplyRole(w http.ResponseWriter, r *http.Request) {
+	readModelRole(w, r, s.Settings.ReadConversationReplyRole)
+}
+
+func (s Server) setConversationReplyRole(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	var in model.ConversationReplyRoleInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.ProfileID != "" && !validID(in.ProfileID) {
+		writeModelSettingsError(w, model.InvalidSettings("档案标识无效"))
+		return
+	}
+	out, err := s.Settings.SetConversationReplyRole(r.Context(), in)
+	if err != nil {
+		writeModelSettingsError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
 func readModelRole(w http.ResponseWriter, r *http.Request, read func(context.Context) (model.BenchmarkAdmissionRoleView, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	out, err := read(r.Context())

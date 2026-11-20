@@ -16,6 +16,9 @@ func (p *Provider) ReadCheckpointIdentity() (string, string) {
 	if limit := p.requestByteLimit(); limit != DefaultMaxRequestBytes {
 		identity += fmt.Sprintf("\nmax_request_bytes=%d", limit)
 	}
+	if p.checkpointScope != "" {
+		identity += "\n" + p.checkpointScope
+	}
 	return identity, p.readProtocol()
 }
 

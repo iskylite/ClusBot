@@ -576,6 +576,8 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 			reason, accounting.errorCode = "运行已中断", "process_interrupted"
 		case errors.Is(err, ErrIsolatedReplyUnavailable):
 			status, reason, accounting.errorCode = "failed", ErrIsolatedReplyUnavailable.Error(), "isolated_reply_unavailable"
+		case errors.Is(err, ErrConversationReplyRoleUnavailable):
+			status, reason, accounting.errorCode = "failed", ErrConversationReplyRoleUnavailable.Error(), "conversation_reply_role_unavailable"
 		case errors.Is(err, ErrReadCheckpoint):
 			reason, accounting.errorCode = ErrReadCheckpoint.Error(), "read_checkpoint_unavailable"
 		case checkpointed:
