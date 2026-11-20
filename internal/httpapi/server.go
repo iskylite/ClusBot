@@ -185,6 +185,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("GET /api/v1/tasks/{id}/runs", s.taskRuns)
 	api.HandleFunc("GET /api/v1/tasks/{id}/manifest", s.taskManifest)
 	api.HandleFunc("POST /api/v1/runtime/reclaim", s.reclaimLeases)
+	api.HandleFunc("GET /api/v1/runtime/queue/explicit-tasks", s.explicitTaskQueueSnapshot)
 	api.HandleFunc("POST /api/v1/authorizations/{id}/revoke", s.revokeAuthorization)
 	api.HandleFunc("POST /api/v1/retention-policies", s.saveRetentionPolicy)
 	api.HandleFunc("GET /api/v1/settings/data/storage", s.storageSnapshot)
