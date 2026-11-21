@@ -90,7 +90,13 @@ JOIN personal_skill_versions v ON v.skill_id=b.skill_id AND v.version=b.version 
 
 func (s *Store) ReadConversationSkillSelection(ctx context.Context, actor, conversation string) (ConversationSkillSelection, error) {
 	if actor != "user:session" {
-		return ConversationSkillSelection{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return ConversationSkillSelection{}, err
+		}
+		if !allowed {
+			return ConversationSkillSelection{}, sql.ErrNoRows
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -108,7 +114,13 @@ func (s *Store) ReadConversationSkillSelection(ctx context.Context, actor, conve
 // local single-session scope. It does not grant tool or deployment authority.
 func (s *Store) SetConversationSkillSelection(ctx context.Context, actor, conversation string, input ConversationSkillBindingInput) (ConversationSkillSelection, error) {
 	if actor != "user:session" {
-		return ConversationSkillSelection{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return ConversationSkillSelection{}, err
+		}
+		if !allowed {
+			return ConversationSkillSelection{}, sql.ErrNoRows
+		}
 	}
 	if (input.Action == "bind_skill" && (input.SkillID == "" || input.Version < 1)) ||
 		(input.Action == "clear_skill" && (input.SkillID != "" || input.Version != 0)) ||
@@ -142,6 +154,9 @@ WHERE s.id=? AND v.version=? AND v.approved_at IS NOT NULL)`, input.SkillID, inp
 			return ConversationSkillSelection{}, ErrState
 		}
 		if err := verifySkillProposalSources(tx, input.SkillID, input.Version); err != nil {
+			return ConversationSkillSelection{}, err
+		}
+		if err := rememberSkillReference(tx, input.SkillID, input.Version); err != nil {
 			return ConversationSkillSelection{}, err
 		}
 		changed, err = tx.ExecContext(ctx, `INSERT INTO conversation_skill_bindings VALUES(?,?,?,?)

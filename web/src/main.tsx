@@ -28,6 +28,8 @@ import {BenchmarkConversation} from './BenchmarkConversation'
 import {ConversationConfiguration} from './ConversationConfiguration'
 import {IsolatedReplyComposer,isolatedDraftKey} from './IsolatedReplyComposer'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
+import {AssistantCard} from './AssistantCards'
+import {isAssistantItem,type AssistantItem} from './assistantSurface'
 import './styles.css'
 
 if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
@@ -428,10 +430,11 @@ type ComposerProps = {
   draftKey:string
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate)=>Promise<Receipt>
   onReceipt:(path:string,receipt?:Receipt)=>void|Promise<void>
+  onAssistantReceipt?:(item:AssistantItem,text:string)=>void
   disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:()=>void; isolatedRecovery?:boolean; hidden?:boolean
 }
 
-function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden}:ComposerProps) {
+function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden}:ComposerProps) {
   const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
@@ -537,6 +540,11 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
       const request=beginDraftRequest(draftKey,scope,delivery)
       requestID=request.key
       const receipt=await onSend(value,request.key,request.scope,materials.map(item=>item.id),request.delivery)
+      if(onAssistantReceipt && isAssistantItem(receipt)) {
+        if(mounted.current){onAssistantReceipt(receipt,value);finishDraftRequest(draftKey,request.key)}
+        else releaseDraftRequest(draftKey,request.key)
+        return
+      }
       const path=receiptPath(receipt,assign)
       if(!path && receipt.model_pending) {
         awaitDraftAdmission(draftKey,request.key)
@@ -598,6 +606,10 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,disabled=false,di
     {error && <div><p className="error" role="alert">{error}</p>{unconfirmed&&<button type="button" className="text-button composer-retry" disabled={disabled||submitting||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button>}</div>}
     <div className="composer-bar">
       {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={submitting} onChange={e=>edit({scope:e.target.value})}/></label> : <div className="composer-secondary"><span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>
+        {onAssistantReceipt&&<button type="button" className="text-button" disabled={disabled||submitting||capturing} onClick={()=>{
+          if(!/^\/(?:助手|assistant)(?: |$)/.test(value.trimStart()))edit({text:'/助手 '+value})
+          if(inputRef && 'current' in inputRef)inputRef.current?.focus()
+        }}>助手工具</button>}
         {openIsolated&&<button type="button" className="text-button" disabled={(!isolatedRecovery&&disabled)||submitting||capturing} onClick={openIsolated}>
           {isolatedRecovery?'核对单条回复请求':'单独问一个模型'}</button>}</div>}
       <button className={assign?'primary':'send'} aria-label={label} disabled={disabled||submitting||capturing||!value.trim()}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>
@@ -858,6 +870,7 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
   const {taskReference}=useComposerDraft(ordinaryDraftKey)
   const chatInput=useRef<HTMLTextAreaElement>(null)
   const [latestReceipt,setLatestReceipt]=useState<TaskLink>()
+  const [assistantItems,setAssistantItems]=useState<{id:string;item:AssistantItem;text:string}[]>([])
   const eventTasks=useConversationTasks(id)
   const detailDialog=useRef<HTMLDialogElement>(null)
   const taskTrigger=useRef<HTMLButtonElement|null>(null)
@@ -991,7 +1004,12 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         {next&&<button type="button" className="text-button" disabled={listPending} onClick={()=>void loadConversations(false)}>加载更多对话</button>}
         {archiveNext&&<button type="button" className="text-button" disabled={listPending} onClick={()=>void loadConversations(true)}>加载更多归档</button>}
       </div>}
-      <div className="discussion chat-log">{data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?(live||data.run?.response):undefined} liveRunID={busy?data.run?.id:undefined} remember={id=>navigate('/memory/new/'+id)}/>:!id&&<div className="empty"><MessageCircle size={26}/><h2>聊聊你的问题</h2></div>}</div>
+      <div className="discussion chat-log">{data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?(live||data.run?.response):undefined} liveRunID={busy?data.run?.id:undefined} remember={id=>navigate('/memory/new/'+id)}/>:!id&&!assistantItems.length&&<div className="empty"><MessageCircle size={26}/><h2>聊聊你的问题</h2></div>}
+        {assistantItems.length>0&&<div className="messages">{assistantItems.map(entry=><div key={entry.id} className="assistant-exchange">
+          <div className="message"><span>你</span><div className="user-message">{entry.text}</div></div>
+          <div className="message"><span>助手</span><AssistantCard item={entry.item} navigate={navigate}/></div>
+        </div>)}</div>}
+      </div>
       {id&&run&&!busy&&<BenchmarkConversation key={run.id} conversationID={id} run={run} archived={Boolean(conversation?.archived)}
         alreadyAccepted={[...taskLinks.values()].some(link=>link.benchmark&&link.sourceRunID===run.id)}
         onAccepted={taskID=>{setLatestReceipt({taskID,benchmark:true,sourceRunID:run.id});void reload()}} onApplied={()=>void reload()}/>}
@@ -1017,6 +1035,7 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         target={executionTarget} run={run} disabled={Boolean(busy||conversation?.archived)}
         canSuggest={taskReference?.taskID===executionTarget.taskID&&taskReference?.planRevision!==undefined} onChange={()=>void reload()}/>}
       <Composer inputRef={chatInput} hidden={isolatedOpen} isolatedRecovery={Boolean(isolatedRequest)}
+        onAssistantReceipt={promote?undefined:(item,text)=>setAssistantItems(previous=>[...previous,{id:crypto.randomUUID(),item,text:/(?:密码|密钥|凭据|password|passwd|secret|credential|token|api[_ -]?key|authorization)/i.test(text)?'助手工具请求（内容已隐藏）':text}])}
         openIsolated={id&&conversation&&!promote&&(!conversation.archived||isolatedRequest)?()=>setIsolatedOpen(true):undefined} reference={!promote&&taskReference&&<MessageReference
         label={(taskReference.passive?'引用任务 · ':'基准控制目标 · ')+taskReference.title+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
         onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
@@ -1024,7 +1043,8 @@ function Chat({id,navigate}:{id?:string;navigate:(path:string)=>void}) {
         if (promote && id) {
           return api('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
         }
-        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments,...(id&&delivery.task_ref?{task_ref:delivery.task_ref}:{})})
+        if(/^\/(?:助手|assistant)(?: |$)/.test(text.trimStart()) && (attachments.length>0||delivery.task_ref))throw new Error('助手工具指令不能同时携带附件或任务引用，请移除后发送。')
+        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments,...(id&&delivery.task_ref?{task_ref:delivery.task_ref}:{})},'POST',{'X-ClusBot-Assistant-Cards':'1'})
       }} onReceipt={async(path,receipt)=>{
         if (receipt?.task_id && path.startsWith('/tasks/')) {
           if (id) {

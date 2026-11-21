@@ -22,6 +22,12 @@ export function SettingsPage({ onSaved,openConnections,openProposals }: { onSave
     return () => { active = false }
   }, [onSaved])
 
+  useEffect(()=>{
+    if(!['#model-default','#model-profiles','#model-roles'].includes(location.hash))return
+    const frame=requestAnimationFrame(()=>document.getElementById(location.hash.slice(1))?.scrollIntoView({block:'start'}))
+    return()=>cancelAnimationFrame(frame)
+  },[settings])
+
   return <main className="main settings-page">
     <header className="page-heading"><h1>设置</h1></header>
     <nav aria-label="设置分区" className="model-settings-nav">

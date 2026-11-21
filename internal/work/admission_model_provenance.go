@@ -9,15 +9,17 @@ import (
 // RouterModelProvenance records the model selected for one admission, not
 // proof of which model executed. It never contains routing input or credentials.
 type RouterModelProvenance struct {
-	Source          string `json:"source,omitempty"`
-	RoleRevision    int    `json:"role_revision,omitempty"`
-	ProfileID       string `json:"profile_id,omitempty"`
-	ProfileRevision int    `json:"profile_revision,omitempty"`
-	DefaultRevision int    `json:"default_revision,omitempty"`
-	Protocol        string `json:"protocol,omitempty"`
-	RequestedModel  string `json:"requested_model,omitempty"`
-	ReportedModel   string `json:"reported_model,omitempty"`
-	State           string `json:"state"`
+	Source                string `json:"source,omitempty"`
+	RoleRevision          int    `json:"role_revision,omitempty"`
+	ProfileID             string `json:"profile_id,omitempty"`
+	ProfileRevision       int    `json:"profile_revision,omitempty"`
+	DefaultRevision       int    `json:"default_revision,omitempty"`
+	Protocol              string `json:"protocol,omitempty"`
+	RequestedModel        string `json:"requested_model,omitempty"`
+	ReportedModel         string `json:"reported_model,omitempty"`
+	State                 string `json:"state"`
+	RoutingPolicyRevision int    `json:"routing_policy_revision,omitempty"`
+	FallbackReason        string `json:"fallback_reason,omitempty"`
 }
 
 //go:embed submission_classifications.sql

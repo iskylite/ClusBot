@@ -37,6 +37,13 @@ func prepareRestoredStore(ctx context.Context, staging, destination string, mani
 	if err := validateBackupDatabase(ctx, path, manifest.Schema); err != nil {
 		return err
 	}
+	server, err := isServerBackupDatabase(ctx, path)
+	if err != nil {
+		return err
+	}
+	if server {
+		return errors.New("旧版备份不包含服务器的个人数据，不能恢复为完整服务器备份")
+	}
 	uploads, err := backupUploads(ctx, path)
 	if err != nil {
 		return err

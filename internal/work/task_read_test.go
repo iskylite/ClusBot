@@ -20,7 +20,11 @@ import (
 func taskReadFixture(t *testing.T) (*Store, TaskReadRequest) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := Open(filepath.Join(t.TempDir(), "task-read.db"))
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(filepath.Join(dir, "task-read.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

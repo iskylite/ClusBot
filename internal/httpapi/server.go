@@ -28,6 +28,13 @@ type Server struct {
 	Store                   *work.Store
 	Token                   string
 	Hosts                   []string
+	ServerMode              bool
+	Origin                  string
+	authLimiter             *authLimiter
+	PersonalAPI             func(string) (http.Handler, error)
+	AdminTaskStores         func() map[string]*work.Store
+	adminTaskOwner          string
+	instanceStore           *work.Store
 	Settings                *model.Settings
 	WorkspacePath           string
 	TicketProvider          *work.TicketProvider
@@ -56,17 +63,167 @@ type submission struct {
 }
 
 func (s Server) Handler(assets fs.FS) http.Handler {
+	// A server-mode database must never be exposed through the legacy shared
+	// token, even when another embedding accidentally changes its configuration.
+	if s.Store != nil {
+		if err := s.Store.EnsureAccountMode(context.Background(), s.ServerMode); err != nil {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fail(w, http.StatusServiceUnavailable, "invalid_account_mode", "数据库与服务模式不兼容")
+			})
+		}
+	} else if s.ServerMode {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fail(w, http.StatusServiceUnavailable, "invalid_account_mode", "账号数据库不可用")
+		})
+	}
+	s.authLimiter = newAuthLimiter()
+	api := s.routes()
+
+	fileServer := http.FileServerFS(assets)
+	bridge := &assistantBridge{pending: make(map[string]assistantPreview)}
+	bridge.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		allowed := false
+		for _, host := range s.Hosts {
+			if r.Host == host {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			fail(w, 403, "invalid_host", "请使用启动时显示的本机地址")
+			return
+		}
+		if r.URL.Path == "/healthz" {
+			jsonResponse(w, 200, map[string]string{"status": "ok"})
+			return
+		}
+		if !s.ServerMode && r.Method == "POST" && r.URL.Path == "/api/v1/provider/benchmark-events" {
+			s.benchmarkEvent(w, r)
+			return
+		}
+
+		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("Cache-Control", "no-store")
+			r = r.WithContext(context.WithValue(r.Context(), assistantBridgeKey{}, bridge))
+			origin := "http://" + r.Host
+			if s.ServerMode {
+				origin = s.Origin
+			}
+			if r.Method != "GET" && r.Method != "HEAD" && (origin == "" || r.Header.Get("Origin") != origin) {
+				fail(w, 403, "invalid_origin", "请求来源无效")
+				return
+			}
+			_, route := api.Handler(r)
+			accountRoute, publicRoute := serverAccountRoute(route)
+			if s.ServerMode {
+				if !publicRoute {
+					account, err := s.requestAccount(r)
+					if err != nil {
+						fail(w, 401, "unauthorized", "请先登录")
+						return
+					}
+					if account.MustChangePassword && route != "POST /api/v1/me/password" {
+						fail(w, 403, "password_change_required", "请先设置新密码")
+						return
+					}
+					r = r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account))
+					if !accountRoute {
+						s.serveAccountBusiness(w, r, route, account, api)
+						return
+					}
+				}
+			} else {
+				if accountRoute && r.URL.Path != "/api/v1/session" {
+					http.NotFound(w, r)
+					return
+				}
+				if !publicRoute && r.URL.Path != "/api/v1/session" && !s.authenticated(r) {
+					fail(w, 401, "unauthorized", "请先登录")
+					return
+				}
+			}
+			api.ServeHTTP(w, r)
+			return
+		}
+		if s.ServerMode {
+			http.Error(w, "服务器模式的账号接口已启用，用户界面尚未接入", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Method != "GET" && r.Method != "HEAD" {
+			http.Error(w, "Method not allowed", 405)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			if info, err := fs.Stat(assets, strings.TrimPrefix(r.URL.Path, "/")); err != nil || info.IsDir() {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		valid := r.URL.Path == "/" || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
+			r.URL.Path == "/memory" || r.URL.Path == "/memory/new" || r.URL.Path == "/memory/candidates" ||
+			r.URL.Path == "/memory/skill-proposals" || r.URL.Path == "/settings" ||
+			r.URL.Path == "/connections" || r.URL.Path == "/connections/new" ||
+			(len(parts) == 2 && (parts[0] == "tasks" || parts[0] == "chat" || parts[0] == "artifacts" || parts[0] == "memory" || parts[0] == "connections") && validID(parts[1]))
+		if len(parts) == 3 && parts[0] == "memory" && parts[1] == "new" {
+			messageID, err := strconv.ParseInt(parts[2], 10, 64)
+			valid = err == nil && messageID > 0
+		}
+		if !valid {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		index, err := fs.ReadFile(assets, "index.html")
+		if err != nil {
+			http.Error(w, "Web build missing", 500)
+			return
+		}
+		w.Header().Set("Content-Length", strconv.Itoa(len(index)))
+		if r.Method != "HEAD" {
+			w.Write(index)
+		}
+	})
+	return bridge
+}
+
+func (s Server) routes() *http.ServeMux {
 	api := http.NewServeMux()
-	api.HandleFunc("GET /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
-		jsonResponse(w, 200, map[string]any{"authenticated": s.authenticated(r)})
+	s.registerAssistantTools(api)
+	s.registerPreferences(api)
+	s.registerClusterTrends(api)
+	api.HandleFunc("GET /api/v1/session", s.sessionStatus)
+	api.HandleFunc("POST /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
+		if s.ServerMode {
+			s.accountLogin(w, r)
+		} else {
+			s.login(w, r)
+		}
 	})
-	api.HandleFunc("POST /api/v1/session", s.login)
-	api.HandleFunc("DELETE /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{Name: "clusbot_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
-		w.WriteHeader(http.StatusNoContent)
-	})
+	api.HandleFunc("DELETE /api/v1/session", s.endSession)
+	api.HandleFunc("GET /api/v1/bootstrap", s.bootstrapStatus)
+	api.HandleFunc("POST /api/v1/bootstrap", s.bootstrap)
+	api.HandleFunc("POST /api/v1/me/password", s.changePassword)
+	api.HandleFunc("PATCH /api/v1/me/profile", s.updateMyProfile)
+	api.HandleFunc("GET /api/v1/admin/users", s.listAccounts)
+	api.HandleFunc("POST /api/v1/admin/users", s.createAccount)
+	api.HandleFunc("PATCH /api/v1/admin/users/{id}", s.updateAccount)
+	api.HandleFunc("POST /api/v1/admin/users/{id}/password", s.resetAccountPassword)
 	api.HandleFunc("GET /api/v1/settings", s.modelSettings)
 	api.HandleFunc("GET /api/v1/settings/model/runtime", s.modelRuntimeProjection)
+	api.HandleFunc("GET /api/v1/settings/model/routing", s.modelRouting)
+	api.HandleFunc("POST /api/v1/settings/model/routing/preview", s.previewModelRouting)
+	api.HandleFunc("GET /api/v1/settings/model/routing/policies", s.modelRoutingPolicies)
+	api.HandleFunc("PUT /api/v1/settings/model/routing/policies/{business}/{role}", s.saveModelRoutingPolicy)
+	s.registerModelProviderRoutes(api)
+	api.HandleFunc("POST /api/v1/settings/model/catalog/{id}/test", s.testCatalogModelReply)
 	api.HandleFunc("GET /api/v1/settings/model/profiles", s.modelProfiles)
 	api.HandleFunc("GET /api/v1/settings/model/roles/benchmark-admission", s.readBenchmarkAdmissionRole)
 	api.HandleFunc("PUT /api/v1/settings/model/roles/benchmark-admission", s.setBenchmarkAdmissionRole)
@@ -92,6 +249,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/attachments/workspace", s.captureMaterial)
 	api.HandleFunc("POST /api/v1/attachments", s.uploadMaterial)
 	api.HandleFunc("POST /api/v1/attachments/uploads/{id}/part", s.selectUploadPart)
+	api.HandleFunc("GET /api/v1/materials/{id}/preview", s.previewMaterial)
+	api.HandleFunc("DELETE /api/v1/materials/{id}", s.deletePendingMaterial)
 	api.HandleFunc("GET /api/v1/experience-candidates", s.experienceCandidates)
 	api.HandleFunc("POST /api/v1/experience-candidates/from-acceptance", s.captureAcceptedExperience)
 	api.HandleFunc("POST /api/v1/experience-candidates/from-correction", s.captureExperienceCorrection)
@@ -173,12 +332,16 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/domain/discovery/plans", s.publishDiscovery)
 	api.HandleFunc("DELETE /api/v1/domain/discovery/plans/{id}", s.stopDiscovery)
 	api.HandleFunc("GET /api/v1/domain/discovery/plans/{id}/observations", s.discoveryObservationHistory)
+	api.HandleFunc("GET /api/v1/domain/discovery/setup-status", s.discoverySetupStatus)
 	api.HandleFunc("GET /api/v1/domain/discovery/candidates", s.discoveryCandidates)
 	api.HandleFunc("GET /api/v1/domain/discovery/candidates/{id}/observations", s.discoveryCandidateObservations)
 	api.HandleFunc("POST /api/v1/domain/discovery/candidates/{id}/admit", s.admitDiscovery)
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
+	api.HandleFunc("GET /api/v1/incidents/{id}/workflow", s.incidentWorkflow)
+	api.HandleFunc("GET /api/v1/incidents/{id}/steps/{step}/logs", s.incidentStepLogs)
 	api.HandleFunc("POST /api/v1/loans", s.lendAsset)
 	api.HandleFunc("POST /api/v1/loans/return", s.returnAsset)
+	s.registerAdminTasks(api)
 	api.HandleFunc("GET /api/v1/tasks", s.listTasks)
 	api.HandleFunc("POST /api/v1/tasks", s.submit(true, true))
 	api.HandleFunc("GET /api/v1/tasks/{id}", s.detail(true))
@@ -228,6 +391,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	api.HandleFunc("POST /api/v1/conversations/{id}/resume", s.resumeConversation)
 	api.HandleFunc("POST /api/v1/conversations/{id}/task", s.submit(true, false))
 	api.HandleFunc("GET /api/v1/runs/{id}", s.runRecord(false))
+	api.HandleFunc("POST /api/v1/conversations/isolated-replies", s.submitIsolatedReply)
 	api.HandleFunc("POST /api/v1/conversations/{id}/isolated-replies", s.submitIsolatedReply)
 	api.HandleFunc("GET /api/v1/runs/{id}/skill-binding", s.runSkillBinding)
 	api.HandleFunc("GET /api/v1/runs/{id}/mcp-bindings", s.runMCPBindings)
@@ -266,83 +430,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	})
 	api.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "not_found", "接口不存在") })
 
-	fileServer := http.FileServerFS(assets)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		allowed := false
-		for _, host := range s.Hosts {
-			if r.Host == host {
-				allowed = true
-				break
-			}
-		}
-		if !allowed {
-			fail(w, 403, "invalid_host", "请使用启动时显示的本机地址")
-			return
-		}
-		if r.URL.Path == "/healthz" {
-			jsonResponse(w, 200, map[string]string{"status": "ok"})
-			return
-		}
-		if r.Method == "POST" && r.URL.Path == "/api/v1/provider/benchmark-events" {
-			s.benchmarkEvent(w, r)
-			return
-		}
-
-		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Cache-Control", "no-store")
-			if r.Method != "GET" && r.Method != "HEAD" && r.Header.Get("Origin") != "http://"+r.Host {
-				fail(w, 403, "invalid_origin", "请求来源无效")
-				return
-			}
-			if r.URL.Path != "/api/v1/session" && !s.authenticated(r) {
-				fail(w, 401, "unauthorized", "请先登录")
-				return
-			}
-			api.ServeHTTP(w, r)
-			return
-		}
-		if r.Method != "GET" && r.Method != "HEAD" {
-			http.Error(w, "Method not allowed", 405)
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/assets/") {
-			if info, err := fs.Stat(assets, strings.TrimPrefix(r.URL.Path, "/")); err != nil || info.IsDir() {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		valid := r.URL.Path == "/" || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
-			r.URL.Path == "/memory" || r.URL.Path == "/memory/new" || r.URL.Path == "/memory/candidates" ||
-			r.URL.Path == "/memory/skill-proposals" || r.URL.Path == "/settings" ||
-			r.URL.Path == "/connections" || r.URL.Path == "/connections/new" ||
-			(len(parts) == 2 && (parts[0] == "tasks" || parts[0] == "chat" || parts[0] == "artifacts" || parts[0] == "memory" || parts[0] == "connections") && validID(parts[1]))
-		if len(parts) == 3 && parts[0] == "memory" && parts[1] == "new" {
-			messageID, err := strconv.ParseInt(parts[2], 10, 64)
-			valid = err == nil && messageID > 0
-		}
-		if !valid {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		index, err := fs.ReadFile(assets, "index.html")
-		if err != nil {
-			http.Error(w, "Web build missing", 500)
-			return
-		}
-		w.Header().Set("Content-Length", strconv.Itoa(len(index)))
-		if r.Method != "HEAD" {
-			w.Write(index)
-		}
-	})
+	return api
 }
 
 func validID(id string) bool {
@@ -359,6 +447,10 @@ func (s Server) signature(expiry string) string {
 }
 
 func (s Server) authenticated(r *http.Request) bool {
+	if s.ServerMode {
+		_, err := s.requestAccount(r)
+		return err == nil
+	}
 	c, err := r.Cookie("clusbot_session")
 	if err != nil {
 		return false
@@ -419,6 +511,18 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 				return
 			}
 		}
+		if r.Header.Get("X-ClusBot-Reply-Strategy") == "deterministic_only" {
+			if task || in.TaskRef != nil || len(in.AttachmentIDs) != 0 || in.Read != nil || len(in.Reads) != 0 ||
+				in.Criteria != nil || in.Filename != nil || in.ReplaceMaterials ||
+				in.BenchmarkExecutionTarget != nil || in.BenchmarkRevisionTarget != nil || in.InterpretBenchmarkExecution {
+				fail(w, 400, "invalid_read_only_query", "确定性查询只接受只读指令，不能提交任务或附带材料")
+				return
+			}
+			if !s.assistantConversationCommand(w, r, in.Text) {
+				fail(w, 400, "invalid_read_only_query", "请输入明确的查询指令，或通过 /assistant 查看可用查询")
+			}
+			return
+		}
 		if in.TaskRef != nil && (task || !validID(r.PathValue("id")) || !validID(in.TaskRef.TaskID) ||
 			in.BenchmarkExecutionTarget != nil || in.BenchmarkRevisionTarget != nil || in.InterpretBenchmarkExecution ||
 			in.Read != nil || len(in.Reads) > 0 || in.Criteria != nil || in.Filename != nil || in.ReplaceMaterials || in.Revision != 0) {
@@ -476,6 +580,10 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 				return
 			}
 			writeSubmission(w, run)
+			return
+		}
+		if !task && in.TaskRef == nil && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
+			in.Criteria == nil && in.Filename == nil && !in.ReplaceMaterials && s.assistantConversationCommand(w, r, in.Text) {
 			return
 		}
 		if in.TaskRef == nil && !task && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
@@ -602,6 +710,13 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 
 // principal 返回可信主体（来自会话认证，不由请求方自证）。
 func (s Server) principal(r *http.Request) string {
+	if s.ServerMode {
+		a, ok := accountFromContext(r)
+		if ok {
+			return a.PrincipalID
+		}
+		return "user:anonymous"
+	}
 	if s.authenticated(r) {
 		return "user:session"
 	}
@@ -614,7 +729,10 @@ func (s Server) ModelAvailable(ctx context.Context) bool {
 		return false
 	}
 	value, err := s.Settings.View(ctx)
-	return err == nil && value.Mode != "unconfigured"
+	if err == nil && value.Mode != "unconfigured" && value.Mode != "unavailable" {
+		return true
+	}
+	return s.Settings.CoreRoutingAvailable(ctx)
 }
 
 func writeSubmission(w http.ResponseWriter, run work.Run) {
@@ -819,9 +937,18 @@ func (s Server) editTask(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &edit) {
 		return
 	}
+	if s.adminTaskOwner != "" && s.adminTaskOwner != s.principal(r) &&
+		(edit.Goal != nil || edit.Scope != nil || edit.Criteria != nil || edit.RequiredFile != nil) {
+		fail(w, 403, "task_input_owner_required", "任务目标、范围和交付要求由原账号修改")
+		return
+	}
 	task, err := s.Store.EditTask(r.Context(), r.PathValue("id"), edit)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if s.adminTaskOwner != "" {
+		jsonResponse(w, http.StatusOK, adminTaskView(s.adminTaskOwner, task))
 		return
 	}
 	jsonResponse(w, http.StatusOK, task)
@@ -839,7 +966,7 @@ func (s Server) accept(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.detail(true)(w, r)
+	s.taskMutationDetail(w, r)
 }
 
 func (s Server) overview(w http.ResponseWriter, r *http.Request) {
@@ -886,22 +1013,11 @@ func parseTaskCursor(value string) (work.TaskCursor, bool) {
 }
 
 func (s Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	filter := work.TaskFilter{Scope: q.Get("scope_label"), Query: q.Get("q"), Status: q.Get("status")}
-	switch filter.Status {
-	case "", "active", "waiting_user", "interrupted", "completed", "cancelled":
-	default:
-		fail(w, 400, "invalid_task_filter", "事项状态无效")
+	filter, ok := readTaskFilter(w, r)
+	if !ok {
 		return
 	}
-	if value := q.Get("limit"); value != "" {
-		limit, err := strconv.Atoi(value)
-		if err != nil || limit < 1 || limit > work.TaskPageLimit {
-			fail(w, 400, "invalid_task_filter", "每页事项数量无效")
-			return
-		}
-		filter.Limit = limit
-	}
+	q := r.URL.Query()
 	if value := q.Get("after"); value != "" {
 		cursor, ok := parseTaskCursor(value)
 		if !ok {
@@ -916,6 +1032,26 @@ func (s Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, items)
+}
+
+func readTaskFilter(w http.ResponseWriter, r *http.Request) (work.TaskFilter, bool) {
+	q := r.URL.Query()
+	filter := work.TaskFilter{Scope: q.Get("scope_label"), Query: q.Get("q"), Status: q.Get("status")}
+	switch filter.Status {
+	case "", "active", "waiting_user", "interrupted", "completed", "cancelled":
+	default:
+		fail(w, 400, "invalid_task_filter", "事项状态无效")
+		return work.TaskFilter{}, false
+	}
+	if value := q.Get("limit"); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil || limit < 1 || limit > work.TaskPageLimit {
+			fail(w, 400, "invalid_task_filter", "每页事项数量无效")
+			return work.TaskFilter{}, false
+		}
+		filter.Limit = limit
+	}
+	return filter, true
 }
 
 func (s Server) stream(w http.ResponseWriter, r *http.Request) {
@@ -947,6 +1083,9 @@ func (s Server) stream(w http.ResponseWriter, r *http.Request) {
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
 	for {
+		if check, ok := r.Context().Value(accountStreamCheckKey{}).(func() bool); ok && !check() {
+			return
+		}
 		rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		for _, e := range events {
 			if _, err = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", e.Seq, e.Kind, e.Data); err != nil {
@@ -1096,7 +1235,7 @@ func (s Server) control(action string) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
-		s.detail(true)(w, r)
+		s.taskMutationDetail(w, r)
 	}
 }
 
@@ -1123,6 +1262,10 @@ func (s Server) resume(w http.ResponseWriter, r *http.Request) {
 	}
 	var run work.Run
 	var err error
+	if s.adminTaskOwner != "" {
+		// Keep administrator request keys independent of the task owner's.
+		in.RequestID = "admin-task:" + s.principal(r) + ":" + in.RequestID
+	}
 	if in.Reassign {
 		run, err = s.Store.ReassignTask(r.Context(), r.PathValue("id"), in.RequestID, in.Revision)
 	} else if in.Retry {
@@ -1134,7 +1277,13 @@ func (s Server) resume(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	jsonResponse(w, 202, map[string]string{"task_id": run.TaskID, "conversation_id": run.ConversationID, "run_id": run.ID, "status": run.Status})
+	result := map[string]string{"task_id": run.TaskID, "run_id": run.ID, "status": run.Status}
+	if s.adminTaskOwner == "" {
+		result["conversation_id"] = run.ConversationID
+	} else {
+		result["owner_id"] = s.adminTaskOwner
+	}
+	jsonResponse(w, 202, result)
 }
 
 func (s Server) resumeConversation(w http.ResponseWriter, r *http.Request) {

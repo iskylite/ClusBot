@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"image"
@@ -344,4 +345,122 @@ ORDER BY active.latest_seq DESC,refs.ordinal LIMIT ?`, conversationID, conversat
 		materials = append(materials, material)
 	}
 	return materials, rows.Err()
+}
+
+// MaterialPreview 表示材料或附件的统一结构化预览内容（同时服务于待发送 Composer 芯片与已发送气泡附件）。
+type MaterialPreview struct {
+	ID           string     `json:"id"`
+	Path         string     `json:"path"`
+	Name         string     `json:"name"`
+	Size         int        `json:"size"`
+	Digest       string     `json:"sha256"`
+	PreviewKind  string     `json:"preview_kind"` // csv, log, markdown, image, text
+	Bound        bool       `json:"bound_to_message"`
+	TotalLines   int        `json:"total_lines,omitempty"`
+	Truncated    bool       `json:"truncated,omitempty"`
+	Columns      []string   `json:"columns,omitempty"`
+	Rows         [][]string `json:"rows,omitempty"`
+	Lines        []string   `json:"lines,omitempty"`
+	ImageDataURL string     `json:"image_data_url,omitempty"`
+}
+
+// PreviewMaterial 返回指定材料的结构化预览（CSV 按行列截取，日志/Markdown/文本按行截取，图片返回安全 Data URL）。
+func (s *Store) PreviewMaterial(ctx context.Context, materialID string, limit int) (MaterialPreview, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	var path, digestVal, content string
+	var boundCount int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT m.path, m.sha256, m.content,
+		       (SELECT COUNT(*) FROM message_materials mm WHERE mm.material_id=m.id)
+		FROM materials m WHERE m.id=?`, materialID).Scan(&path, &digestVal, &content, &boundCount)
+	if err != nil {
+		return MaterialPreview{}, err
+	}
+	name := filepath.Base(path)
+	if strings.HasPrefix(path, "uploads/") {
+		if idx := strings.LastIndex(name, "#"); idx > 0 {
+			name = name[:idx]
+		}
+	}
+	lower := strings.ToLower(name)
+	out := MaterialPreview{
+		ID:     materialID,
+		Path:   path,
+		Name:   name,
+		Size:   len(content),
+		Digest: digestVal,
+		Bound:  boundCount > 0,
+	}
+	if strings.HasPrefix(path, "images/") || strings.HasPrefix(content, "data:image/") {
+		out.PreviewKind = "image"
+		out.ImageDataURL = content
+		return out, nil
+	}
+	if strings.HasSuffix(lower, ".csv") || strings.HasSuffix(lower, ".tsv") {
+		out.PreviewKind = "csv"
+		reader := csv.NewReader(strings.NewReader(content))
+		if strings.HasSuffix(lower, ".tsv") {
+			reader.Comma = '\t'
+		}
+		records, parseErr := reader.ReadAll()
+		if parseErr == nil && len(records) > 0 {
+			out.TotalLines = len(records)
+			out.Columns = records[0]
+			maxRows := limit
+			if len(records)-1 > maxRows {
+				out.Rows = records[1 : 1+maxRows]
+				out.Truncated = true
+			} else if len(records) > 1 {
+				out.Rows = records[1:]
+			}
+			return out, nil
+		}
+	}
+	switch {
+	case strings.HasSuffix(lower, ".md") || strings.HasSuffix(lower, ".markdown"):
+		out.PreviewKind = "markdown"
+	case strings.HasSuffix(lower, ".log"):
+		out.PreviewKind = "log"
+	default:
+		out.PreviewKind = "text"
+	}
+	rawLines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	out.TotalLines = len(rawLines)
+	if len(rawLines) > limit {
+		out.Lines = rawLines[:limit]
+		out.Truncated = true
+	} else {
+		out.Lines = rawLines
+	}
+	return out, nil
+}
+
+// DeletePendingMaterial 移除尚未随任何消息发送出去的待发材料，防止误删已持久化历史对话证据。
+func (s *Store) DeletePendingMaterial(ctx context.Context, materialID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM message_materials WHERE material_id=?`, materialID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrState
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM materials WHERE id=?`, materialID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return tx.Commit()
 }

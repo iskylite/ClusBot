@@ -79,6 +79,10 @@ func (s Server) modelReady(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, err)
 		return false
 	}
+	if value.Mode == "unavailable" {
+		fail(w, 503, "model_default_unavailable", "所选默认模型不可用，请检查提供方、模型和凭据状态")
+		return false
+	}
 	if value.Mode == "unconfigured" {
 		fail(w, 503, "model_not_configured", "请先在设置中填写模型 ID")
 		return false
@@ -93,6 +97,8 @@ func writeModelSettingsError(w http.ResponseWriter, err error) {
 		fail(w, 400, "invalid_model_settings", err.Error())
 	case errors.Is(err, work.ErrModelSettingsRevision):
 		fail(w, 409, "model_settings_revision", err.Error())
+	case errors.Is(err, work.ErrModelDefaultUnavailable):
+		fail(w, 409, "model_default_unavailable", err.Error())
 	case errors.Is(err, model.ErrTestTimeout):
 		fail(w, 504, "model_test_timeout", err.Error())
 	case errors.Is(err, model.ErrModelDiscovery):

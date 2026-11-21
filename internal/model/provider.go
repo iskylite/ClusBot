@@ -30,6 +30,8 @@ type Provider struct {
 	checkpointScope      string
 	roleEnvelope         *roleRequestEnvelope
 	attributes           work.ModelAttributes
+	routing              *routingExecution
+	routingAttempt       *routingAttempt
 }
 
 const DefaultMaxRequestBytes = 512 * 1024
@@ -95,15 +97,25 @@ type responseRequest struct {
 }
 
 type responseData struct {
-	Model             json.RawMessage `json:"model"`
-	reportedModel     string
-	modelConflict     bool
-	Usage             *work.TokenUsage        `json:"usage"`
-	Output            []json.RawMessage       `json:"output"`
-	IncompleteDetails struct{ Reason string } `json:"incomplete_details"`
+	Model                 json.RawMessage `json:"model"`
+	reportedModel         string
+	modelConflict         bool
+	actualReceipt         *work.ModelReceipt
+	actualRequested       string
+	actualProfile         string
+	actualProfileRevision int
+	fallbackReason        string
+	attempts              int
+	Usage                 *work.TokenUsage        `json:"usage"`
+	Output                []json.RawMessage       `json:"output"`
+	IncompleteDetails     struct{ Reason string } `json:"incomplete_details"`
 }
 
 type responseHTTPError int
+
+type modelSendError struct{ error }
+
+func (e modelSendError) Unwrap() error { return e.error }
 
 func (e responseHTTPError) Error() string { return fmt.Sprintf("model returned HTTP %d", int(e)) }
 
@@ -240,6 +252,93 @@ func conversationRequest(messages []work.Message, task bool, maxOutputTokens int
 }
 
 func (p *Provider) requestStream(ctx context.Context, request responseRequest, emit func(string) error) (responseData, error) {
+	if p.routing == nil {
+		return p.requestStreamOnce(ctx, request, emit)
+	}
+	// Each destination receives at most one bounded attempt. Tool-bearing or
+	// tool-history requests stay on the primary: a model's tool-call protocol
+	// and previously delivered tool output must not be migrated implicitly.
+	canFallback := len(request.Tools) == 0
+	for _, item := range request.Input {
+		if _, ok := item.(responseMessage); !ok {
+			canFallback = false
+		}
+	}
+	// All candidates share the caller's existing output budget. Unknown
+	// usage after a failed attempt is conservatively charged as unreported.
+	if request.MaxOutputTokens < 16*len(p.routing.policy.Candidates) {
+		canFallback = false
+	}
+	var reason string
+	var previous responseData
+	for i, candidate := range p.routing.policy.Candidates {
+		if i > 0 && !canFallback {
+			break
+		}
+		actual, err := p.routing.candidate(ctx, i)
+		if err != nil {
+			return previous, err
+		}
+		if i > 0 {
+			if err := work.ReserveModelFallbackAttempt(ctx); err != nil {
+				return previous, err
+			}
+		}
+		actual.routingAttempt = &routingAttempt{policy: p.routing.policy, number: i + 1, reason: reason}
+		attempt := request
+		attempt.noRetry = true
+		if canFallback {
+			attempt.MaxOutputTokens /= len(p.routing.policy.Candidates)
+		}
+		attemptCtx := ctx
+		cancel := func() {}
+		if canFallback && len(p.routing.policy.Candidates) > 1 {
+			// Reserve time for the remaining candidates without extending the
+			// enclosing operation's deadline. A caller cancellation remains final.
+			limit := 30 * time.Second
+			if deadline, ok := ctx.Deadline(); ok {
+				limit = time.Until(deadline) / time.Duration(len(p.routing.policy.Candidates)-i)
+			}
+			attemptCtx, cancel = context.WithTimeout(ctx, limit)
+		}
+		emitted := false
+		var capture func(string) error
+		if emit != nil {
+			capture = func(delta string) error { emitted = true; return emit(delta) }
+		}
+		result, err := actual.requestStreamOnce(attemptCtx, attempt, capture)
+		attemptExpired := errors.Is(attemptCtx.Err(), context.DeadlineExceeded)
+		cancel()
+		receipt := actual.responseModelReceipt(result)
+		result.actualReceipt = &receipt
+		if acceptableReceiptModel(actual.model, actual.key) {
+			result.actualRequested = actual.model
+		}
+		result.actualProfile, result.actualProfileRevision, result.fallbackReason = candidate.ProfileID, candidate.ProfileRevision, reason
+		result.attempts = i + 1
+		if result.Usage != nil && result.Usage.OutputTokens != nil && *result.Usage.OutputTokens > int64(attempt.MaxOutputTokens) {
+			return result, work.ErrOutputBudget
+		}
+		if i > 0 {
+			result.Usage = nil
+		}
+		previous = result
+		if err == nil || emitted || ctx.Err() != nil || !canFallback || i+1 == len(p.routing.policy.Candidates) {
+			return result, err
+		}
+		reason = routingFailureReason(err)
+		var sendErr modelSendError
+		if attemptExpired && errors.As(err, &sendErr) {
+			reason = "timeout"
+		}
+		if reason == "" {
+			return result, err
+		}
+	}
+	return responseData{}, InvalidSettings("模型策略没有可用候选")
+}
+
+func (p *Provider) requestStreamOnce(ctx context.Context, request responseRequest, emit func(string) error) (responseData, error) {
 	for _, item := range request.Input {
 		if message, ok := item.(responseMessage); ok && len(message.images) > 0 &&
 			(p.attributes.Vision == nil || !*p.attributes.Vision) {
@@ -264,7 +363,7 @@ func (p *Provider) requestStream(ctx context.Context, request responseRequest, e
 	}
 	res, err := p.sendWithRetry(ctx, body, request.noRetry)
 	if err != nil {
-		return responseData{}, err
+		return responseData{}, modelSendError{err}
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -559,6 +658,9 @@ func boundWithExcerptPolicy(request *responseRequest, limit int, contextTokens *
 }
 
 func (p *Provider) responseModelReceipt(result responseData) work.ModelReceipt {
+	if result.actualReceipt != nil {
+		return *result.actualReceipt
+	}
 	receipt := work.ModelReceipt{Protocol: p.protocol, State: "not_reported"}
 	if result.modelConflict {
 		receipt.State = "conflicting"
@@ -594,6 +696,13 @@ func recordModelManifest(ctx context.Context, p *Provider, request responseReque
 		Digest:     fmt.Sprintf("%x", sha256.Sum256(body)), MaxOutput: request.MaxOutputTokens,
 		Excerpted: request.excerpted,
 		Provider:  fmt.Sprintf("%x", sha256.Sum256([]byte(binding))),
+	}
+	if p.routingAttempt != nil {
+		manifest.ModelRole = p.routingAttempt.policy.Role
+		manifest.RoutingBusiness = p.routingAttempt.policy.Business
+		manifest.RoutingPolicyRevision = p.routingAttempt.policy.Revision
+		manifest.RoutingAttempt = p.routingAttempt.number
+		manifest.FallbackReason = p.routingAttempt.reason
 	}
 	if acceptableReceiptModel(request.Model, p.key) {
 		manifest.RequestedModel = request.Model

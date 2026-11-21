@@ -120,11 +120,11 @@ export class APIError extends Error {
   constructor(message:string,readonly code?:string,readonly status?:number) {super(message);this.name='APIError'}
 }
 
-export async function api<T>(path: string, data?: unknown, method = data === undefined ? 'GET' : 'POST'): Promise<T> {
+export async function api<T>(path: string, data?: unknown, method = data === undefined ? 'GET' : 'POST', extraHeaders:Record<string,string> = {}): Promise<T> {
   const form=data instanceof FormData
   const response = await fetch('/api/v1' + path, {
     method,
-    headers: data === undefined || form ? {} : { 'Content-Type': 'application/json' },
+    headers: { ...(data === undefined || form ? {} : { 'Content-Type': 'application/json' }), ...extraHeaders },
     body: data === undefined ? undefined : form ? data : JSON.stringify(data),
   })
   if (!response.ok) {

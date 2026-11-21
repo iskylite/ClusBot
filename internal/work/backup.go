@@ -24,11 +24,18 @@ const backupManifestName = "manifest.json"
 const backupDB = "clusbot.db"
 
 type backupManifest struct {
-	Version     int          `json:"version"`
-	Schema      int          `json:"schema_version"`
-	CreatedAt   int64        `json:"created_at"`
-	WorkspaceID string       `json:"workspace_id"`
-	Files       []backupFile `json:"files"`
+	Version     int             `json:"version"`
+	Schema      int             `json:"schema_version"`
+	CreatedAt   int64           `json:"created_at"`
+	WorkspaceID string          `json:"workspace_id"`
+	Files       []backupFile    `json:"files"`
+	Accounts    []backupAccount `json:"accounts,omitempty"`
+}
+
+type backupAccount struct {
+	ID          string `json:"id"`
+	Schema      int    `json:"schema_version"`
+	WorkspaceID string `json:"workspace_id"`
 }
 
 type backupFile struct {
@@ -54,15 +61,11 @@ func Backup(ctx context.Context, dataDir, workspaceDir, destination string) erro
 	if err != nil {
 		return err
 	}
-	workspaceDir, err = resolvedDirectory(workspaceDir)
-	if err != nil {
-		return err
-	}
 	destination, err = newDirectoryPath(destination)
 	if err != nil {
 		return err
 	}
-	if within(dataDir, destination) || within(workspaceDir, destination) {
+	if within(dataDir, destination) {
 		return errors.New("备份目录须位于数据目录与工作区之外")
 	}
 	lock, err := LockDataDir(dataDir)
@@ -70,6 +73,20 @@ func Backup(ctx context.Context, dataDir, workspaceDir, destination string) erro
 		return err
 	}
 	defer lock.Close()
+	server, err := isServerBackupDatabase(ctx, filepath.Join(dataDir, backupDB))
+	if err != nil {
+		return err
+	}
+	if server {
+		return backupServer(ctx, dataDir, workspaceDir, destination)
+	}
+	workspaceDir, err = resolvedDirectory(workspaceDir)
+	if err != nil {
+		return err
+	}
+	if within(workspaceDir, destination) {
+		return errors.New("备份目录须位于数据目录与工作区之外")
+	}
 	source, err := os.OpenRoot(workspaceDir)
 	if err != nil {
 		return err
@@ -190,6 +207,9 @@ func Restore(ctx context.Context, from, destination string) error {
 	manifest, err := loadBackupManifest(source)
 	if err != nil {
 		return err
+	}
+	if manifest.Version == 2 {
+		return restoreServer(ctx, source, destination, manifest)
 	}
 	return stageDirectory(destination, func(staging string, dest *os.Root) error {
 		for _, name := range []string{"workspace/materials", "workspace/outputs"} {
@@ -377,17 +397,37 @@ func loadBackupManifest(source *os.Root) (backupManifest, error) {
 	if err = decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return manifest, errors.New("备份清单包含额外内容")
 	}
-	if manifest.Version != 1 || len(manifest.Files) > 10000 || len(manifest.WorkspaceID) != 64 {
+	if (manifest.Version != 1 && manifest.Version != 2) || len(manifest.Files) > 10000 ||
+		(manifest.Version == 1 && (len(manifest.WorkspaceID) != 64 || len(manifest.Accounts) != 0)) ||
+		(manifest.Version == 2 && (manifest.WorkspaceID != "" || len(manifest.Accounts) > 10000)) {
 		return manifest, errors.New("不支持的备份清单")
 	}
-	if manifest.Schema != modelProtocolMigrationFrom && manifest.Schema != modelKeyMigrationFrom {
-		if err = requireDatabaseVersion(manifest.Schema); err != nil {
+	minSchema := 125
+	if manifest.Version == 2 {
+		minSchema = 127
+	}
+	legacyLocalSchema := manifest.Version == 1 && (manifest.Schema == modelProtocolMigrationFrom || manifest.Schema == modelKeyMigrationFrom)
+	if !legacyLocalSchema {
+		if err = requireBackupSchema(manifest.Schema, minSchema); err != nil {
 			return manifest, err
 		}
+	}
+	accounts := make(map[string]bool, len(manifest.Accounts))
+	for _, account := range manifest.Accounts {
+		if !validBackupAccountID(account.ID) || accounts[account.ID] || len(account.WorkspaceID) != 64 {
+			return manifest, errors.New("无效的备份账号")
+		}
+		if err = requireBackupSchema(account.Schema, 127); err != nil {
+			return manifest, err
+		}
+		accounts[account.ID] = true
 	}
 	seen := map[string]bool{}
 	for _, file := range manifest.Files {
 		allowed := file.Path == backupDB || strings.HasPrefix(file.Path, "workspace/materials/") || strings.HasPrefix(file.Path, "workspace/outputs/") || validUploadPath(file.Path)
+		if manifest.Version == 2 {
+			allowed = file.Path == backupDB || validServerBackupPath(file.Path, accounts)
+		}
 		if !allowed || !fs.ValidPath(file.Path) || len(file.Path) > 1024 || seen[file.Path] || file.Bytes < 0 || len(file.Digest) != 64 {
 			return manifest, fmt.Errorf("无效的备份条目：%s", file.Path)
 		}
@@ -396,7 +436,21 @@ func loadBackupManifest(source *os.Root) (backupManifest, error) {
 	if !seen[backupDB] {
 		return manifest, errors.New("备份清单缺少数据库")
 	}
+	for id := range accounts {
+		if !seen[path.Join("account-data", id, backupDB)] {
+			return manifest, errors.New("备份清单缺少个人数据库")
+		}
+	}
 	return manifest, nil
+}
+
+// Personal-storage and model-catalog migrations support earlier snapshots of
+// these formats. Open upgrades the copy during restore or server startup.
+func requireBackupSchema(version, minimum int) error {
+	if version >= minimum && version <= databaseSchemaVersion {
+		return nil
+	}
+	return requireDatabaseVersion(version)
 }
 
 func sqliteFileURI(path, query string) string {
@@ -420,7 +474,7 @@ func snapshotDatabase(ctx context.Context, source, target string) (int, error) {
 	if err = db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return 0, err
 	}
-	if err = requireDatabaseVersion(version); err != nil {
+	if err = requireBackupSchema(version, 125); err != nil {
 		return 0, err
 	}
 	if err = verifyWritesSettled(ctx, db); err != nil {

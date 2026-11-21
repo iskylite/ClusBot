@@ -106,6 +106,9 @@ WHERE c.id=? AND c.enabled=1 AND c.status='ready' AND t.name=?`, request.Connect
 	if err = mcpclient.ValidateArguments(tool, request.Arguments); err != nil {
 		return err
 	}
+	if err := rememberConnectionReference(ctx, tx, request.ConnectionID); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO run_reads(run_id,position,connection_id,connection_revision,connection_name,tool_name,tool_title,tool_version,arguments)
 VALUES(?,?,?,?,?,?,?,?,?)`, run.ID, position, request.ConnectionID, request.Revision, c.Name, tool.Name, tool.Title, tool.Version, string(args))
 	return err

@@ -62,6 +62,9 @@ AND ?=(SELECT coalesce(max(request_number),0)+1 FROM run_read_rounds WHERE run_i
 		if err != nil {
 			return err
 		}
+		if err := rememberConnectionReference(ctx, tx, read.request.ConnectionID); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO run_reads(run_id,position,connection_id,connection_revision,connection_name,tool_name,tool_title,tool_version,arguments)
 VALUES(?,?,nullif(?,''),?,?,?,?,?,?)`, runID, read.Position, read.request.ConnectionID, read.request.Revision, read.ConnectionName, read.ToolName, read.ToolTitle, read.request.ToolVersion, string(args)); err != nil {
 			return err

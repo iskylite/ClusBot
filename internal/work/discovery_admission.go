@@ -125,6 +125,18 @@ func (s *Store) AdmitDiscoveryCandidate(ctx context.Context, actor string, req D
 	if _, err = tx.Exec(`INSERT INTO discovery_admissions VALUES(?,?,?,?,?,?,?,?)`, c.ID, asset, req.Owner, req.Location, req.Role, c.Address, actor, stamp); err != nil {
 		return c, err
 	}
+	personal, err := ownsPersonalBusiness(tx, actor)
+	if err != nil {
+		return c, err
+	}
+	if personal {
+		if _, err := grantAuthorization(tx, Authorization{
+			Subject: actor, Action: "read", ObjectRef: asset, ValidFrom: stamp,
+			Owner: actor, Source: "discovery-admission",
+		}, stamp); err != nil {
+			return c, err
+		}
+	}
 	c.State, c.Asset = "admitted", asset
 	var hasPlan bool
 	if err = tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM discovery_plans WHERE actor=? AND enabled=1 AND source=? AND scope=? AND check_after_admit=1)`, actor, c.Source, c.Scope).Scan(&hasPlan); err != nil {

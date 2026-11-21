@@ -77,3 +77,44 @@ EXISTS(SELECT 1 FROM input_dispositions d JOIN messages m ON m.seq=d.message_seq
 		}
 	}
 }
+
+func TestAccountIsolatedReplyStartsConversationAndPinsOwner(t *testing.T) {
+	ctx := t.Context()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := Open(filepath.Join(dir, "instance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+	personal, err := OpenAccountBusinessStore(filepath.Join(dir, "member.db"), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer personal.Close()
+	const actor = "user:owner"
+	if err := personal.BindAccountBusinessStore(ctx, actor); err != nil {
+		t.Fatal(err)
+	}
+	in := IsolatedReplyInput{Mode: IsolatedReplyMode, ConfirmCurrentTextEgress: true,
+		ProfileID: strings.Repeat("a", 32), ProfileRevision: 1,
+		RequestID: "account-isolated-first", Text: "only this turn"}
+	resolve := func(context.Context, string, int) (string, error) { return "pin", nil }
+	if _, err := personal.SubmitIsolatedReply(ctx, "user:other", "", in, resolve); err != ErrAuthorizationDenied {
+		t.Fatalf("foreign account submit: %v", err)
+	}
+	run, err := personal.SubmitIsolatedReply(ctx, actor, "", in, resolve)
+	if err != nil || run.ConversationID == "" || run.TaskID != "" {
+		t.Fatalf("new isolated conversation: %+v %v", run, err)
+	}
+	retry, err := personal.SubmitIsolatedReply(ctx, actor, "", in, resolve)
+	if err != nil || retry.ID != run.ID || retry.ConversationID != run.ConversationID {
+		t.Fatalf("isolated retry: %+v %v", retry, err)
+	}
+	pin, messages, err := personal.isolatedReplyInput(ctx, run)
+	if err != nil || pin.ProfileID != in.ProfileID || len(messages) != 1 || messages[0].Text != in.Text {
+		t.Fatalf("isolated input: %+v %+v %v", pin, messages, err)
+	}
+}

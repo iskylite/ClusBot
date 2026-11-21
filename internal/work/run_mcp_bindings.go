@@ -41,7 +41,13 @@ type RunMCPReadBinding struct {
 // Runs share the same existing authenticated, local session scope as Skills.
 func (s *Store) ReadRunMCPBindings(ctx context.Context, actor, runID string) (RunMCPBindings, error) {
 	if actor != "user:session" {
-		return RunMCPBindings{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return RunMCPBindings{}, err
+		}
+		if !allowed {
+			return RunMCPBindings{}, sql.ErrNoRows
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

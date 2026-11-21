@@ -29,7 +29,13 @@ type BoundSkillVersion struct {
 // Runs currently belong to the local authenticated session, not per-user rows.
 func (s *Store) ReadRunSkillBinding(ctx context.Context, actor, runID string) (RunSkillBinding, error) {
 	if actor != "user:session" {
-		return RunSkillBinding{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return RunSkillBinding{}, err
+		}
+		if !allowed {
+			return RunSkillBinding{}, sql.ErrNoRows
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

@@ -14,12 +14,15 @@ const modelAttributesSchema = `CREATE TABLE IF NOT EXISTS model_attributes (
 )`
 
 type ModelAttributes struct {
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	ContextTokens   *int     `json:"context_tokens,omitempty"`
-	MaxOutputTokens *int     `json:"max_output_tokens,omitempty"`
-	Vision          *bool    `json:"vision,omitempty"`
-	Reasoning       *bool    `json:"reasoning,omitempty"`
-	ReasoningLevels []string `json:"reasoning_levels,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
+	ContextTokens    *int     `json:"context_tokens,omitempty"`
+	MaxOutputTokens  *int     `json:"max_output_tokens,omitempty"`
+	Vision           *bool    `json:"vision,omitempty"`
+	FileInput        *bool    `json:"file_input,omitempty"`
+	ToolCalling      *bool    `json:"tool_calling,omitempty"`
+	StructuredOutput *bool    `json:"structured_output,omitempty"`
+	Reasoning        *bool    `json:"reasoning,omitempty"`
+	ReasoningLevels  []string `json:"reasoning_levels,omitempty"`
 }
 
 type ModelSettings struct {

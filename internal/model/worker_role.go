@@ -36,6 +36,13 @@ func (s *Settings) ResolveTaskRunProvider(ctx context.Context) (work.TaskRunProv
 	if s.Demo {
 		return nil, nil // Preserve the existing demo/task handling, including authorized direct reads.
 	}
+	selected, _, configured, err := s.routingProvider(ctx, "task", work.TaskWorkerModelRole)
+	if err != nil {
+		return nil, work.ErrTaskWorkerModelRoleUnavailable
+	}
+	if configured {
+		return pinnedTaskRunProvider{selected}, nil
+	}
 	v, value, key, err := s.modelRole(ctx, work.TaskWorkerModelRole)
 	if err != nil {
 		return nil, err

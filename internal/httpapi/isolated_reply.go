@@ -18,7 +18,7 @@ func (s Server) submitIsolatedReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conversation := r.PathValue("id")
-	if !validID(conversation) || !validID(input.ProfileID) {
+	if (conversation != "" && !validID(conversation)) || !validID(input.ProfileID) {
 		fail(w, 400, "invalid_isolated_reply", work.ErrIsolatedReplyInput.Error())
 		return
 	}

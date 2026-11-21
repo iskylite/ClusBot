@@ -209,6 +209,4 @@ runtime:
 
 ## 设计与验证
 
-[ClusBot V3.1 设计正文](docs/architecture/v3.1/README.md)是唯一现行设计入口：以 POD7 基准和新服务器发现为例，说明对话、任务、工具与证据如何衔接，并区分目标设计与仓库现状。
-
-早期实现记录和[静态 UI 图库](docs/Research/Personal-Agent-页面设计/index.html)仅作历史参考，不作为现行架构契约。
+[设计文档索引](docs/README.md)汇总 V3.1 架构、后端接口、权限和前端功能设计。

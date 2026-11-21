@@ -2,6 +2,7 @@ package work
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -90,6 +91,17 @@ func TestBackupRestoreRetainsEvidenceWithoutReplayingWork(t *testing.T) {
 	}
 	if err = Backup(ctx, data, workspace, backup); err != nil {
 		t.Fatal(err)
+	}
+	manifestBytes, err := os.ReadFile(filepath.Join(backup, backupManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]json.RawMessage
+	if err = json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if string(manifest["version"]) != "1" || manifest["accounts"] != nil {
+		t.Fatalf("local backup format changed: %s", manifestBytes)
 	}
 	if _, err = os.Stat(filepath.Join(backup, "access-token")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("access credential copied: %v", err)

@@ -22,6 +22,13 @@ func (s *Settings) InterpretBenchmarkRevision(ctx context.Context, input work.Be
 	if s == nil || s.Store == nil || s.Demo {
 		return "", work.ErrBenchmarkRevisionModel
 	}
+	selected, _, configured, err := s.routingProvider(ctx, "benchmark", work.BenchmarkRevisionModelRole)
+	if err != nil {
+		return "", work.ErrBenchmarkRevisionModelBinding
+	}
+	if configured {
+		return interpretBenchmarkRevisionRestricted(ctx, selected, input, limit)
+	}
 	p, err := s.provider(ctx)
 	if err != nil {
 		return "", work.ErrBenchmarkRevisionModel
@@ -30,6 +37,13 @@ func (s *Settings) InterpretBenchmarkRevision(ctx context.Context, input work.Be
 }
 
 func (s *Settings) InterpretBenchmarkRevisionWithProfile(ctx context.Context, input work.BenchmarkRevisionModelInput, limit int) (string, error) {
+	selected, _, configured, err := s.routingProvider(ctx, "benchmark", work.BenchmarkRevisionModelRole)
+	if err != nil {
+		return "", work.ErrBenchmarkRevisionModelBinding
+	}
+	if configured {
+		return interpretBenchmarkRevisionRestricted(ctx, selected, input, limit)
+	}
 	v, value, key, err := s.modelRole(ctx, work.BenchmarkRevisionModelRole)
 	if err != nil {
 		return "", work.ErrBenchmarkRevisionModelBinding
@@ -38,6 +52,10 @@ func (s *Settings) InterpretBenchmarkRevisionWithProfile(ctx context.Context, in
 	if err != nil {
 		return "", err
 	}
+	return interpretBenchmarkRevisionRestricted(ctx, p, input, limit)
+}
+
+func interpretBenchmarkRevisionRestricted(ctx context.Context, p *Provider, input work.BenchmarkRevisionModelInput, limit int) (string, error) {
 	type parameter struct {
 		Key string `json:"parameter"`
 	}

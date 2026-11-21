@@ -20,7 +20,7 @@ func (s Server) grantDiscovery(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &g) {
 		return
 	}
-	id, err := s.Store.GrantDiscovery(r.Context(), "user:session", g, s.DiscoverySource)
+	id, err := s.Store.GrantDiscovery(r.Context(), s.principal(r), g, s.DiscoverySource)
 	if err != nil {
 		discoveryError(w, err)
 		return
@@ -32,21 +32,41 @@ func (s Server) publishDiscovery(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &p) {
 		return
 	}
-	if err := s.Store.PublishDiscoveryPlan(r.Context(), "user:session", p, s.DiscoverySource); err != nil {
+	if err := s.Store.PublishDiscoveryPlan(r.Context(), s.principal(r), p, s.DiscoverySource); err != nil {
 		discoveryError(w, err)
 		return
 	}
 	jsonResponse(w, http.StatusCreated, map[string]string{"id": p.ID})
 }
 func (s Server) stopDiscovery(w http.ResponseWriter, r *http.Request) {
-	if err := s.Store.DisableDiscoveryPlan(r.Context(), "user:session", r.PathValue("id")); err != nil {
+	if err := s.Store.DisableDiscoveryPlan(r.Context(), s.principal(r), r.PathValue("id")); err != nil {
 		discoveryError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+func (s Server) discoverySetupStatus(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	for _, field := range []string{"source", "scope"} {
+		if values, exists := query[field]; exists && (len(values) != 1 || values[0] == "") {
+			discoveryError(w, work.ErrDiscoveryInput)
+			return
+		}
+	}
+	source := s.DiscoverySource
+	if account, ok := accountFromContext(r); s.ServerMode && (!ok || !account.IsSuperadmin) {
+		source = nil
+	}
+	out, err := s.Store.ReadDiscoverySetupStatus(r.Context(), s.principal(r), source, query.Get("source"), query.Get("scope"))
+	if err != nil {
+		discoveryError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
 func (s Server) discoveryCandidates(w http.ResponseWriter, r *http.Request) {
-	items, err := s.Store.ListDiscoveryCandidates(r.Context(), "user:session")
+	items, err := s.Store.ListDiscoveryCandidates(r.Context(), s.principal(r))
 	if err != nil {
 		discoveryError(w, err)
 		return
@@ -59,7 +79,7 @@ func (s Server) admitDiscovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Candidate = r.PathValue("id")
-	item, err := s.Store.AdmitDiscoveryCandidate(r.Context(), "user:session", p)
+	item, err := s.Store.AdmitDiscoveryCandidate(r.Context(), s.principal(r), p)
 	if err != nil {
 		discoveryError(w, err)
 		return

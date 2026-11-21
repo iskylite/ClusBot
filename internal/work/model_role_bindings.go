@@ -114,7 +114,7 @@ func (s *Store) ReadModelRole(ctx context.Context, role string) (ModelRoleBindin
 	if err != nil || binding.ProfileID == "" {
 		return binding, ModelConnectionProfile{}, err
 	}
-	p, err := scanModelProfile(tx.QueryRowContext(ctx, "SELECT "+modelProfileCols+" FROM model_connection_profiles WHERE profile_id=?", binding.ProfileID))
+	p, err := s.scanModelProfile(tx.QueryRowContext(ctx, "SELECT "+modelProfileCols+" FROM model_connection_profiles WHERE profile_id=?", binding.ProfileID))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil
 	}
@@ -140,12 +140,11 @@ func (s *Store) SaveModelRole(ctx context.Context, in ModelRoleBinding) (ModelRo
 		return ModelRoleBinding{}, ErrModelSettingsRevision
 	}
 	if in.ProfileID != "" {
-		var revision int
-		err := tx.QueryRowContext(ctx, "SELECT revision FROM model_connection_profiles WHERE profile_id=?", in.ProfileID).Scan(&revision)
+		p, err := s.scanModelProfile(tx.QueryRowContext(ctx, "SELECT "+modelProfileCols+" FROM model_connection_profiles WHERE profile_id=?", in.ProfileID))
 		if err != nil {
 			return ModelRoleBinding{}, err
 		}
-		if revision != in.ProfileRevision {
+		if p.Settings.Revision != in.ProfileRevision || !p.Enabled || !p.ProviderEnabled {
 			return ModelRoleBinding{}, ErrModelSettingsRevision
 		}
 	}

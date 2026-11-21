@@ -71,11 +71,15 @@ func (s *Settings) modelRole(ctx context.Context, role string) (BenchmarkAdmissi
 		v.Status = "demo_profile_disabled"
 	case p.ID == "":
 		v.Status = "profile_missing"
+	case !p.ProviderEnabled:
+		v.Status = "provider_disabled"
+	case !p.Enabled:
+		v.Status = "profile_disabled"
 	case p.Settings.Revision != b.ProfileRevision:
 		v.Status = "profile_revision_changed"
 	case p.Settings.ModelID == "" || validateProfileSettings(p.Settings) != nil:
 		v.Status = "profile_invalid"
-	case key == "":
+	case !credentialAvailableWithKey(p.Settings, key):
 		v.Status = "credential_missing"
 	case s.Store.ModelCredentialBinding(key) != b.CredentialBinding:
 		v.Status = "credential_changed"
@@ -162,14 +166,13 @@ func defaultDestinationRole(role string) bool {
 
 // Ordinary routing/reply roles preserve the existing trusted destination.
 func (s *Settings) roleDefaultDestination(ctx context.Context, profile work.ModelSettings, profileKey string) (work.ModelSettings, bool) {
-	stored, err := s.Store.ModelSettings(ctx)
+	base, _, err := s.resolveDefault(ctx)
 	if err != nil {
 		return work.ModelSettings{}, false
 	}
-	base := s.effective(stored)
 	key := keyValue(base)
 	if base.ModelID == "" || base.Protocol != profile.Protocol || base.KeyRef != profile.KeyRef ||
-		base.APIKey != "" || key == "" || s.Store.ModelCredentialBinding(key) != s.Store.ModelCredentialBinding(profileKey) {
+		(base.APIKey != "" && base.KeyRef != work.ModelProviderAPIKeyRef) || !credentialAvailableWithKey(base, key) || s.Store.ModelCredentialBinding(key) != s.Store.ModelCredentialBinding(profileKey) {
 		return work.ModelSettings{}, false
 	}
 	baseEndpoint, err := modelEndpoint(base.BaseURL, base.Protocol)
@@ -223,11 +226,14 @@ func (s *Settings) setModelRole(ctx context.Context, role string, in BenchmarkAd
 		if p.Settings.Revision != in.ProfileRevision {
 			return BenchmarkAdmissionRoleView{}, work.ErrModelSettingsRevision
 		}
+		if !p.Enabled || !p.ProviderEnabled {
+			return BenchmarkAdmissionRoleView{}, InvalidSettings("模型或提供方已停用")
+		}
 		if err := validateProfileSettings(p.Settings); err != nil {
 			return BenchmarkAdmissionRoleView{}, err
 		}
 		key := keyValue(p.Settings)
-		if key == "" {
+		if !credentialAvailableWithKey(p.Settings, key) {
 			return BenchmarkAdmissionRoleView{}, InvalidSettings("档案的环境凭据尚不可用")
 		}
 		if defaultDestinationRole(role) {
@@ -258,11 +264,26 @@ func (s *Settings) benchmarkAdmissionProvider(ctx context.Context) (*Provider, b
 // try the default, including when a profile or credential no longer matches.
 func (s *Settings) inheritedModelRoleProvider(ctx context.Context, role string, unavailable error) (*Provider, bool, error) {
 	p, view, err := s.inheritedModelRoleSelection(ctx, role, unavailable)
-	return p, view.Source == "explicit_profile", err
+	return p, view.Source != "legacy_default", err
 }
 
 // Return the selection snapshot, not a fresh read of potentially changed settings.
 func (s *Settings) inheritedModelRoleSelection(ctx context.Context, role string, unavailable error) (*Provider, BenchmarkAdmissionRoleView, error) {
+	provider, policy, selected, err := s.routingProvider(ctx, routingBusiness(role), role)
+	if selected || err != nil {
+		view := BenchmarkAdmissionRoleView{Role: role, Revision: policy.Revision, Source: "role_policy", Status: "locally_configured"}
+		if policy.Business != "default" {
+			view.Source = "business_override"
+		}
+		if len(policy.Candidates) > 0 {
+			view.ProfileID, view.ProfileRevision = policy.Candidates[0].ProfileID, policy.Candidates[0].ProfileRevision
+		}
+		if err != nil {
+			view.Status = "policy_unavailable"
+			return nil, view, fmt.Errorf("%w（策略不可用）", unavailable)
+		}
+		return provider, view, nil
+	}
 	v, value, key, err := s.modelRole(ctx, role)
 	if err != nil {
 		return nil, v, err

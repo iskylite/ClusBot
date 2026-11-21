@@ -5,11 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+
+	"clusbot/internal/work"
 )
 
 type RuntimeProjection struct {
 	SchemaVersion     int                      `json:"schema_version"`
 	SettingsRevision  int                      `json:"settings_revision,omitempty"`
+	DefaultSource     string                   `json:"default_source,omitempty"`
+	DefaultProfileID  string                   `json:"default_profile_id,omitempty"`
 	Mode              string                   `json:"mode"`
 	Availability      string                   `json:"availability"`
 	EndpointSource    string                   `json:"endpoint_source,omitempty"`
@@ -49,7 +53,15 @@ func (s *Settings) RuntimeProjection(ctx context.Context) (RuntimeProjection, er
 		out.Availability = "settings_unavailable"
 		return out, nil
 	}
-	stored, err := s.Store.ModelSettings(ctx)
+	stored, selected, err := s.resolveDefault(ctx)
+	out.DefaultSource = "legacy_default"
+	if selected.ProfileID != "" {
+		out.DefaultSource, out.DefaultProfileID = "profile", selected.ProfileID
+	}
+	if errors.Is(err, work.ErrModelDefaultUnavailable) {
+		out.Availability = "default_unavailable"
+		return out, nil
+	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return RuntimeProjection{}, err
 	}
@@ -62,18 +74,23 @@ func (s *Settings) RuntimeProjection(ctx context.Context) (RuntimeProjection, er
 	if errors.Is(err, sql.ErrNoRows) {
 		return out, nil
 	}
-	v := s.effective(stored)
+	v := stored
 	out.ModelID, out.Mode = v.ModelID, v.Protocol
 	out.EndpointSource, out.ModelIDSource = "settings", "settings"
-	if s.BaseURLOverride != "" {
+	if selected.ProfileID != "" {
+		out.EndpointSource, out.ModelIDSource = "catalog", "catalog"
+	}
+	if selected.ProfileID == "" && s.BaseURLOverride != "" {
 		out.EndpointSource = "runtime_override"
 	}
-	if s.ModelIDOverride != "" {
+	if selected.ProfileID == "" && s.ModelIDOverride != "" {
 		out.ModelIDSource = "runtime_override"
 	}
 	switch {
 	case v.APIKey != "":
 		out.CredentialSource = "local_secret"
+	case v.KeyRef == "none":
+		out.CredentialSource = "none"
 	case keyValue(v) != "":
 		out.CredentialSource = "environment"
 	default:
@@ -81,6 +98,14 @@ func (s *Settings) RuntimeProjection(ctx context.Context) (RuntimeProjection, er
 	}
 	if v.ModelID == "" {
 		out.Mode = "unconfigured"
+		return out, nil
+	}
+	if selected.ProfileID != "" && !credentialAvailable(v) {
+		out.Availability = "credential_missing"
+		return out, nil
+	}
+	if selected.ProfileID != "" && validateProfileSettings(v) != nil {
+		out.Availability = "invalid_configuration"
 		return out, nil
 	}
 	if _, err := modelEndpoint(v.BaseURL, v.Protocol); err != nil {

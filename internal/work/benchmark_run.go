@@ -104,19 +104,25 @@ type BenchmarkRunProgress struct {
 	Cases         []BenchmarkCaseProgress `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
-	Key              string                                 `json:"key"`
-	Phase            string                                 `json:"phase"`
-	JobID            string                                 `json:"job_id,omitempty"`
-	Report           json.RawMessage                        `json:"report,omitempty"`
-	StepID           string                                 `json:"step_id"`
-	StepState        string                                 `json:"step_state"`
-	Operation        *BenchmarkOperationProgress            `json:"operation,omitempty"`
-	Wait             *BenchmarkWaitProgress                 `json:"wait,omitempty"`
-	TargetHolds      int                                    `json:"target_holds"`
-	Targets          []BenchmarkCaseTarget                  `json:"targets"`
-	ExecutionControl *BenchmarkCaseExecutionControl         `json:"execution_control,omitempty"`
-	DispatchControl  *BenchmarkDispatchControl              `json:"dispatch_control,omitempty"`
-	Actions          map[string]BenchmarkActionAvailability `json:"actions"`
+	Key                   string                                 `json:"key"`
+	Phase                 string                                 `json:"phase"`
+	JobID                 string                                 `json:"job_id,omitempty"`
+	Report                json.RawMessage                        `json:"report,omitempty"`
+	StepID                string                                 `json:"step_id"`
+	StepState             string                                 `json:"step_state"`
+	Operation             *BenchmarkOperationProgress            `json:"operation,omitempty"`
+	Wait                  *BenchmarkWaitProgress                 `json:"wait,omitempty"`
+	TargetHolds           int                                    `json:"target_holds"`
+	Targets               []BenchmarkCaseTarget                  `json:"targets"`
+	ExecutionControl      *BenchmarkCaseExecutionControl         `json:"execution_control,omitempty"`
+	DispatchControl       *BenchmarkDispatchControl              `json:"dispatch_control,omitempty"`
+	Actions               map[string]BenchmarkActionAvailability `json:"actions"`
+	ReconciliationBlocker *BenchmarkReconciliationBlocker        `json:"reconciliation_blocker,omitempty"`
+}
+
+type BenchmarkReconciliationBlocker struct {
+	Code   string `json:"code"`
+	Reason string `json:"reason"`
 }
 
 // BenchmarkAssetScope counts unique frozen target references, not GPU/CU,
@@ -268,6 +274,16 @@ func freezeBenchmarkCase(tx *sql.Tx, actor string, c BenchmarkCase, provider Ben
 }
 
 func (s *Store) BenchmarkProgress(ctx context.Context, actor, taskID string) (BenchmarkRunProgress, error) {
+	return s.benchmarkProgress(ctx, actor, taskID, nil, false)
+}
+
+// BenchmarkProgressWithProvider projects local configuration only. It never
+// reaches the benchmark service or changes the reconciliation schedule.
+func (s *Store) BenchmarkProgressWithProvider(ctx context.Context, actor, taskID string, provider BenchmarkProvider) (BenchmarkRunProgress, error) {
+	return s.benchmarkProgress(ctx, actor, taskID, provider, true)
+}
+
+func (s *Store) benchmarkProgress(ctx context.Context, actor, taskID string, provider BenchmarkProvider, inspectProvider bool) (BenchmarkRunProgress, error) {
 	var p BenchmarkRunProgress
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -368,12 +384,58 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	if err := rows.Close(); err != nil {
 		return p, err
 	}
+	if inspectProvider {
+		if err := projectBenchmarkReconciliationBlockers(tx, &p, actionInputs, provider); err != nil {
+			return p, err
+		}
+	}
 	if err := projectBenchmarkCaseActions(ctx, tx, actor, &p, actionInputs); err != nil {
 		return p, err
 	}
 	slices.Sort(p.AssetScope.TargetRefs)
 	p.AssetScope.TargetCount = len(p.AssetScope.TargetRefs)
 	return p, nil
+}
+
+func projectBenchmarkReconciliationBlockers(tx *sql.Tx, progress *BenchmarkRunProgress, inputs []benchmarkActionProjection, provider BenchmarkProvider) error {
+	var base *BenchmarkProfile
+	for i := range progress.Cases {
+		c := &progress.Cases[i]
+		if c.Operation == nil || c.Phase != "submitting" && c.Phase != "following" {
+			continue
+		}
+		switch V3OperationState(c.Operation.State) {
+		case V3OperationDispatched, V3OperationRunning, V3OperationReconcile:
+		default:
+			continue
+		}
+		var spec BenchmarkCase
+		if raw := inputs[i].spec; raw != "" {
+			if err := json.Unmarshal([]byte(raw), &spec); err != nil {
+				return err
+			}
+		} else {
+			if base == nil {
+				frozen, err := readBenchmarkProfile(tx, progress.Profile, progress.Version)
+				if err != nil {
+					return err
+				}
+				base = &frozen
+			}
+			if at := slices.IndexFunc(base.Cases, func(spec BenchmarkCase) bool { return spec.Key == c.Key }); at >= 0 {
+				spec = base.Cases[at]
+			}
+		}
+		b := spec.Binding
+		if spec.Key == c.Key && b.Connection != "" && b.Revision > 0 && b.Tool != "" && b.Validator != "" &&
+			(provider == nil || !provider.Supports(b)) {
+			c.ReconciliationBlocker = &BenchmarkReconciliationBlocker{
+				Code:   "adapter_revision_unavailable",
+				Reason: "当前未配置与该作业冻结版本匹配的适配器，暂无法核对原作业；不会重新派发。",
+			}
+		}
+	}
+	return nil
 }
 
 func (s *Store) RunBenchmarks(ctx context.Context, provider BenchmarkProvider) {

@@ -103,7 +103,13 @@ FROM conversation_mcp_selections WHERE conversation_id=?`, conversation).Scan(&s
 
 func (s *Store) ReadConversationMCPSelection(ctx context.Context, actor, conversation string) (ConversationMCPSelection, error) {
 	if actor != "user:session" {
-		return ConversationMCPSelection{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return ConversationMCPSelection{}, err
+		}
+		if !allowed {
+			return ConversationMCPSelection{}, sql.ErrNoRows
+		}
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -119,7 +125,13 @@ func (s *Store) ReadConversationMCPSelection(ctx context.Context, actor, convers
 
 func (s *Store) SetConversationMCPSelection(ctx context.Context, actor, conversation string, in ConversationMCPInput) (ConversationMCPSelection, error) {
 	if actor != "user:session" {
-		return ConversationMCPSelection{}, sql.ErrNoRows
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return ConversationMCPSelection{}, err
+		}
+		if !allowed {
+			return ConversationMCPSelection{}, sql.ErrNoRows
+		}
 	}
 	sel := in.MCPReadSelection
 	if in.Action == "clear_mcp_read" {

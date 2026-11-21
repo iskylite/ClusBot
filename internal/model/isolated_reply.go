@@ -11,11 +11,11 @@ func (s *Settings) isolatedReplyProfile(ctx context.Context, id string, revision
 		return work.ModelSettings{}, "", work.ErrIsolatedReplyUnavailable
 	}
 	profile, err := s.Store.ReadModelProfile(ctx, id)
-	if err != nil || profile.Settings.Revision != revision || validateProfileSettings(profile.Settings) != nil {
+	if err != nil || !profile.Enabled || !profile.ProviderEnabled || profile.Settings.Revision != revision || validateProfileSettings(profile.Settings) != nil {
 		return work.ModelSettings{}, "", work.ErrIsolatedReplyUnavailable
 	}
 	key := keyValue(profile.Settings)
-	if key == "" {
+	if !credentialAvailableWithKey(profile.Settings, key) {
 		return work.ModelSettings{}, "", work.ErrIsolatedReplyUnavailable
 	}
 	return profile.Settings, key, nil

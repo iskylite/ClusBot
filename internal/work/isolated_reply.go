@@ -46,10 +46,7 @@ func migrateIsolatedReplies(tx *sql.Tx) error {
 
 func (s *Store) SubmitIsolatedReply(ctx context.Context, actor, conversation string, in IsolatedReplyInput,
 	resolve func(context.Context, string, int) (string, error)) (Run, error) {
-	if actor != "user:session" {
-		return Run{}, ErrAuthorizationDenied
-	}
-	if conversation == "" || len(in.ProfileID) != 32 || in.ProfileRevision < 1 || in.Mode != IsolatedReplyMode ||
+	if len(in.ProfileID) != 32 || in.ProfileRevision < 1 || in.Mode != IsolatedReplyMode ||
 		!in.ConfirmCurrentTextEgress || len(in.RequestID) < 8 || len(in.RequestID) > 128 || !utf8.ValidString(in.Text) ||
 		strings.TrimSpace(in.Text) == "" || strings.HasPrefix(strings.TrimSpace(in.Text), "/") ||
 		utf8.RuneCountInString(in.Text) > 16000 || resolve == nil {
@@ -63,16 +60,18 @@ func (s *Store) SubmitIsolatedReply(ctx context.Context, actor, conversation str
 		return Run{}, err
 	}
 	defer tx.Rollback()
+	if allowed, err := isolatedReplyActorAllowed(tx, actor); err != nil {
+		return Run{}, err
+	} else if !allowed {
+		return Run{}, ErrAuthorizationDenied
+	}
 	if previous, err := previousSubmission(tx, key, fingerprint); err != nil || previous.ID != "" {
 		return previous, err
-	}
-	if err := checkConversationSubmission(tx, conversation); err != nil {
-		return Run{}, err
 	}
 	if resolveErr != nil || credential == "" {
 		return Run{}, ErrIsolatedReplyUnavailable
 	}
-	if err := validateIsolatedReplyScope(tx, conversation, in.ProfileID, in.ProfileRevision); err != nil {
+	if err := validateIsolatedReplyProfile(tx, actor, in.ProfileID, in.ProfileRevision); err != nil {
 		return Run{}, err
 	}
 	run, err := submitWorkTxWithMode(ctx, tx, key, fingerprint, in.Text, "", conversation, false, Delivery{}, nil, nil, true)
@@ -83,18 +82,28 @@ func (s *Store) SubmitIsolatedReply(ctx context.Context, actor, conversation str
 		return Run{}, ErrIsolatedReplyUnavailable
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO isolated_reply_pins VALUES(?,?,?,?,?,?,?,?)`,
-		run.ID, conversation, actor, in.ProfileID, in.ProfileRevision, credential, in.Mode, digest(in.Text)); err != nil {
+		run.ID, run.ConversationID, actor, in.ProfileID, in.ProfileRevision, credential, in.Mode, digest(in.Text)); err != nil {
 		return Run{}, err
 	}
 	return run, tx.Commit()
 }
 
-func validateIsolatedReplyScope(q recordsQuerier, conversation, profile string, revision int) error {
+func isolatedReplyActorAllowed(q recordsQuerier, actor string) (bool, error) {
+	if actor == "user:session" {
+		return true, nil
+	}
+	return ownsPersonalBusiness(q, actor)
+}
+
+func validateIsolatedReplyProfile(q recordsQuerier, actor, profile string, revision int) error {
+	// Personal stores use the live instance catalog through the authenticated
+	// model resolver at both submission and execution.
+	if actor != "user:session" {
+		return nil
+	}
 	var eligible bool
-	err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM conversations c
-WHERE c.id=? AND c.archived=0
-AND EXISTS(SELECT 1 FROM model_connection_profiles p WHERE p.profile_id=? AND p.revision=?))`,
-		conversation, profile, revision).Scan(&eligible)
+	err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM model_connection_profiles p JOIN model_providers mp ON mp.provider_id=p.provider_id
+WHERE p.profile_id=? AND p.revision=? AND p.enabled=1 AND mp.enabled=1)`, profile, revision).Scan(&eligible)
 	if err != nil {
 		return err
 	}
@@ -117,10 +126,15 @@ FROM isolated_reply_pins WHERE run_id=?`, run.ID).Scan(&conversation, &actor, &p
 	}
 	// submitWorkTx creates the initial generation via the existing zero
 	// default; this path deliberately never creates a resumable checkpoint.
-	if run.TaskID != "" || run.Generation != 0 || conversation != run.ConversationID || actor != "user:session" || mode != IsolatedReplyMode {
+	if run.TaskID != "" || run.Generation != 0 || conversation != run.ConversationID || mode != IsolatedReplyMode {
 		return pin, "", ErrIsolatedReplyUnavailable
 	}
-	if err := validateIsolatedReplyScope(q, conversation, pin.ProfileID, pin.ProfileRevision); err != nil {
+	if allowed, err := isolatedReplyActorAllowed(q, actor); err != nil {
+		return pin, "", err
+	} else if !allowed {
+		return pin, "", ErrIsolatedReplyUnavailable
+	}
+	if err := validateIsolatedReplyProfile(q, actor, pin.ProfileID, pin.ProfileRevision); err != nil {
 		return pin, "", err
 	}
 	return pin, textDigest, nil

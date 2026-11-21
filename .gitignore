@@ -29,8 +29,13 @@
 /.claude/
 .DS_Store
 
-# Local research archives, review evidence, and Python caches
-/docs/Research/多智能体架构设计分析.html
-/docs/Research/多智能体架构设计分析_files/
-/docs/Research/历史/*/证据/
-/docs/Research/**/__pycache__/
+# Local design drafts, historical sources, and preview images
+/docs/archive/
+/docs/Research/
+/docs/architecture/v3.1/reference-v3/
+/docs/ClusBot-设计与落地评审结论-2026-11-12.md
+/docs/ClusBot-V3.1-后端收尾说明.md
+/docs/模型能力对齐-现状与方案.md
+/docs/ui/personal-assistant/*
+!/docs/ui/personal-assistant/前端设计.md
+/docs/**/*.png

@@ -130,7 +130,13 @@ func scanConversationEvent(row scanner, conversation string) (ConversationEvent,
 // Existing conversations are owned by the authenticated local app principal.
 func (s *Store) ReadConversationEvents(ctx context.Context, actor, conversation, cursor string) (ConversationEventPage, error) {
 	if actor != "user:session" {
-		return ConversationEventPage{}, ErrAuthorizationDenied
+		allowed, err := ownsPersonalBusiness(s.db, actor)
+		if err != nil {
+			return ConversationEventPage{}, err
+		}
+		if !allowed {
+			return ConversationEventPage{}, ErrAuthorizationDenied
+		}
 	}
 	var anchor conversationEventCursor
 	if cursor != "" {

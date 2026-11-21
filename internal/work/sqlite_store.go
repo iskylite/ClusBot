@@ -29,13 +29,13 @@ import (
 
 // SQLiteSettings 是连接的关键配置实测值。
 type SQLiteSettings struct {
-	JournalMode  string // wal / delete / ...
-	Synchronous  int    // 0=OFF 1=NORMAL 2=FULL 3=EXTRA
-	ForeignKeys  bool   // PRAGMA foreign_keys
-	BusyTimeout  int    // 毫秒
-	ReadOnly     bool   // 连接是否只读
+	JournalMode   string // wal / delete / ...
+	Synchronous   int    // 0=OFF 1=NORMAL 2=FULL 3=EXTRA
+	ForeignKeys   bool   // PRAGMA foreign_keys
+	BusyTimeout   int    // 毫秒
+	ReadOnly      bool   // 连接是否只读
 	SQLiteVersion string // 实际运行库版本（SELECT sqlite_version()）
-	WALFileBytes int64  // -wal 文件当前大小（观测入口）
+	WALFileBytes  int64  // -wal 文件当前大小（观测入口）
 }
 
 // readSettings 读取一个连接的实际配置。
@@ -86,6 +86,11 @@ func openWriter(path string) (*writerDB, error) {
 	if err != nil {
 		return nil, err
 	}
+	return configureWriter(db)
+}
+
+func configureWriter(db *sql.DB) (*writerDB, error) {
+	var err error
 	// 单连接/单写职责：写连接串行化所有业务写事务。
 	db.SetMaxOpenConns(1)
 	if _, err = db.Exec("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;"); err != nil {

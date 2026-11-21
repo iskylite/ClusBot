@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"slices"
 
 	"clusbot/internal/work"
 )
@@ -12,6 +13,9 @@ func (s Server) listSkills(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
+	}
+	if account, ok := accountFromContext(r); ok && !account.IsSuperadmin {
+		result = slices.DeleteFunc(result, func(version work.SkillVersion) bool { return !version.Active })
 	}
 	jsonResponse(w, http.StatusOK, result)
 }

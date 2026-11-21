@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"path/filepath"
 	"unicode/utf8"
 )
 
@@ -17,11 +18,21 @@ const MaxUploadBytes = 10 * 1024 * 1024
 const uploadStride = maxMaterialBytes - utf8.UTFMax
 
 var (
-	ErrUpload        = errors.New("请选择非空的 UTF-8 文本或 Markdown 文件，最大 10 MiB")
+	ErrUpload        = errors.New("请选择非空的 UTF-8 文本、Markdown、CSV 或日志文件，最大 10 MiB")
 	ErrUploadSize    = errors.New("文件超过 10 MiB")
 	ErrUploadPart    = errors.New("所选片段超出文件范围")
 	ErrUploadChanged = errors.New("上传原件无法读取或校验失败")
 )
+
+func validUploadFilename(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".md", ".txt", ".log", ".csv", ".tsv", ".json", ".yaml", ".yml":
+		return safeFilename(name)
+	default:
+		return false
+	}
+}
 
 type UploadPart struct {
 	ID     string `json:"id"`
@@ -57,7 +68,7 @@ func (s *Store) UploadMaterial(ctx context.Context, name string, data []byte) (M
 	if len(data) > MaxUploadBytes {
 		return Material{}, ErrUploadSize
 	}
-	if !validFilename(name) || len(data) == 0 || !utf8.Valid(data) || slices.Contains(data, 0) {
+	if !validUploadFilename(name) || len(data) == 0 || !utf8.Valid(data) || slices.Contains(data, 0) {
 		return Material{}, ErrUpload
 	}
 	if s.uploads == nil {

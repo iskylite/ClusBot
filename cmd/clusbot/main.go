@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,9 +29,13 @@ import (
 )
 
 type config struct {
-	Server        struct{ Listen string } `yaml:"server"`
-	DataDir       string                  `yaml:"data_dir"`
-	WorkspaceRoot string                  `yaml:"workspace_root"`
+	Server struct {
+		Listen string `yaml:"listen"`
+		Mode   string `yaml:"mode"`
+		Origin string `yaml:"origin"`
+	} `yaml:"server"`
+	DataDir       string `yaml:"data_dir"`
+	WorkspaceRoot string `yaml:"workspace_root"`
 	Tickets       struct {
 		BaseURL             string `yaml:"base_url"`
 		HealthURL           string `yaml:"health_url"`
@@ -95,6 +100,8 @@ func run() error {
 	flags := flag.NewFlagSet("clusbot serve", flag.ContinueOnError)
 	configPath := flags.String("config", "", "YAML 配置文件")
 	listen := flags.String("listen", "", "覆盖监听地址")
+	mode := flags.String("mode", "", "运行模式：local 或 server")
+	origin := flags.String("origin", "", "服务器模式对外 HTTPS Origin")
 	dataDir := flags.String("data-dir", "", "覆盖数据目录")
 	workspaceRoot := flags.String("workspace-root", "", "工作区目录")
 	printURL := flags.Bool("print-url", false, "服务就绪后向标准输出写入本机 URL")
@@ -107,6 +114,7 @@ func run() error {
 	}
 	var cfg config
 	cfg.Server.Listen = "127.0.0.1:8080"
+	cfg.Server.Mode = "local"
 	cfg.DataDir = "./data"
 	cfg.Model.Provider = model.ProtocolChat
 	cfg.Model.BaseURL = "https://api.openai.com/v1"
@@ -137,6 +145,25 @@ func run() error {
 	}
 	if *listen != "" {
 		cfg.Server.Listen = *listen
+	}
+	if *mode != "" {
+		cfg.Server.Mode = *mode
+	}
+	if *origin != "" {
+		cfg.Server.Origin = *origin
+	}
+	if cfg.Server.Mode != "local" && cfg.Server.Mode != "server" {
+		return errors.New("server.mode 必须为 local 或 server")
+	}
+	if cfg.Server.Mode == "server" {
+		parsed, err := url.Parse(cfg.Server.Origin)
+		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return errors.New("server.origin 必须为对外 HTTPS Origin，例如 https://example.com")
+		}
+		cfg.Server.Origin = "https://" + parsed.Host
+		if *demo {
+			return errors.New("服务器模式不支持本机演示模式")
+		}
 	}
 	if *dataDir != "" {
 		cfg.DataDir = *dataDir
@@ -179,21 +206,37 @@ func run() error {
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err
 	}
+	if cfg.Server.Mode == "server" {
+		cfg.DataDir, err = filepath.EvalSymlinks(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+	}
 	lock, err := work.LockDataDir(cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	tokenPath := filepath.Join(cfg.DataDir, "access-token")
-	token, err := accessToken(tokenPath)
-	if err != nil {
-		return err
-	}
 	db, err := work.Open(filepath.Join(cfg.DataDir, "clusbot.db"))
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	if err = db.EnsureAccountMode(context.Background(), cfg.Server.Mode == "server"); err != nil {
+		return err
+	}
+	if cfg.Server.Mode == "server" {
+		return serveAccounts(db, cfg.Server.Listen, cfg.Server.Origin, *printURL,
+			func(ctx context.Context, api *httpapi.Server) (func(), error) {
+				return startAccountRuntime(ctx, api, cfg)
+			})
+	}
+	tokenPath := filepath.Join(cfg.DataDir, "access-token")
+	token, err := accessToken(tokenPath)
+	if err != nil {
+		return err
+	}
+	db.SetConnectionCredentialKey(token)
 	settings := &model.Settings{
 		Store:           db,
 		BaseURLOverride: strings.TrimSpace(os.Getenv("CLUSBOT_MODEL_BASE_URL")),
@@ -207,7 +250,6 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	db.SetConnectionCredentialKey(token)
 	if err = db.OpenUploads(filepath.Join(cfg.DataDir, "uploads")); err != nil {
 		return err
 	}

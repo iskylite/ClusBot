@@ -10,6 +10,14 @@ import (
 )
 
 func (s *Settings) conversationReplyProvider(ctx context.Context) (work.Provider, string, bool, error) {
+	p, _, selected, err := s.routingProvider(ctx, "conversation", work.ConversationReplyModelRole)
+	if err != nil {
+		return nil, "", selected, work.ErrConversationReplyRoleUnavailable
+	}
+	if selected {
+		identity, _ := p.ReadCheckpointIdentity()
+		return conversationReplyStream{provider: p}, identity + "\nconversation/v1", true, nil
+	}
 	view, value, key, err := s.modelRole(ctx, work.ConversationReplyModelRole)
 	if err != nil {
 		return nil, "", false, err
@@ -17,7 +25,7 @@ func (s *Settings) conversationReplyProvider(ctx context.Context) (work.Provider
 	if view.Source == "legacy_default" {
 		return nil, "", false, nil
 	}
-	p, err := s.profileForModelRole(view, value, key, work.ErrConversationReplyRoleUnavailable)
+	p, err = s.profileForModelRole(view, value, key, work.ErrConversationReplyRoleUnavailable)
 	if err != nil {
 		return nil, "", true, err
 	}

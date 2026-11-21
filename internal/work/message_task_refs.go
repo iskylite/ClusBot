@@ -24,8 +24,17 @@ func checkMessageTaskRef(tx *sql.Tx, actor, conversation string, ref *MessageTas
 	if ref == nil {
 		return nil
 	}
-	if actor != "user:session" || conversation == "" || ref.TaskID == "" {
+	if conversation == "" || ref.TaskID == "" {
 		return sql.ErrNoRows
+	}
+	if actor != "user:session" {
+		allowed, err := ownsPersonalBusiness(tx, actor)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return sql.ErrNoRows
+		}
 	}
 	var id string
 	return tx.QueryRow(`SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
@@ -45,7 +54,7 @@ func enrichMessageTaskRefs(tx *sql.Tx, conversation string, messages []Message) 
 	rows, err := tx.Query(`SELECT m.seq,t.id FROM message_task_refs ref
 JOIN messages m ON m.seq=ref.message_seq AND m.role='user'
 JOIN tasks t ON t.id=ref.task_id JOIN conversations c ON c.id=m.conversation_id
-WHERE c.id=? AND ref.actor='user:session' AND m.seq IN (SELECT value FROM json_each(?))
+WHERE c.id=? AND (ref.actor='user:session' OR EXISTS(SELECT 1 FROM account_business_owner owner WHERE owner.principal_id=ref.actor)) AND m.seq IN (SELECT value FROM json_each(?))
 AND `+visibleMessageTask, conversation, toJSON(ids))
 	if err != nil {
 		return err

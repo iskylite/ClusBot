@@ -92,7 +92,7 @@ func (s Server) submitBenchmark(w http.ResponseWriter, r *http.Request) {
 }
 func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	p, err := s.Store.BenchmarkProgress(r.Context(), s.principal(r), r.PathValue("id"))
+	p, err := s.Store.BenchmarkProgressWithProvider(r.Context(), s.principal(r), r.PathValue("id"), s.BenchmarkProvider)
 	if err != nil {
 		benchmarkError(w, err)
 		return

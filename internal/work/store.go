@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 125
+const databaseSchemaVersion = 132
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -201,24 +201,26 @@ var (
 )
 
 type Store struct {
-	db               *sql.DB // 写连接（单写职责），由 writer 持有
-	writer           *writerDB
-	readPool         *readPool
-	storageLocation  sqliteStorageLocation
-	workspace        *workspace
-	materials        *workspace
-	uploads          *os.Root
-	publicationMu    sync.Mutex
-	connectionKey    []byte
-	finalizationMu   sync.Mutex
-	finalizations    map[runFinalizationKey]*runFinalization
-	admissionMu      sync.Mutex
-	admissions       map[string]*admissionFlight
-	runtimeMu        sync.Mutex
-	modelConcurrency int
-	modelActive      int
-	modelAvailable   chan struct{}
-	admissionLimits  RunLimits
+	db                *sql.DB // 写连接（单写职责），由 writer 持有
+	writer            *writerDB
+	readPool          *readPool
+	storageLocation   sqliteStorageLocation
+	workspace         *workspace
+	materials         *workspace
+	uploads           *os.Root
+	publicationMu     sync.Mutex
+	connectionKey     []byte
+	connectionGrantMu *sync.Mutex
+	accountModelSlots chan struct{}
+	finalizationMu    sync.Mutex
+	finalizations     map[runFinalizationKey]*runFinalization
+	admissionMu       sync.Mutex
+	admissions        map[string]*admissionFlight
+	runtimeMu         sync.Mutex
+	modelConcurrency  int
+	modelActive       int
+	modelAvailable    chan struct{}
+	admissionLimits   RunLimits
 }
 
 type Task struct {
@@ -342,13 +344,17 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	return storeForWriter(path, writer), nil
+}
+
+func storeForWriter(path string, writer *writerDB) *Store {
 	// 只读连接池：短只读查询并发，不持有写连接（P1-01）。
 	// 打开失败不阻止服务（只读池是优化，写路径仍是权威）。
 	readPool, poolErr := openReadPool(path, 4)
 	if poolErr != nil {
 		readPool = nil
 	}
-	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes()}, nil
+	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes(), connectionGrantMu: &sync.Mutex{}}
 }
 
 // initializeDatabase 校验并按需迁移数据库到当前 schema 版本。
@@ -650,6 +656,13 @@ func initializeDatabase(db *sql.DB) error {
 		{122, migrateExplicitTaskAdmissionLane},
 		{123, migrateRouterModelProvenance},
 		{124, migrateModelRunPriorityCursor},
+		{125, migrateMultiuserStorage},
+		{126, migrateAccountBusinessStorage},
+		{127, migrateModelProviderCatalog},
+		{128, migrateModelProviderAPIKey},
+		{129, migratePreferences},
+		{130, migrateModelRoutingPolicies},
+		{131, migrateClusterTrendIndex},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -910,6 +923,27 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if err := migrateModelRunPriorityCursor(tx); err != nil {
+		return err
+	}
+	if err := migrateMultiuserStorage(tx); err != nil {
+		return err
+	}
+	if err := migrateAccountBusinessStorage(tx); err != nil {
+		return err
+	}
+	if err := migrateModelProviderCatalog(tx); err != nil {
+		return err
+	}
+	if err := migrateModelProviderAPIKey(tx); err != nil {
+		return err
+	}
+	if err := migratePreferences(tx); err != nil {
+		return err
+	}
+	if err := migrateModelRoutingPolicies(tx); err != nil {
+		return err
+	}
+	if err := migrateClusterTrendIndex(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {

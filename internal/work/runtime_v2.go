@@ -62,18 +62,23 @@ AND NOT EXISTS (SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=m.run_id)))`,
 // ManifestRequest records references and digests without duplicating material
 // or memory contents. The model adapter supplies these after input fitting.
 type ManifestRequest struct {
-	Messages       []int64           `json:"messages"`
-	Excerpted      []int64           `json:"excerpted_messages,omitempty"`
-	Omitted        []int64           `json:"omitted_messages,omitempty"`
-	Materials      map[string]string `json:"materials,omitempty"`
-	Memories       map[string]int    `json:"memories,omitempty"`
-	Experience     map[string]string `json:"experience,omitempty"`
-	Skills         map[string]int    `json:"skills,omitempty"`
-	ToolItems      []string          `json:"tool_item_digests,omitempty"`
-	Digest         string            `json:"request_sha256"`
-	MaxOutput      int               `json:"max_output_tokens"`
-	Provider       string            `json:"provider_binding,omitempty"`
-	RequestedModel string            `json:"requested_model,omitempty"`
+	Messages              []int64           `json:"messages"`
+	Excerpted             []int64           `json:"excerpted_messages,omitempty"`
+	Omitted               []int64           `json:"omitted_messages,omitempty"`
+	Materials             map[string]string `json:"materials,omitempty"`
+	Memories              map[string]int    `json:"memories,omitempty"`
+	Experience            map[string]string `json:"experience,omitempty"`
+	Skills                map[string]int    `json:"skills,omitempty"`
+	ToolItems             []string          `json:"tool_item_digests,omitempty"`
+	Digest                string            `json:"request_sha256"`
+	MaxOutput             int               `json:"max_output_tokens"`
+	Provider              string            `json:"provider_binding,omitempty"`
+	RequestedModel        string            `json:"requested_model,omitempty"`
+	ModelRole             string            `json:"model_role,omitempty"`
+	RoutingBusiness       string            `json:"routing_business,omitempty"`
+	RoutingPolicyRevision int               `json:"routing_policy_revision,omitempty"`
+	RoutingAttempt        int               `json:"routing_attempt,omitempty"`
+	FallbackReason        string            `json:"fallback_reason,omitempty"`
 }
 
 type manifestRecorderKey struct{}
@@ -95,6 +100,23 @@ func RecordModelManifestWithReceipt(ctx context.Context, manifest ManifestReques
 }
 
 func (s *Store) withManifestRecorder(ctx context.Context, run Run) context.Context {
+	ctx = withModelFallbackReservation(ctx, func(ctx context.Context) error {
+		// The first attempt has already reserved the whole output budget; the
+		// model adapter divides it across the explicitly configured candidates.
+		// Reserve every additional request against the durable run limit.
+		res, err := s.db.ExecContext(ctx, `UPDATE runs SET model_requests=model_requests+1
+WHERE id=? AND execution_generation=? AND status='running' AND control='' AND model_requests<?
+AND EXISTS(SELECT 1 FROM run_read_checkpoints c WHERE c.run_id=runs.id AND c.request_limit>0)`, run.ID, run.Generation, maxReadModelRequests)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
+			return ErrReadCheckpoint
+		}
+		return nil
+	})
 	return context.WithValue(ctx, manifestRecorderKey{}, modelManifestRecorder(func(ctx context.Context, manifest ManifestRequest) (ModelReceiptWriter, error) {
 		var manifestID int64
 		err := func() error {

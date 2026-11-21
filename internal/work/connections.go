@@ -33,8 +33,8 @@ type Connection struct {
 	credentialBinding string
 }
 
-const connectionColumns = `c.id,c.name,c.config,c.enabled,c.revision,c.status,c.detail,c.protocol,c.checked_at,c.credential_binding,
-(SELECT count(*) FROM connection_tools WHERE connection_id=c.id)`
+const connectionFields = `c.id,c.name,c.config,c.enabled,c.revision,c.status,c.detail,c.protocol,c.checked_at,c.credential_binding`
+const connectionColumns = connectionFields + `,(SELECT count(*) FROM connection_tools WHERE connection_id=c.id)`
 
 func scanConnection(row scanner) (Connection, error) {
 	var c Connection
@@ -47,7 +47,17 @@ func scanConnection(row scanner) (Connection, error) {
 }
 
 func (s *Store) Connections(ctx context.Context) ([]Connection, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT "+connectionColumns+" FROM connections c ORDER BY c.name,c.id")
+	return s.connections(ctx, "SELECT "+connectionColumns+" FROM connections c ORDER BY c.name,c.id")
+}
+
+func (s *Store) SharedConnections(ctx context.Context) ([]Connection, error) {
+	return s.connections(ctx, `SELECT `+connectionFields+`,count(*) FROM connections c
+JOIN connection_tools t ON t.connection_id=c.id AND t.allowed=1
+WHERE c.enabled=1 AND c.status='ready' GROUP BY c.id ORDER BY c.name,c.id`)
+}
+
+func (s *Store) connections(ctx context.Context, query string) ([]Connection, error) {
+	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +136,8 @@ func (s *Store) SaveConnection(ctx context.Context, key string, c Connection) (C
 	if err != nil {
 		return Connection{}, err
 	}
+	s.connectionGrantMu.Lock()
+	defer s.connectionGrantMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Connection{}, err
@@ -195,6 +207,8 @@ func (s *Store) TestConnection(ctx context.Context, key string, revision int) (C
 		catalog, probeErr = mcpclient.Discover(probe, session)
 		_ = session.Close()
 	}
+	s.connectionGrantMu.Lock()
+	defer s.connectionGrantMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return c, err
@@ -236,6 +250,8 @@ WHERE id=? AND revision=? AND enabled=1`, status, detail, catalog.Protocol, now(
 }
 
 func (s *Store) SetToolPermission(ctx context.Context, key, name, version string, revision int, allowed bool) error {
+	s.connectionGrantMu.Lock()
+	defer s.connectionGrantMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -296,14 +312,31 @@ type ConnectionResult struct {
 }
 
 func (s *Store) CallConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any) (ConnectionResult, error) {
-	result, err := s.callConnectionTool(ctx, key, name, revision, args, "", 0)
+	return s.callDirectConnectionTool(ctx, key, name, revision, args, "")
+}
+
+func (s *Store) CallAccountConnectionTool(ctx context.Context, principal, key, name string, revision int, args map[string]any) (ConnectionResult, error) {
+	if principal == "" {
+		return ConnectionResult{}, ErrAccountDenied
+	}
+	return s.callDirectConnectionTool(ctx, key, name, revision, args, principal)
+}
+
+func (s *Store) callDirectConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, principal string) (ConnectionResult, error) {
+	result, err := s.executeConnectionTool(ctx, key, name, revision, args, "", 0, principal)
 	if err != nil {
 		return result, err
 	}
 	// The already-issued call may settle after local permission was revoked.
 	// Keep its durable outcome but do not send the now-private inline bytes.
 	var authorized bool
-	err = s.db.QueryRowContext(ctx, `SELECT `+exactMCPAuthority("connection_calls")+` FROM connection_calls WHERE id=?`, result.ID).Scan(&authorized)
+	query := `SELECT ` + exactMCPAuthority("connection_calls") + ` FROM connection_calls WHERE id=?`
+	params := []any{result.ID}
+	if principal != "" {
+		query += accountConnectionCallScope
+		params = append(params, principal)
+	}
+	err = s.db.QueryRowContext(ctx, query, params...).Scan(&authorized)
 	if err != nil {
 		return ConnectionResult{}, err
 	}
@@ -314,6 +347,10 @@ func (s *Store) CallConnectionTool(ctx context.Context, key, name string, revisi
 }
 
 func (s *Store) callConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int) (ConnectionResult, error) {
+	return s.executeConnectionTool(ctx, key, name, revision, args, runID, position, "")
+}
+
+func (s *Store) executeConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int, principal string) (ConnectionResult, error) {
 	c, err := s.Connection(ctx, key)
 	if err != nil {
 		return ConnectionResult{}, err
@@ -372,7 +409,7 @@ func (s *Store) callConnectionTool(ctx context.Context, key, name string, revisi
 		return ConnectionResult{}, mcpclient.ErrSchemaChanged
 	}
 	callID := id()
-	if err = s.dispatchConnectionCall(deadline, callID, key, granted, revision, runID, position); err != nil {
+	if err = s.dispatchConnectionCallForPrincipal(deadline, callID, key, granted, revision, runID, position, principal); err != nil {
 		return ConnectionResult{}, err
 	}
 	outcome, evidence, callErr := mcpclient.Call(deadline, session, granted, args, c.Config)
@@ -410,13 +447,17 @@ WHERE id=? AND status IN ('completed','tool_error') AND evidence IS NOT NULL AND
 }
 
 func (s *Store) dispatchConnectionCall(ctx context.Context, callID, key string, tool mcpclient.Tool, revision int, runID string, position int) error {
+	return s.dispatchConnectionCallForPrincipal(ctx, callID, key, tool, revision, runID, position, "")
+}
+
+func (s *Store) dispatchConnectionCallForPrincipal(ctx context.Context, callID, key string, tool mcpclient.Tool, revision int, runID string, position int, principal string) error {
+	s.connectionGrantMu.Lock()
+	defer s.connectionGrantMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if runID != "" {
-	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO connection_calls(id,connection_id,connection_revision,tool_name,tool_version,status,created_at)
 SELECT ?,c.id,c.revision,?,?,'dispatched',? FROM connections c JOIN connection_tools t ON t.connection_id=c.id
 WHERE c.id=? AND c.revision=? AND c.enabled=1 AND c.status='ready' AND t.name=? AND t.allowed=1 AND json_extract(t.definition,'$.version')=?`,
@@ -430,6 +471,20 @@ WHERE c.id=? AND c.revision=? AND c.enabled=1 AND c.status='ready' AND t.name=? 
 	}
 	if count != 1 {
 		return ErrConnectionRevision
+	}
+	if principal != "" {
+		owned, err := tx.ExecContext(ctx, `INSERT INTO account_connection_calls(call_id,principal_id)
+SELECT ?,principal_id FROM accounts WHERE principal_id=? AND status='active'`, callID, principal)
+		if err != nil {
+			return err
+		}
+		count, err := owned.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if count != 1 {
+			return ErrAccountDenied
+		}
 	}
 	if runID != "" {
 		result, err = tx.ExecContext(ctx, `UPDATE run_reads SET status='dispatched',call_id=? WHERE run_id=? AND position=? AND status='checking'

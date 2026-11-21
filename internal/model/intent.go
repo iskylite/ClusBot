@@ -74,6 +74,9 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 		}
 		if provider != nil {
 			provenance.State, provenance.Protocol = "not_observed", provider.protocol
+			if provider.routing != nil {
+				provenance.RoutingPolicyRevision = provider.routing.policy.Revision
+			}
 			if view.Source == "legacy_default" {
 				provenance.DefaultRevision = provider.configRevision
 			}
@@ -125,7 +128,18 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 			intent.WriteString(delta)
 			return nil
 		})
+		if routing && response.actualReceipt != nil {
+			provenance.Protocol, provenance.RequestedModel = response.actualReceipt.Protocol, response.actualRequested
+			provenance.ProfileID, provenance.ProfileRevision = response.actualProfile, response.actualProfileRevision
+			provenance.FallbackReason = response.fallbackReason
+		}
 		if errors.Is(err, work.ErrModelRequestBudget) {
+			if provider.routing != nil {
+				// A configured chain has already divided its bounded request and
+				// output budgets across candidates. Re-entering the whole chain
+				// after trimming would silently dispatch extra attempts.
+				return work.DelegationResult{Requests: max(1, response.attempts), RouterModel: provenance}, errors.New("分类模型输入超过限制，请缩短消息后重新发送")
+			}
 			if len(history) == 0 {
 				return work.DelegationResult{RouterModel: provenance}, errors.New("当前消息超过分类模型输入上限，请缩短消息后重新发送")
 			}
@@ -138,7 +152,8 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 			history = history[first:]
 			continue
 		}
-		result := work.DelegationResult{Usage: normalizedUsage(response.Usage), Requests: 1, RouterModel: provenance}
+		requests := max(1, response.attempts)
+		result := work.DelegationResult{Usage: normalizedUsage(response.Usage), Requests: requests, RouterModel: provenance}
 		if err != nil {
 			if ctx.Err() != nil {
 				return result, errors.New("委托分类请求已超时或取消，请重新发送")

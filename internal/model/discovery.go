@@ -34,6 +34,10 @@ func (s *Settings) Discover(ctx context.Context, draft SettingsInput) ([]Discove
 	if err := validateSettings(value); err != nil {
 		return nil, err
 	}
+	return discoverModelValues(ctx, value, keyValue(value))
+}
+
+func discoverModelValues(ctx context.Context, value work.ModelSettings, key string) ([]DiscoveredModel, error) {
 	endpoint, err := apiEndpoint(value.BaseURL, "/models")
 	if err != nil {
 		return nil, err
@@ -45,7 +49,7 @@ func (s *Settings) Discover(ctx context.Context, draft SettingsInput) ([]Discove
 		return nil, ErrModelDiscovery
 	}
 	request.Header.Set("Accept", "application/json")
-	if key := keyValue(value); key != "" {
+	if key != "" {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}

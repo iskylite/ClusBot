@@ -4,8 +4,9 @@
 <rect width="1200" height="830" fill="#f7f9fc"/>
 <text x="40" y="62" class="h">ClusBot V3.1｜从入口到下一步</text><text x="40" y="96" class="s">运行时收到记录，不代表立刻执行；先确认它是在建新任务、续旧任务，还是只更新事实。</text>
 <rect x="40" y="132" width="1120" height="112" rx="16" fill="#e8f0ff"/>
-<text x="58" y="167" class="t">对话：交代、追问、修改、停止</text>
-<text x="58" y="197" class="b">Router 理解目标，向 Go 提交新请求或修订已有任务；也可以查状态后直接答复。</text>
+<text x="58" y="167" class="t">对话：查询、委托、确认与跟进</text>
+<text x="58" y="197" class="b">Go 按登录身份读取状态；内置工具的写操作先确认，再复核权限、版本和状态。</text>
+<text x="58" y="224" class="b">模型可解释意图并提出候选；A2UI 1.0 显示结果，确认使用固定控件，外部能力经 MCP 等适配器接入。</text>
 <rect x="40" y="284" width="340" height="100" rx="16" fill="#def5ec"/>
 <text x="58" y="319" class="t">① 周期计划到期</text>
 <text x="58" y="349" class="b">例如：今天 09:00 的发现计划</text>

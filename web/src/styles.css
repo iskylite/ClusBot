@@ -627,5 +627,25 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 
 .composer[hidden] { display: none; }
 .composer-secondary { display: flex; flex-wrap: wrap; gap: 0 12px; align-items: center; }
+.assistant-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.assistant-exchange { display: grid; gap: 18px; }
+.assistant-card > * + * { margin-top: 10px; }
+.assistant-card p, .assistant-card dl, .assistant-card ul { margin: 0; }
+.assistant-surface-column { display: grid; gap: 8px; }
+.assistant-surface-row, .assistant-card footer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.assistant-surface-card { padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: white; }
+.assistant-detail-toggle { min-height: 36px; justify-self: start; }
+.assistant-card summary { cursor: pointer; width: fit-content; color: var(--accent); }
+.assistant-card pre { max-width: 100%; max-height: 320px; overflow: auto; padding: 12px; border-radius: 8px; background: white; font: 13px/1.55 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.assistant-tool-list, .assistant-details { display: grid; gap: 10px; padding: 12px 0 0; list-style: none; }
+.assistant-tool-list li, .assistant-details li { padding: 10px; border-radius: 8px; background: white; }
+.assistant-tool-list code { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.assistant-tool-list p, .assistant-tool-list small { font-size: 13px; }
+.assistant-details dl { display: grid; gap: 4px; }
+.assistant-details dl > div, .assistant-preview-fields > div { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.assistant-preview-fields { display: grid; gap: 6px; }
+.assistant-details dt, .assistant-preview-fields dt { color: var(--muted); min-width: 4em; }
+.assistant-details dd, .assistant-preview-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .assistant-card footer button, .assistant-detail-toggle { min-height: 44px; } }
 .isolated-reply { display: grid; gap: 10px; }
 .isolated-reply h2 { font-size: 16px; }

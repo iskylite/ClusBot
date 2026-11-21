@@ -30,11 +30,13 @@ type SettingsInput struct {
 
 type SettingsView struct {
 	work.ModelSettings
-	Mode          string `json:"mode"`
-	BaseURLSource string `json:"base_url_source,omitempty"`
-	ModelIDSource string `json:"model_id_source,omitempty"`
-	LocalKeySaved bool   `json:"local_key_saved"`
-	KeyConfigured bool   `json:"key_configured"`
+	DefaultSource    string `json:"default_source,omitempty"`
+	DefaultProfileID string `json:"default_profile_id,omitempty"`
+	Mode             string `json:"mode"`
+	BaseURLSource    string `json:"base_url_source,omitempty"`
+	ModelIDSource    string `json:"model_id_source,omitempty"`
+	LocalKeySaved    bool   `json:"local_key_saved"`
+	KeyConfigured    bool   `json:"key_configured"`
 	// EffectiveContextTokens is the window compaction actually enforces: the
 	// configured value, or the default applied when it is unknown. The client
 	// uses it to show context usage against the same limit the backend uses.
@@ -68,18 +70,37 @@ func (s *Settings) Initialize(ctx context.Context, initial work.ModelSettings) (
 	if err = validateSettings(s.effective(value)); err != nil {
 		return SettingsView{}, err
 	}
-	return s.view(value), nil
+	return s.View(ctx)
 }
 
 func (s *Settings) View(ctx context.Context) (SettingsView, error) {
-	value, err := s.Store.ModelSettings(ctx)
+	value, selected, err := s.resolveDefault(ctx)
+	if errors.Is(err, work.ErrModelDefaultUnavailable) {
+		return SettingsView{Mode: "unavailable", DefaultSource: "profile", DefaultProfileID: selected.ProfileID}, nil
+	}
 	if err != nil {
 		return SettingsView{}, err
 	}
-	return s.view(value), nil
+	view := s.viewResolved(value, selected.ProfileID == "")
+	view.DefaultSource = "legacy_default"
+	if selected.ProfileID != "" {
+		view.DefaultSource, view.DefaultProfileID = "profile", selected.ProfileID
+		view.KeyRef = ""
+		if !credentialAvailable(value) {
+			view.Mode = "unavailable"
+		}
+	}
+	return view, nil
 }
 
 func (s *Settings) Save(ctx context.Context, draft SettingsInput) (SettingsView, error) {
+	selection, err := s.Store.ModelDefault(ctx)
+	if err != nil {
+		return SettingsView{}, err
+	}
+	if selection.ProfileID != "" {
+		return SettingsView{}, InvalidSettings("当前默认模型来自目录，请在目录中编辑或先切换为旧默认")
+	}
 	stored, err := s.Store.ModelSettings(ctx)
 	if err != nil {
 		return SettingsView{}, err
@@ -124,13 +145,21 @@ func (s *Settings) Test(ctx context.Context, draft SettingsInput) (time.Duration
 }
 
 func (s *Settings) testModelConfig(ctx context.Context, value work.ModelSettings) (time.Duration, error) {
-	if err := validateSettings(value); err != nil {
+	return s.testModelConfigWithKey(ctx, value, keyValue(value))
+}
+
+func (s *Settings) testModelConfigWithKey(ctx context.Context, value work.ModelSettings, key string) (time.Duration, error) {
+	validate := validateSettings
+	if value.KeyRef == "none" {
+		validate = validateProfileSettings
+	}
+	if err := validate(value); err != nil {
 		return 0, err
 	}
 	if value.ModelID == "" {
 		return 0, InvalidSettings("请填写模型 ID")
 	}
-	provider, err := NewProvider(value.BaseURL, value.ModelID, keyValue(value), value.Protocol)
+	provider, err := NewProvider(value.BaseURL, value.ModelID, key, value.Protocol)
 	if err != nil {
 		return 0, err
 	}
@@ -215,12 +244,28 @@ func (s *Settings) MultiTaskReadModel(ctx context.Context) (work.MultiTaskReadMo
 }
 
 func (s *Settings) provider(ctx context.Context) (*Provider, error) {
-	stored, err := s.Store.ModelSettings(ctx)
+	value, selected, err := s.resolveDefault(ctx)
 	if err != nil {
 		return nil, err
 	}
-	value := s.effective(stored)
-	return s.providerForValue(value, keyValue(value))
+	key := keyValue(value)
+	if selected.ProfileID != "" {
+		if err := validateProfileSettings(value); err != nil {
+			return nil, err
+		}
+		if !credentialAvailableWithKey(value, key) {
+			return nil, InvalidSettings("默认模型凭据尚不可用")
+		}
+	}
+	return s.providerForValue(value, key)
+}
+
+func (s *Settings) resolveDefault(ctx context.Context) (work.ModelSettings, work.ModelDefaultReference, error) {
+	value, selected, err := s.Store.EffectiveModelSettings(ctx)
+	if err == nil && selected.ProfileID == "" {
+		value = s.effective(value)
+	}
+	return value, selected, err
 }
 
 func (s *Settings) providerForValue(value work.ModelSettings, key string) (*Provider, error) {
@@ -248,17 +293,20 @@ func (s *Settings) effective(value work.ModelSettings) work.ModelSettings {
 }
 
 func (s *Settings) view(value work.ModelSettings) SettingsView {
-	value = s.effective(value)
+	return s.viewResolved(s.effective(value), true)
+}
+
+func (s *Settings) viewResolved(value work.ModelSettings, legacy bool) SettingsView {
 	view := SettingsView{ModelSettings: value, Mode: "unconfigured", LocalKeySaved: value.APIKey != "", KeyConfigured: keyValue(value) != ""}
 	if s.Demo {
 		view.Mode = "demo"
 	} else if value.ModelID != "" {
 		view.Mode = value.Protocol
 	}
-	if s.BaseURLOverride != "" {
+	if legacy && s.BaseURLOverride != "" {
 		view.BaseURLSource = "CLUSBOT_MODEL_BASE_URL"
 	}
-	if s.ModelIDOverride != "" {
+	if legacy && s.ModelIDOverride != "" {
 		view.ModelIDSource = "CLUSBOT_MODEL_ID"
 	}
 	// Report the window compaction enforces. A configured value always wins; the
@@ -329,6 +377,9 @@ func validateSettings(value work.ModelSettings) error {
 func keyValue(value work.ModelSettings) string {
 	if value.APIKey != "" {
 		return value.APIKey
+	}
+	if value.KeyRef == "none" || value.KeyRef == work.ModelProviderAPIKeyRef {
+		return ""
 	}
 	return strings.TrimSpace(os.Getenv(strings.TrimPrefix(value.KeyRef, "env:")))
 }

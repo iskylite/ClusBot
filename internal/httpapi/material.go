@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 )
 
 func (s Server) materialFiles(w http.ResponseWriter, r *http.Request) {
@@ -117,4 +118,38 @@ func (s Server) selectUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, 200, material)
+}
+
+func (s Server) previewMaterial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		fail(w, http.StatusBadRequest, "invalid_material", "材料标识无效")
+		return
+	}
+	limit := 20
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	preview, err := s.Store.PreviewMaterial(r.Context(), id, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	jsonResponse(w, http.StatusOK, preview)
+}
+
+func (s Server) deletePendingMaterial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		fail(w, http.StatusBadRequest, "invalid_material", "材料标识无效")
+		return
+	}
+	if err := s.Store.DeletePendingMaterial(r.Context(), id); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

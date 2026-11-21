@@ -288,6 +288,10 @@ response=CASE WHEN ?='input_required' THEN ? ELSE response END WHERE id=?`,
 }
 
 func (s *Store) Start(ctx context.Context, provider Provider, concurrency int, limits RunLimits) *sync.WaitGroup {
+	return s.StartWhenModelAvailable(ctx, provider, concurrency, limits, nil)
+}
+
+func (s *Store) StartWhenModelAvailable(ctx context.Context, provider Provider, concurrency int, limits RunLimits, modelAvailable func() bool) *sync.WaitGroup {
 	s.configureRuntime(concurrency, limits)
 	var workers sync.WaitGroup
 	workers.Go(func() { s.runGoalScheduler(ctx) })
@@ -312,6 +316,9 @@ func (s *Store) Start(ctx context.Context, provider Provider, concurrency int, l
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
+					if modelAvailable != nil && !modelAvailable() {
+						continue
+					}
 					run, err := s.claim(ctx)
 					if errors.Is(err, sql.ErrNoRows) || errors.Is(err, context.Canceled) {
 						continue

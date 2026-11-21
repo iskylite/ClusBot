@@ -52,6 +52,17 @@ func (s *Store) configureRuntime(concurrency int, limits RunLimits) {
 }
 
 func (s *Store) acquireModelSlot(ctx context.Context) (func(), error) {
+	if slots := s.accountModelSlots; slots != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		select {
+		case slots <- struct{}{}:
+			return sync.OnceFunc(func() { <-slots }), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	for {
 		s.runtimeMu.Lock()
 		if s.modelConcurrency == 0 {
@@ -181,6 +192,19 @@ VALUES(?,?,?,'running',1,?,?)`, key, fingerprint, conversationID, limit, now());
 	}
 	started := time.Now()
 	classifyCtx, cancel := context.WithTimeout(ctx, min(8*time.Second, limits.ActiveTime, limits.ModelTimeout))
+	classifyCtx = withModelFallbackReservation(classifyCtx, func(ctx context.Context) error {
+		res, err := s.db.ExecContext(ctx, `UPDATE submission_classifications SET requests=requests+1
+WHERE request_key=? AND fingerprint=? AND state='running' AND requests<?`, key, fingerprint, MaxModelRoutingCandidates)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
+			return ErrOutputBudget
+		}
+		return nil
+	})
 	decision, classifyErr := classify(classifyCtx, text, history, limit)
 	if cause := classifyCtx.Err(); cause != nil {
 		if errors.Is(cause, context.DeadlineExceeded) {
@@ -198,7 +222,7 @@ VALUES(?,?,?,'running',1,?,?)`, key, fingerprint, conversationID, limit, now());
 			result.outputUsed = int(*decision.Usage.OutputTokens)
 		}
 	}
-	if decision.Requests < 0 || decision.Requests > 1 || result.outputUsed < 0 || result.outputUsed > limit {
+	if decision.Requests < 0 || decision.Requests > MaxModelRoutingCandidates || result.outputUsed < 0 || result.outputUsed > limit {
 		classifyErr = errors.New("分类返回的用量超出已分配预算")
 	}
 	state, failure = "completed", ""

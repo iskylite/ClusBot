@@ -306,6 +306,32 @@ func (s *Store) admitChat(ctx context.Context, requestKey, principal, conversati
 	if err != nil {
 		return AdmissionResult{}, err
 	}
+	if previous.ID == "" && (conversationID != "" || len(materialIDs) > 0) {
+		personal, err := ownsPersonalBusiness(tx, principal)
+		if err != nil {
+			return AdmissionResult{}, err
+		}
+		if personal {
+			if conversationID != "" {
+				var archived bool
+				if err := tx.QueryRowContext(ctx, "SELECT archived FROM conversations WHERE id=?", conversationID).Scan(&archived); err != nil {
+					return AdmissionResult{}, err
+				}
+				if archived {
+					return AdmissionResult{}, ErrConversationArchived
+				}
+			}
+			if len(materialIDs) > 0 {
+				var selected int
+				if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM materials WHERE id IN (SELECT value FROM json_each(?))", toJSON(materialIDs)).Scan(&selected); err != nil {
+					return AdmissionResult{}, err
+				}
+				if selected != len(materialIDs) {
+					return AdmissionResult{}, ErrMaterialSelection
+				}
+			}
+		}
+	}
 	if previous.ID == "" && delivery.TaskRef != nil {
 		if task {
 			return AdmissionResult{}, ErrState
