@@ -282,3 +282,19 @@ func TestAccountCreationResetAndRevocation(t *testing.T) {
 		t.Fatalf("logged out session still active: %s", w.Body)
 	}
 }
+
+func TestServerPagesServeApplicationShellAndKeepAPIGates(t *testing.T) {
+	f := newAccountFixture(t)
+	for _, path := range []string{"/", "/account", "/team-tasks", "/operations", "/overview", "/settings"} {
+		w := f.request(http.MethodGet, path, nil, nil)
+		if w.Code != http.StatusOK || w.Body.String() != "test" || w.Header().Get("Cache-Control") != "no-cache" {
+			t.Fatalf("browser entry %s = %d, %s", path, w.Code, w.Body)
+		}
+	}
+	if w := f.request(http.MethodGet, "/api/v1/admin/users", nil, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("admin API no longer required authentication: %d", w.Code)
+	}
+	if w := f.request(http.MethodGet, "/not-a-route", nil, nil); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown page returned %d", w.Code)
+	}
+}

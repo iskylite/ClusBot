@@ -1,8 +1,9 @@
 import AppKit
+import UserNotifications
 import WebKit
 
 @MainActor
-final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler {
+final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, UNUserNotificationCenterDelegate {
     private let service = Process()
     private let output = Pipe()
     private var window: NSWindow!
@@ -54,6 +55,8 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         let config = WKWebViewConfiguration()
         installDraftSnapshot(in: config.userContentController)
         config.userContentController.add(self, name: "drafts")
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "clusbotNotifications")
+        UNUserNotificationCenter.current().delegate = self
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -153,9 +156,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     }
 
     private func updateZoom() {
-        let size = webView.bounds.size
-        let fitted = max(0.8, min(1, size.width / 1280, size.height / 820))
-        webView.pageZoom = manualZoom ?? fitted
+        webView.pageZoom = manualZoom ?? 1
     }
 
     private func connect(_ line: Data, dataDir: URL) async {
@@ -302,6 +303,74 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         } catch {
             NSLog("Unable to save desktop drafts: %@", error.localizedDescription)
         }
+    }
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.name == "clusbotNotifications", message.frameInfo.isMainFrame,
+              sameOrigin(message.frameInfo.request.url),
+              let body = message.body as? [String: String], let action = body["action"] else {
+            replyHandler(nil, "Invalid notification request")
+            return
+        }
+        Task { @MainActor in
+            do {
+                let center = UNUserNotificationCenter.current()
+                switch action {
+                case "status":
+                    replyHandler(await notificationPermission(center), nil)
+                case "request":
+                    let allowed = try await center.requestAuthorization(options: [.alert, .sound])
+                    replyHandler(allowed ? "granted" : "denied", nil)
+                case "send":
+                    guard let id = body["id"], !id.isEmpty, id.count <= 128,
+                          id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) ||
+                                              (97...122).contains($0) || $0 == 45 || $0 == 58 || $0 == 95 }),
+                          let kind = body["kind"], let notice = notificationText(kind) else {
+                        replyHandler(nil, "Invalid notification event")
+                        return
+                    }
+                    guard await notificationPermission(center) == "granted" else {
+                        replyHandler("denied", nil)
+                        return
+                    }
+                    let content = UNMutableNotificationContent()
+                    content.title = "ClusBot"
+                    content.body = notice
+                    content.sound = .default
+                    try await center.add(UNNotificationRequest(identifier: id, content: content, trigger: nil))
+                    replyHandler("sent", nil)
+                default:
+                    replyHandler(nil, "Unknown notification action")
+                }
+            } catch {
+                replyHandler(nil, error.localizedDescription)
+            }
+        }
+    }
+
+    private func notificationPermission(_ center: UNUserNotificationCenter) async -> String {
+        switch await center.notificationSettings().authorizationStatus {
+        case .authorized, .provisional, .ephemeral: return "granted"
+        case .denied: return "denied"
+        default: return "default"
+        }
+    }
+
+    private func notificationText(_ kind: String) -> String? {
+        let english = Locale.preferredLanguages.first?.hasPrefix("en") == true
+        switch kind {
+        case "completed": return english ? "A task has completed." : "有任务已完成。"
+        case "waiting_user": return english ? "A task needs your attention." : "有任务需要你确认。"
+        case "interrupted": return english ? "A task was interrupted." : "有任务已中断。"
+        case "test": return english ? "System notification test." : "系统通知测试。"
+        default: return nil
+        }
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        [.banner, .list, .sound]
     }
 
     private func fail(_ detail: String) {

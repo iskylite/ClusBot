@@ -1,60 +1,56 @@
 import {useCallback,useEffect,useId,useRef,useState,type FormEvent} from 'react'
 import {api,APIError,type Receipt} from './api'
 import {changeComposerDraft,discardComposerDraft,hasPinnedIsolatedRequest,useComposerDraft,type IsolatedReplyRequest} from './composerDrafts'
+import type {ComposerOptions,ReplyModel} from './ComposerUI'
 
-type Profile={id:string;name:string;revision:number;model_id:string;base_url:string;protocol:string;credential_configured:boolean}
-const profilesPath='/settings/model/profiles'
 export const isolatedDraftKey=(conversationID:string)=>'isolated:'+conversationID
-const profileKey=(profile:Profile)=>profile.id+':'+profile.revision
+const profileKey=(profile:ReplyModel)=>profile.profile_id+':'+profile.revision
 const validID=(id?:string)=>Boolean(id&&/^[a-f\d]{32}$/.test(id))
-function endpointDescription(url:string){
-  try{
-    const u=new URL(url)
-    return (['localhost','127.0.0.1','[::1]'].includes(u.hostname)?'本机':'服务')+' · '+u.host
-  }catch{return '服务地址无法核对'}
-}
 
-export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,onReceipt}:{
-  conversationID:string;blocked:boolean;archived:boolean;onClose:()=>void;onReceipt:()=>void
+export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,onReceipt,initialModel,initialText}:{
+  conversationID?:string;blocked:boolean;archived:boolean;onClose:()=>void;onReceipt:(receipt:Receipt,request:IsolatedReplyRequest)=>void;initialModel?:ReplyModel;initialText?:string
 }){
-  const draftKey=isolatedDraftKey(conversationID)
+  const draftKey=isolatedDraftKey(conversationID||'new')
   const {text,isolatedRequest}=useComposerDraft(draftKey)
-  const [profiles,setProfiles]=useState<Profile[]>()
+  const [profiles,setProfiles]=useState<ReplyModel[]>()
   const [profileError,setProfileError]=useState('')
-  const [choice,setChoice]=useState('')
+  const [choice,setChoice]=useState(initialModel?profileKey(initialModel):'')
   const [consent,setConsent]=useState<{profile:string;text:string}>()
   const [error,setError]=useState('')
   const [busy,setBusy]=useState(false)
   const heading=useRef<HTMLHeadingElement>(null)
   const locked=useRef(false)
+  const mounted=useRef(false)
   const generation=useRef(0)
   const title=useId()
   const listProfiles=useCallback(async()=>{
     const token=++generation.current
     setProfileError('')
     try{
-      const list=await api<Profile[]>(profilesPath)
-      if(token===generation.current)setProfiles(Array.isArray(list)?list.filter(p=>validID(p.id)&&Number.isSafeInteger(p.revision)&&p.revision>0):[])
+      const result=await api<ComposerOptions>('/assistant/composer-options')
+      if(token===generation.current)setProfiles(Array.isArray(result.reply_models)?result.reply_models.filter(p=>validID(p.profile_id)&&Number.isSafeInteger(p.revision)&&p.revision>0):[])
     }catch(e){if(token===generation.current){setProfiles(undefined);setProfileError(e instanceof Error?e.message:'无法读取已保存档案')}}
   },[])
   useEffect(()=>{
+    mounted.current=true
     heading.current?.focus()
+    if(initialText)changeComposerDraft(draftKey,previous=>!previous.text&&!previous.isolatedRequest?{text:initialText}:{})
     void listProfiles()
-    return()=>{generation.current++}
-  },[listProfiles])
+    return()=>{mounted.current=false;generation.current++}
+  },[listProfiles,draftKey])
   const profile=profiles?.find(p=>profileKey(p)===choice)
   const agreed=Boolean(profile&&consent?.profile===choice&&consent.text===text)
   const validText=Boolean(text.trim()&&!text.trim().startsWith('/')&&Array.from(text).length<=16000)
-  const maySend=Boolean(!blocked&&!archived&&!isolatedRequest&&!busy&&profile?.credential_configured&&validText&&agreed)
+  const maySend=Boolean(!blocked&&!archived&&!isolatedRequest&&!busy&&profile?.available&&validText&&agreed)
   async function send(request:IsolatedReplyRequest){
     if(locked.current)return
     locked.current=true;setBusy(true);setError('')
     try{
-      const out=await api<Receipt & {status?:string}>('/conversations/'+encodeURIComponent(conversationID)+'/isolated-replies',request)
-      if(out?.conversation_id!==conversationID||!validID(out.run_id)||out.task_id||out.model_pending||!['queued','running','completed','failed','cancelled','interrupted'].includes(out.status??''))throw new Error('未收到可核对的接收回执')
+      const out=await api<Receipt & {status?:string}>(conversationID?'/conversations/'+encodeURIComponent(conversationID)+'/isolated-replies':'/conversations/isolated-replies',request)
+      if(!validID(out?.conversation_id)||(conversationID&&out.conversation_id!==conversationID)||!validID(out.run_id)||out.task_id||out.model_pending||!['queued','running','completed','failed','cancelled','interrupted'].includes(out.status??''))throw new Error('未收到可核对的接收回执')
       // Do not change a newer draft if the conversation was closed or reset.
       const stored=hasPinnedIsolatedRequest(draftKey,request.client_request_id)
-      if(stored){discardComposerDraft(draftKey);setConsent(undefined);onReceipt();onClose()}
+      if(stored&&mounted.current){discardComposerDraft(draftKey);setConsent(undefined);onReceipt(out,request);onClose()}
     }catch(e){
       if(e instanceof APIError&&['isolated_reply_unavailable','invalid_isolated_reply','conversation_conflict'].includes(e.code??'')){
         if(hasPinnedIsolatedRequest(draftKey,request.client_request_id)){
@@ -71,7 +67,7 @@ export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,o
   function submit(e:FormEvent){
     e.preventDefault()
     if(!maySend||!profile||locked.current)return
-    const request:IsolatedReplyRequest={mode:'only_this_message',profile_id:profile.id,profile_revision:profile.revision,
+    const request:IsolatedReplyRequest={mode:'only_this_message',profile_id:profile.profile_id,profile_revision:profile.revision,
       confirm_current_text_egress:true,client_request_id:crypto.randomUUID(),text}
     changeComposerDraft(draftKey,()=>({isolatedRequest:request}))
     void send(request)
@@ -85,11 +81,11 @@ export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,o
         <select name="profile" value={choice} disabled={busy||blocked||archived||!profiles} onChange={e=>{setChoice(e.currentTarget.value);setConsent(undefined);setError('')}}>
           <option value="">选择已保存的档案</option>
           {choice&&!profile&&<option value={choice} disabled>此前档案版本已不可用</option>}
-          {profiles?.map(p=><option value={profileKey(p)} key={profileKey(p)} disabled={!p.credential_configured}>
-            {p.name} · {p.model_id} · v{p.revision}{!p.credential_configured?' · 凭据不可用':''}</option>)}
+          {profiles?.map(p=><option value={profileKey(p)} key={profileKey(p)} disabled={!p.available}>
+            {p.name} · {p.model_id} · v{p.revision}{!p.available?' · 凭据不可用':''}</option>)}
         </select></label>
-      {profile&&<p className="muted">{endpointDescription(profile.base_url)} · {profile.protocol==='responses'?'Responses':profile.protocol==='chat_completions'?'Chat Completions':'协议未识别'} · {profile.credential_configured?'本机可解析环境凭据，未验证远端可用':'凭据不可用'}</p>}
-      {profiles&&!profiles.some(p=>p.credential_configured)&&<p className="muted">没有凭据可用的模型档案。可到设置中的模型档案保存一份配置。</p>}
+      {profile&&<p className="muted">档案 v{profile.revision} · {profile.available?'凭据可用，未验证远端连接':'凭据不可用'}</p>}
+      {profiles&&!profiles.some(p=>p.available)&&<p className="muted">没有凭据可用的模型档案。可到设置中的模型档案保存一份配置。</p>}
       {!profiles&&!profileError&&<p role="status">正在读取模型档案…</p>}
       {profileError&&<p className="error" role="alert">{profileError} <button type="button" className="text-button" disabled={busy} onClick={()=>void listProfiles()}>重新读取</button></p>}
     </div>}
@@ -103,7 +99,7 @@ export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,o
       <button type="button" className="outline" disabled={busy} onClick={()=>void send(isolatedRequest)}>核对并重试原请求</button>
     </div>:<>
       {profile&&<label className="model-egress">
-        <input type="checkbox" checked={agreed} disabled={busy||blocked||archived||!validText||!profile.credential_configured}
+        <input type="checkbox" checked={agreed} disabled={busy||blocked||archived||!validText||!profile.available}
           onChange={e=>setConsent(e.currentTarget.checked?{profile:choice,text}:undefined)}/>
         <span>同意将这条文字发送给 {profile.name} · {profile.model_id}（档案 v{profile.revision}）。文字或档案变更时需重新同意。</span>
       </label>}

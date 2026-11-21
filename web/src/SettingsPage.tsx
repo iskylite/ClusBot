@@ -1,19 +1,28 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Check, FolderOpen, LoaderCircle } from 'lucide-react'
 import { api, type DiscoveredModel, type ModelAttributes, type ModelProtocol, type ModelSettings, type Settings } from './api'
 
 import {ModelRolesSettings} from './ModelRolesSettings'
 import {SkillDirectorySettings} from './SkillDirectorySettings'
+import {ModelSettings as ModelCatalogSettings} from './ModelSettings'
 
 const message = (error: unknown) => error instanceof Error ? error.message : '请求未完成，请重试'
 
 export function SettingsPage({ onSaved,openConnections,openProposals }: { onSaved: (value: Settings) => void; openConnections:()=>void; openProposals:()=>void }) {
-  const [settings, setSettings] = useState<Settings>()
+  const [settings, setSettings] = useState<Settings & {default_source?:string}>()
   const [error, setError] = useState('')
+  const [modelRevision, setModelRevision] = useState(0)
+
+  const refreshSettings = useCallback(async () => {
+    const value = await api<Settings & {default_source?:string}>('/settings')
+    setSettings(value)
+    setModelRevision(revision => revision + 1)
+    onSaved(value)
+  }, [onSaved])
 
   useEffect(() => {
     let active = true
-    api<Settings>('/settings').then(value => {
+    api<Settings & {default_source?:string}>('/settings').then(value => {
       if (active) {
         setSettings(value)
         onSaved(value)
@@ -22,21 +31,28 @@ export function SettingsPage({ onSaved,openConnections,openProposals }: { onSave
     return () => { active = false }
   }, [onSaved])
 
+  const scrollToAnchor = useCallback(() => {
+    if(!['#model-default','#model-profiles','#model-roles','#model-routing','#skill-directory'].includes(location.hash))return
+    requestAnimationFrame(()=>document.getElementById(location.hash.slice(1))?.scrollIntoView({block:'start'}))
+  },[])
   useEffect(()=>{
-    if(!['#model-default','#model-profiles','#model-roles'].includes(location.hash))return
-    const frame=requestAnimationFrame(()=>document.getElementById(location.hash.slice(1))?.scrollIntoView({block:'start'}))
-    return()=>cancelAnimationFrame(frame)
-  },[settings])
+    scrollToAnchor()
+    window.addEventListener('hashchange',scrollToAnchor)
+    window.addEventListener('clusbot:navigate',scrollToAnchor)
+    return()=>{window.removeEventListener('hashchange',scrollToAnchor);window.removeEventListener('clusbot:navigate',scrollToAnchor)}
+  },[scrollToAnchor])
+  useEffect(()=>{if(settings)scrollToAnchor()},[Boolean(settings),scrollToAnchor])
 
   return <main className="main settings-page">
     <header className="page-heading"><h1>设置</h1></header>
     <nav aria-label="设置分区" className="model-settings-nav">
-      <a href="#model-default">默认模型</a><a href="#model-profiles">模型档案</a><a href="#model-roles">角色绑定</a><a href="#skill-directory">Skill 目录</a>
+      <a href="#model-routing">阶段策略</a><a href="#model-default">旧默认模型</a><a href="#model-profiles">旧模型档案</a><a href="#model-roles">旧角色绑定</a><a href="#skill-directory">Skill 目录</a>
     </nav>
-    {settings ? <ModelForm initial={settings} onSaved={onSaved}/> : error ?
+    <ModelCatalogSettings onChanged={refreshSettings}/>
+    {settings?.default_source === 'profile' ? <section id="model-default" className="settings-card"><h2>旧默认模型</h2><p className="muted">当前默认模型来自目录。需要编辑旧默认时，请先在上方恢复旧默认模型。</p></section> : settings ? <ModelForm key={settings.revision} initial={settings} onSaved={onSaved}/> : error ?
       <p className="error" role="alert">{error}</p> :
       <p className="muted" role="status">正在加载设置…</p>}
-    <ModelRolesSettings/>
+    <ModelRolesSettings refreshKey={modelRevision}/>
     <SkillDirectorySettings openProposals={openProposals}/>
     <section className="settings-card" aria-labelledby="settings-connections-title">
       <h2 id="settings-connections-title">MCP 工具与连接</h2>
@@ -53,7 +69,8 @@ function fields(settings: Settings): ModelSettings {
 function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: Settings) => void }) {
   const [stored, setStored] = useState(initial)
   const [draft, setDraft] = useState(() => fields(initial))
-  const [apiKey, setAPIKey] = useState('')
+  const apiKeyInput = useRef<HTMLInputElement>(null)
+  const [hasAPIKey, setHasAPIKey] = useState(false)
   const [removeKey, setRemoveKey] = useState(false)
   const [busy, setBusy] = useState<'save' | 'test' | 'discover'>()
   const [models, setModels] = useState<DiscoveredModel[]>()
@@ -63,17 +80,16 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
   const [testError, setTestError] = useState('')
   const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState('')
-  const keyChange = removeKey ? '' : apiKey.trim() || undefined
   const reasoningLevels = [...new Set(levels.split(/[,，]/).map(level => level.trim()).filter(Boolean))]
   const effort = draft.attributes?.reasoning_effort
   const attributes = { ...draft.attributes, reasoning_levels: reasoningLevels,
     reasoning_effort: effort && reasoningLevels.includes(effort) ? effort : undefined }
-  const payload = { ...draft, attributes, api_key: keyChange }
+  const payload = () => ({ ...draft, attributes, api_key: removeKey ? '' : apiKeyInput.current?.value.trim() || undefined })
   const attributesChanged = attributes.context_tokens !== stored.attributes?.context_tokens ||
     attributes.max_output_tokens !== stored.attributes?.max_output_tokens ||
     attributes.vision !== stored.attributes?.vision || attributes.reasoning !== stored.attributes?.reasoning || attributes.reasoning_effort !== stored.attributes?.reasoning_effort ||
     JSON.stringify(attributes.reasoning_levels) !== JSON.stringify(stored.attributes?.reasoning_levels ?? [])
-  const dirty = attributesChanged || keyChange !== undefined || draft.protocol !== stored.protocol || draft.base_url !== stored.base_url || draft.model_id !== stored.model_id || draft.api_key_ref !== stored.api_key_ref
+  const dirty = attributesChanged || removeKey || hasAPIKey || draft.protocol !== stored.protocol || draft.base_url !== stored.base_url || draft.model_id !== stored.model_id || draft.api_key_ref !== stored.api_key_ref
 
   function resetFeedback() {
     setTested(false)
@@ -87,7 +103,8 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     setDraft(fields(stored))
     setLevels(stored.attributes?.reasoning_levels?.join(', ') ?? '')
     setModels(undefined)
-    setAPIKey('')
+    if (apiKeyInput.current) apiKeyInput.current.value = ''
+    setHasAPIKey(false)
     setRemoveKey(false)
     resetFeedback()
   }
@@ -106,11 +123,12 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     setBusy('save')
     setSaveError('')
     try {
-      const value = await api<Settings>('/settings', payload, 'PATCH')
+      const value = await api<Settings>('/settings', payload(), 'PATCH')
       setStored(value)
       setDraft(fields(value))
       setLevels(value.attributes?.reasoning_levels?.join(', ') ?? '')
-      setAPIKey('')
+      if (apiKeyInput.current) apiKeyInput.current.value = ''
+      setHasAPIKey(false)
       setRemoveKey(false)
       setTested(false)
       setTestError('')
@@ -129,7 +147,7 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     setTested(false)
     setTestError('')
     try {
-      await api<{duration_ms: number}>('/settings/model/test', payload)
+      await api<{duration_ms: number}>('/settings/model/test', payload())
       setTested(true)
     } catch (error) {
       setTestError(message(error))
@@ -144,7 +162,7 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     setDiscoveryError('')
     setModels(undefined)
     try {
-      const result = await api<DiscoveredModel[]>('/settings/model/discover', payload)
+      const result = await api<DiscoveredModel[]>('/settings/model/discover', payload())
       setModels(result)
       const selected = result.find(model => model.id === draft.model_id)
       if (selected) {
@@ -210,13 +228,13 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
       <div className="settings-key">
         <label className="settings-field">
           <span>API Key</span>
-          <input type="password" value={apiKey} disabled={Boolean(busy)} maxLength={4096}
+          <input ref={apiKeyInput} type="password" disabled={Boolean(busy)} maxLength={4096}
             placeholder={removeKey ? '保存后移除' : stored.local_key_saved ? '已保存，输入新密钥可替换' : '输入 API Key'}
             autoComplete="new-password" spellCheck={false}
-            onChange={event => {setAPIKey(event.target.value); setRemoveKey(false); setModels(undefined); resetFeedback()}}/>
+            onChange={event => {setHasAPIKey(Boolean(event.currentTarget.value.trim())); setRemoveKey(false); setModels(undefined); resetFeedback()}}/>
         </label>
         {stored.local_key_saved && <button type="button" className="outline" disabled={Boolean(busy)}
-          onClick={() => {setAPIKey(''); setRemoveKey(!removeKey); setModels(undefined); resetFeedback()}}>
+          onClick={() => {if (apiKeyInput.current) apiKeyInput.current.value = ''; setHasAPIKey(false); setRemoveKey(!removeKey); setModels(undefined); resetFeedback()}}>
           {removeKey ? '取消移除' : '移除密钥'}
         </button>}
       </div>
@@ -233,7 +251,7 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
         {stored.local_key_saved ? '当前使用本地保存的密钥' :
           stored.key_configured ? '当前使用环境变量 ' + stored.api_key_ref.slice(4) : '当前未配置密钥'}
         {removeKey ? '。测试和保存后将使用备用环境变量。' :
-          keyChange ? '。测试使用新密钥，保存后生效。' : ''}
+          hasAPIKey ? '。测试使用新密钥，保存后生效。' : ''}
       </p>
       <div className="settings-actions">
         {discoveryError && <p className="error" role="alert">{discoveryError}，可以手动填写模型 ID。</p>}

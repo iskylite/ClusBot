@@ -18,7 +18,7 @@ const statusNames:Record<string,string>={
   demo_profile_disabled:'演示模式不启用专用档案',
 }
 
-export function ModelRolesSettings() {
+export function ModelRolesSettings({refreshKey=0}:{refreshKey?:number}) {
   const [profiles,setProfiles]=useState<Profile[]>()
   const [error,setError]=useState('')
   const [editing,setEditing]=useState<Profile|true>()
@@ -30,7 +30,7 @@ export function ModelRolesSettings() {
     try {const list=await api<Profile[]>(profilesPath);if(version.current===current)setProfiles(Array.isArray(list)?list:[])}
     catch(e){if(version.current===current)setError(msg(e))}
   },[])
-  useEffect(()=>{void load();return()=>{version.current++}},[load])
+  useEffect(()=>{void load();return()=>{version.current++}},[load,refreshKey])
   return <>
     <section id="model-profiles" className="settings-card" aria-labelledby="model-profiles-title">
       <header className="settings-section-heading"><h2 id="model-profiles-title">模型档案</h2>
@@ -40,7 +40,7 @@ export function ModelRolesSettings() {
       {error?<p role="alert" className="error">{error} <button type="button" className="text-button" onClick={()=>void load()}>重新加载</button></p>:
         !profiles?<p role="status">正在读取档案…</p>:!profiles.length?<p className="muted">暂无模型档案。</p>:
         <ul className="model-settings-list">{profiles.map(profile=><li key={profile.id}>
-          <div><strong>{profile.name}</strong><small>{profile.model_id} · 版本 {profile.revision} · {profile.credential_configured?'凭据可解析':'凭据未配置或未解析'}</small></div>
+          <div><strong>{profile.name}</strong><small>{profile.model_id} · 版本 {profile.revision} · {profile.credential_configured?'凭据可解析':'凭据状态由服务端校验'}</small></div>
           <button type="button" className="text-button" disabled={Boolean(editing)} onClick={()=>setEditing(profile)}>编辑或试答</button>
         </li>)}</ul>}
       {editing&&<ProfileForm key={editing===true?'new':editing.id} profile={editing===true?undefined:editing} onClose={()=>setEditing(undefined)}
@@ -49,8 +49,8 @@ export function ModelRolesSettings() {
     </section>
     <section id="model-roles" className="settings-card" aria-labelledby="model-roles-title">
       <h2 id="model-roles-title">角色用哪一个模型</h2>
-      <p className="muted">普通对话、路由、通用工作和报告没有独立选项，当前使用默认模型。以下入口可单独选档案。</p>
-      {specs.map(spec=><RoleForm key={spec.slug} spec={spec} profiles={profiles} generation={generation} refreshProfiles={load}/>)}
+      <p className="muted">这里保留原有角色绑定。阶段策略或业务覆盖存在时，以生效预览为准。</p>
+      {specs.map(spec=><RoleForm key={spec.slug} spec={spec} profiles={profiles} generation={generation+refreshKey} refreshProfiles={load}/>)}
     </section>
   </>
 }
@@ -147,7 +147,7 @@ function RoleForm({spec,profiles,generation,refreshProfiles}:{spec:RoleSpec;prof
   const unavailable=role?.profile_id&& !profiles?.some(p=>p.id===role.profile_id)
   function save(e:FormEvent) {
     e.preventDefault()
-    if(!role||lock.current||choice&&(!selected?.credential_configured||!consent))return
+    if(!role||lock.current||choice&&(!selected||!consent))return
     const oldRevision=role.revision
     const body=selected
       ? {action:'bind_profile',revision:oldRevision,profile_id:selected.id,profile_revision:selected.revision,confirm_request_text_egress:true}
@@ -167,12 +167,12 @@ function RoleForm({spec,profiles,generation,refreshProfiles}:{spec:RoleSpec;prof
         onChange={e=>{editingChoice.current=true;setChoice(e.currentTarget.value);setConsent('');setNotice('');setError('')}}>
         <option value="">沿用默认模型</option>
         {unavailable&&<option value={role.profile_id} disabled>已绑定档案不可用</option>}
-        {profiles?.map(p=><option key={p.id} value={p.id}>{p.name} · v{p.revision}{!p.credential_configured?' · 凭据未解析':''}</option>)}
+        {profiles?.map(p=><option key={p.id} value={p.id}>{p.name} · v{p.revision}{!p.credential_configured?' · 凭据状态待校验':''}</option>)}
       </select></label>
-      {selected&&<label className="model-egress"><input type="checkbox" checked={consent} disabled={busy||!selected.credential_configured} onChange={e=>{editingChoice.current=true;setConsent(e.currentTarget.checked?selectedKey:'')}}/>
+      {selected&&<label className="model-egress"><input type="checkbox" checked={consent} disabled={busy} onChange={e=>{editingChoice.current=true;setConsent(e.currentTarget.checked?selectedKey:'')}}/>
         <span>允许该角色将以下内容交由此档案的模型处理：{spec.shared}。</span></label>}
       <div className="settings-actions"><button type="submit" className="outline"
-        disabled={busy||Boolean(choice&&(!selected?.credential_configured||!consent))||(!choice&&!role.profile_id)}>保存角色配置</button></div>
+        disabled={busy||Boolean(choice&&(!selected||!consent))||(!choice&&!role.profile_id)}>保存角色配置</button></div>
     </>}
     {notice&&<p role="status">{notice}</p>}{error&&<p role="alert" className="error">{error} {!role&&<button type="button" className="text-button" onClick={()=>{setError('');void load()}}>重新加载</button>}</p>}
   </form>

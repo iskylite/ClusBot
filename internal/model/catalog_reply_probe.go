@@ -37,10 +37,16 @@ func (s *Settings) TestCatalogModelReply(ctx context.Context, id string, revisio
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	start := time.Now()
+	// Reasoning adapters can spend part of the output budget before emitting
+	// visible text. Keep the probe bounded while leaving room for a reply.
+	outputLimit := 512
+	if value.Attributes != nil && value.Attributes.MaxOutputTokens != nil && *value.Attributes.MaxOutputTokens > 0 {
+		outputLimit = min(outputLimit, *value.Attributes.MaxOutputTokens)
+	}
 	result, err := provider.readText(ctx, responseRequest{
 		Instructions:    "Reply with OK.",
 		Input:           []any{responseMessage{Type: "message", Role: "user", Content: "ClusBot connectivity check."}},
-		MaxOutputTokens: 32, noRetry: true,
+		MaxOutputTokens: outputLimit, noRetry: true,
 	})
 	if err == nil && strings.TrimSpace(result) == "" {
 		err = errors.New("empty model reply")

@@ -83,7 +83,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	bridge := &assistantBridge{pending: make(map[string]assistantPreview)}
 	bridge.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		allowed := false
 		for _, host := range s.Hosts {
@@ -148,10 +148,6 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 			api.ServeHTTP(w, r)
 			return
 		}
-		if s.ServerMode {
-			http.Error(w, "服务器模式的账号接口已启用，用户界面尚未接入", http.StatusServiceUnavailable)
-			return
-		}
 		if r.Method != "GET" && r.Method != "HEAD" {
 			http.Error(w, "Method not allowed", 405)
 			return
@@ -166,7 +162,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 			return
 		}
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		valid := r.URL.Path == "/" || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
+		valid := r.URL.Path == "/" || r.URL.Path == "/overview" || r.URL.Path == "/operations" ||
+			(s.ServerMode && (r.URL.Path == "/account" || r.URL.Path == "/team-tasks")) || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
 			r.URL.Path == "/memory" || r.URL.Path == "/memory/new" || r.URL.Path == "/memory/candidates" ||
 			r.URL.Path == "/memory/skill-proposals" || r.URL.Path == "/settings" ||
 			r.URL.Path == "/connections" || r.URL.Path == "/connections/new" ||
@@ -199,6 +196,7 @@ func (s Server) routes() *http.ServeMux {
 	s.registerAssistantTools(api)
 	s.registerPreferences(api)
 	s.registerClusterTrends(api)
+	s.registerClusterInventory(api)
 	api.HandleFunc("GET /api/v1/session", s.sessionStatus)
 	api.HandleFunc("POST /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
 		if s.ServerMode {
@@ -336,6 +334,7 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("GET /api/v1/domain/discovery/candidates", s.discoveryCandidates)
 	api.HandleFunc("GET /api/v1/domain/discovery/candidates/{id}/observations", s.discoveryCandidateObservations)
 	api.HandleFunc("POST /api/v1/domain/discovery/candidates/{id}/admit", s.admitDiscovery)
+	api.HandleFunc("GET /api/v1/incidents", s.recentIncidents)
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
 	api.HandleFunc("GET /api/v1/incidents/{id}/workflow", s.incidentWorkflow)
 	api.HandleFunc("GET /api/v1/incidents/{id}/steps/{step}/logs", s.incidentStepLogs)

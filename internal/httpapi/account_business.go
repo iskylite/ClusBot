@@ -108,7 +108,7 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 func accountPersonalRoute(route string) bool {
 	switch route {
 	case "GET /api/v1/preferences", "PUT /api/v1/preferences",
-		"GET /api/v1/domain/snapshot", "GET /api/v1/domain/cluster-trends",
+		"GET /api/v1/domain/snapshot", "GET /api/v1/domain/cluster-trends", "GET /api/v1/domain/cluster-inventory",
 		"GET /api/v1/domain/benchmarks/{id}", "GET /api/v1/domain/benchmarks/{id}/report",
 		"GET /api/v1/domain/benchmarks/{id}/evidence", "GET /api/v1/domain/benchmarks/{id}/evidence/{artifact}",
 		"POST /api/v1/domain/asset-acceptance", "GET /api/v1/domain/asset-acceptance/{task_id}",
@@ -124,7 +124,7 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/workspace/files", "POST /api/v1/attachments/workspace",
 		"POST /api/v1/attachments", "POST /api/v1/attachments/uploads/{id}/part",
 		"GET /api/v1/materials/{id}/preview", "DELETE /api/v1/materials/{id}",
-		"POST /api/v1/incidents", "GET /api/v1/incidents/{id}/workflow", "GET /api/v1/incidents/{id}/steps/{step}/logs",
+		"GET /api/v1/incidents", "POST /api/v1/incidents", "GET /api/v1/incidents/{id}/workflow", "GET /api/v1/incidents/{id}/steps/{step}/logs",
 		"GET /api/v1/memories", "POST /api/v1/memories", "GET /api/v1/memories/source/{message}",
 		"PATCH /api/v1/memories/{id}", "DELETE /api/v1/memories/{id}",
 		"GET /api/v1/experience-candidates", "POST /api/v1/experience-candidates/from-acceptance",

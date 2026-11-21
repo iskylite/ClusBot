@@ -61,7 +61,9 @@ test('form destinations require both a known tool and an exact local target',()=
   assert.equal(trustedForm('configure_model_provider','/settings#model-default'),'/settings#model-default')
   assert.equal(trustedForm('configure_model_provider','https://attacker.example'),undefined)
   assert.equal(trustedForm('configure_model_provider','/connections/new'),undefined)
-  assert.equal(trustedForm('change_my_password','account_password'),undefined)
+  assert.equal(trustedForm('change_my_password','account_password'),'/account#password')
+  assert.equal(trustedForm('manage_accounts','account_management'),'/account#users')
+  assert.equal(trustedForm('change_my_password','/account#password'),undefined)
   assert.equal(trustedForm('__proto__','/settings#model-default'),undefined)
 })
 

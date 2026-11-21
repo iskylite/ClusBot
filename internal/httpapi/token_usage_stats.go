@@ -10,31 +10,34 @@ import (
 )
 
 type tokenUsageBucket struct {
-	Date         string `json:"date"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	TotalTokens  int64  `json:"total_tokens"`
-	Requests     int    `json:"requests"`
+	Date               string `json:"date"`
+	InputTokens        int64  `json:"input_tokens"`
+	OutputTokens       int64  `json:"output_tokens"`
+	TotalTokens        int64  `json:"total_tokens"`
+	Requests           int    `json:"requests"`
+	UnreportedRequests int    `json:"unreported_requests"`
 }
 
 type tokenUsageModelBreakdown struct {
-	Model        string  `json:"model"`
-	Brand        string  `json:"brand"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	TotalTokens  int64   `json:"total_tokens"`
-	Percent      float64 `json:"percent"`
-	Requests     int     `json:"requests"`
+	Model              string  `json:"model"`
+	Brand              string  `json:"brand"`
+	InputTokens        int64   `json:"input_tokens"`
+	OutputTokens       int64   `json:"output_tokens"`
+	TotalTokens        int64   `json:"total_tokens"`
+	Percent            float64 `json:"percent"`
+	Requests           int     `json:"requests"`
+	UnreportedRequests int     `json:"unreported_requests"`
 }
 
 type tokenUsageStatsResponse struct {
-	Range        string                     `json:"range"`
-	TotalTokens  int64                      `json:"total_tokens"`
-	InputTokens  int64                      `json:"input_tokens"`
-	OutputTokens int64                      `json:"output_tokens"`
-	Requests     int                        `json:"requests"`
-	DailyBuckets []tokenUsageBucket         `json:"daily_buckets"`
-	ByModel      []tokenUsageModelBreakdown `json:"by_model"`
+	Range              string                     `json:"range"`
+	TotalTokens        int64                      `json:"total_tokens"`
+	InputTokens        int64                      `json:"input_tokens"`
+	OutputTokens       int64                      `json:"output_tokens"`
+	Requests           int                        `json:"requests"`
+	DailyBuckets       []tokenUsageBucket         `json:"daily_buckets"`
+	ByModel            []tokenUsageModelBreakdown `json:"by_model"`
+	UnreportedRequests int                        `json:"unreported_requests"`
 }
 
 // tokenUsageStats 按时间窗口（24h/7d/30d）汇总模型调用量、输入/输出 Token 趋势及按模型/品牌分布，供图表卡片渲染。
@@ -88,6 +91,7 @@ func (s Server) tokenUsageStats(w http.ResponseWriter, r *http.Request) {
 		resp.OutputTokens += stats.OutputTokens
 		resp.TotalTokens += stats.InputTokens + stats.OutputTokens
 		resp.Requests += stats.Requests
+		resp.UnreportedRequests += stats.UnreportedRequests
 		for _, d := range stats.Daily {
 			b := dailyMap[d.Date]
 			if b == nil {
@@ -98,6 +102,7 @@ func (s Server) tokenUsageStats(w http.ResponseWriter, r *http.Request) {
 			b.OutputTokens += d.OutputTokens
 			b.TotalTokens += d.InputTokens + d.OutputTokens
 			b.Requests += d.Requests
+			b.UnreportedRequests += d.UnreportedRequests
 		}
 		for _, m := range stats.Models {
 			key := m.Model
@@ -116,6 +121,7 @@ func (s Server) tokenUsageStats(w http.ResponseWriter, r *http.Request) {
 			bm.OutputTokens += m.OutputTokens
 			bm.TotalTokens += m.InputTokens + m.OutputTokens
 			bm.Requests += m.Requests
+			bm.UnreportedRequests += m.UnreportedRequests
 		}
 	}
 

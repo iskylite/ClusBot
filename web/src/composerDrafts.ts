@@ -5,7 +5,7 @@ import type {ReadDraft} from './TaskRead'
 
 export type TaskReference={taskID:string;title:string;planRevision?:number;passive:boolean}
 export type IsolatedReplyRequest={mode:'only_this_message';profile_id:string;profile_revision:number;confirm_current_text_egress:true;client_request_id:string;text:string}
-type Request = {key:string;scope:string;delivery:DeliveryUpdate;awaitingAdmission?:boolean}
+type Request = {key:string;scope:string;delivery:DeliveryUpdate;strategy?:'role_routing'|'deterministic_only';awaitingAdmission?:boolean}
 type Draft = {
   text:string
   scope?:string
@@ -68,10 +68,10 @@ export function changeComposerDraft(key:string,change:(draft:Draft)=>Partial<Dra
   write(key,{...draft,...change(draft),request:undefined})
 }
 
-export function beginDraftRequest(key:string,scope:string,delivery:DeliveryUpdate):Request {
+export function beginDraftRequest(key:string,scope:string,delivery:DeliveryUpdate,strategy:'role_routing'|'deterministic_only'='role_routing'):Request {
   const draft=read(key)
   if(draft.request)return draft.request
-  const request={key:crypto.randomUUID(),scope,delivery}
+  const request={key:crypto.randomUUID(),scope,delivery,strategy}
   write(key,{...draft,request})
   return request
 }
@@ -91,6 +91,17 @@ export function releaseDraftRequest(key:string,requestID?:string) {
 }
 
 export function discardComposerDraft(key:string) {write(key,empty)}
+
+// Material snapshots can be deduplicated by the server across drafts. Keep one
+// draft from deleting a snapshot still selected by another draft in this app.
+export function hasOtherDraftMaterial(key:string,id:string) {
+  const keys=new Set(drafts.keys())
+  try {
+    for(const stored of Object.keys(window.clusbotDrafts??sessionStorage))if(stored.startsWith(prefix))keys.add(stored.slice(prefix.length))
+  } catch {return true}
+  for(const other of keys)if(other!==key&&read(other).materials.some(material=>material.id===id))return true
+  return false
+}
 
 export function hasPinnedIsolatedRequest(key:string,requestID:string) {
   return read(key).isolatedRequest?.client_request_id===requestID

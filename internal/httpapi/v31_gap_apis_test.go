@@ -222,7 +222,7 @@ func TestV31AccountProfileRoleGuardMaterialPreviewAndWorkflowLogs(t *testing.T) 
 	}
 	var stepLogs work.IncidentStepLogView
 	accountJSON(t, w, &stepLogs)
-	if stepLogs.IncidentID != inc.IncidentID || len(stepLogs.Lines) == 0 {
+	if stepLogs.IncidentID != inc.IncidentID || stepLogs.Lines == nil || len(stepLogs.Lines) != 0 {
 		t.Fatalf("unexpected incident step logs: %+v", stepLogs)
 	}
 }

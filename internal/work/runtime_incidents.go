@@ -227,13 +227,13 @@ type IncidentStepAction struct {
 
 // IncidentWorkflowStage 表示运维处置五步流程的一个交互节点（①观测 / ②根因 / ③自愈 / ④工单 / ⑤验收）。
 type IncidentWorkflowStage struct {
-	StepKey     string               `json:"step_key"`
-	Label       string               `json:"label"`
-	Status      string               `json:"status"` // completed, active, conditional, pending, blocked
-	Summary     string               `json:"summary"`
-	PolicyNote  string               `json:"policy_note,omitempty"`
-	ImpactNote  string               `json:"impact_note,omitempty"`
-	Actions     []IncidentStepAction `json:"actions"`
+	StepKey    string               `json:"step_key"`
+	Label      string               `json:"label"`
+	Status     string               `json:"status"` // completed, active, conditional, pending, blocked
+	Summary    string               `json:"summary"`
+	PolicyNote string               `json:"policy_note,omitempty"`
+	ImpactNote string               `json:"impact_note,omitempty"`
+	Actions    []IncidentStepAction `json:"actions"`
 }
 
 // IncidentWorkflowView 是故障处置五步流程及右侧详情抽屉的结构化投影。
@@ -289,9 +289,9 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		return IncidentWorkflowView{}, err
 	}
 
-	var ticketID, ticketState, ticketObj, ticketAssignee string
-	err = s.db.QueryRowContext(ctx, `SELECT ticket_id, state, object_ref, assignee FROM tickets WHERE incident_id=? ORDER BY created_at DESC LIMIT 1`, incidentID).
-		Scan(&ticketID, &ticketState, &ticketObj, &ticketAssignee)
+	var ticketID, ticketState, ticketAssignee string
+	err = s.db.QueryRowContext(ctx, `SELECT ticket_id, state, assignee FROM tickets WHERE incident_id=? ORDER BY created_at DESC LIMIT 1`, incidentID).
+		Scan(&ticketID, &ticketState, &ticketAssignee)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return IncidentWorkflowView{}, err
 	}
@@ -299,8 +299,8 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 	healRows, err := s.db.QueryContext(ctx, `
 		SELECT execution_id, object_ref, COALESCE(operation_id,''), state, block_reason, verification_outcome, created_at
 		FROM self_heal_executions
-		WHERE (?='' OR object_ref=? OR operation_id IN (SELECT operation_id FROM operations WHERE target_refs LIKE '%'||?||'%'))
-		ORDER BY created_at DESC LIMIT 10`, ticketObj, ticketObj, incidentID)
+		WHERE operation_id IN (SELECT operation_id FROM operations WHERE task_id=?)
+		ORDER BY created_at DESC LIMIT 10`, incidentID)
 	if err != nil {
 		return IncidentWorkflowView{}, err
 	}
@@ -452,33 +452,36 @@ func (s *Store) IncidentStepLogs(ctx context.Context, incidentID, stepKey string
 	for _, st := range wf.Stages {
 		if st.StepKey == stepKey {
 			out.Streaming = st.Status == "active"
-			if st.Summary != "" {
-				out.Lines = append(out.Lines, "[阶段状态] "+st.Label+" · "+st.Summary)
-			}
 			for _, act := range st.Actions {
-				out.Lines = append(out.Lines, fmt.Sprintf("[%d] %s (%s)", act.Timestamp, act.Summary, act.Status))
 				if act.LogPreview != "" {
 					out.Lines = append(out.Lines, act.LogPreview)
 				}
 			}
 		}
 	}
-	// 附加关联 Operation Attempt 的实际回执输出
+	if stepKey != "self_heal" {
+		return out, nil
+	}
 	opRows, err := s.db.QueryContext(ctx, `
 		SELECT oa.attempt_id, oa.outcome, oa.receipt
 		FROM self_heal_executions sh
-		JOIN operation_attempts oa ON oa.operation_id=sh.operation_id
-		WHERE sh.operation_id<>'' AND oa.receipt<>''
-		ORDER BY oa.dispatched_at DESC LIMIT 10`)
-	if err == nil {
-		defer opRows.Close()
-		for opRows.Next() {
-			var aid, outcome, receipt string
-			if scanErr := opRows.Scan(&aid, &outcome, &receipt); scanErr == nil {
-				out.Lines = append(out.Lines, fmt.Sprintf("[attempt:%s %s] %s", aid, outcome, receipt))
-			}
+		JOIN operations op ON op.operation_id=sh.operation_id
+		JOIN operation_attempts oa ON oa.operation_id=op.operation_id
+		WHERE op.task_id=? AND oa.receipt<>''
+		ORDER BY oa.dispatched_at DESC, oa.attempt_id LIMIT 10`, incidentID)
+	if err != nil {
+		return IncidentStepLogView{}, err
+	}
+	defer opRows.Close()
+	for opRows.Next() {
+		var aid, outcome, receipt string
+		if err := opRows.Scan(&aid, &outcome, &receipt); err != nil {
+			return IncidentStepLogView{}, err
 		}
-		_ = opRows.Err()
+		out.Lines = append(out.Lines, fmt.Sprintf("[attempt:%s %s] %s", aid, outcome, receipt))
+	}
+	if err := opRows.Err(); err != nil {
+		return IncidentStepLogView{}, err
 	}
 	return out, nil
 }
@@ -490,3 +493,30 @@ var (
 	_ = errors.Is
 	_ = fmt.Sprintf
 )
+
+// RecentIncidents is a bounded list for the workflow selector. Workflows and
+// raw receipts are read separately after the user chooses an incident.
+type IncidentSummary struct {
+	IncidentID string `json:"incident_id"`
+	Symptoms   string `json:"symptoms"`
+	State      string `json:"state"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
+func (s *Store) RecentIncidents(ctx context.Context) ([]IncidentSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT incident_id,symptoms,state,updated_at
+		FROM incidents ORDER BY updated_at DESC,incident_id LIMIT 100`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IncidentSummary{}
+	for rows.Next() {
+		var item IncidentSummary
+		if err := rows.Scan(&item.IncidentID, &item.Symptoms, &item.State, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}

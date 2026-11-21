@@ -1,5 +1,6 @@
 import {useEffect,useId,useRef,useState} from 'react'
 import {api,APIError} from './api'
+import {displayDate} from './GeneralPreferences'
 import {assistantDetails,isAssistantItem,parseSurfaces,previewText,trustedForm,type AssistantItem,type DetailRow,type Surface} from './assistantSurface'
 
 function SurfaceView({surface,expanded,detailsID,toggle,canToggle}:{surface:Surface;expanded:boolean;detailsID:string;toggle:()=>void;canToggle:boolean}) {
@@ -35,7 +36,52 @@ function LocalDetails({items,navigate}:{items:DetailRow[];navigate:(path:string)
   </li>)}</ul>
 }
 
-export function AssistantCard({item,navigate}:{item:AssistantItem;navigate:(path:string)=>void}) {
+type RoutingRole = {role:string; source:string; status:string; model_id?:string; business?:string; profile_revision?:number; candidates?:{model_id?:string;status:string;profile_id:string}[]}
+const roleNames:Record<string,string> = {
+  general_router:'通用路由',conversation_reply:'对话回复',task_worker:'任务执行',
+  benchmark_admission:'基准受理',benchmark_revision:'基准方案修订',benchmark_execution:'基准执行建议',deterministic:'确定性处理',
+}
+const routingState:Record<string,string> = {locally_configured:'已配置',configured:'已配置',not_configured:'未配置',model_not_used:'无需模型',demo:'演示模式',unavailable:'不可用',profile_missing:'档案不存在',credential_missing:'缺少凭据'}
+const routingSource:Record<string,string> = {role_policy:'角色策略',business_override:'业务覆盖',global_default:'继承默认',explicit_profile:'显式绑定',go:'内置引擎'}
+
+function RoutingCard({result,navigate,canManageModels}:{result:unknown;navigate:(path:string)=>void;canManageModels:boolean}) {
+  const value=result as {roles?:RoutingRole[]}|null
+  const roles=Array.isArray(value?.roles)?value.roles.filter(role=>role&&typeof role.role==='string'):[]
+  const [selected,setSelected] = useState('')
+  const role=roles.find(item=>item.role===selected)??roles[0]
+  if (!role) return <p className="muted">暂无可显示的模型路由。</p>
+  return <section className="assistant-routing" aria-label="模型配置与路由">
+    <header><h3>模型配置与路由</h3>{canManageModels&&<button type="button" className="outline" onClick={()=>navigate('/settings?tab=model#model-roles')}>调整路由</button>}</header>
+    <div className="assistant-routing-grid">
+      <div className="assistant-routing-table">
+        <table><thead><tr><th scope="col">调用角色</th><th scope="col">生效模型</th><th scope="col">绑定来源</th><th scope="col">状态</th></tr></thead>
+        <tbody>{roles.map(item=><tr key={item.role} className={item===role?'selected':undefined}>
+          <th scope="row"><button type="button" aria-pressed={item===role} onClick={()=>setSelected(item.role)}>{roleNames[item.role]??item.role}</button></th>
+          <td>{item.model_id||(item.role==='deterministic'?'系统内置引擎':'—')}</td><td>{routingSource[item.source]??item.source}</td><td>{routingState[item.status]??item.status}</td>
+        </tr>)}</tbody></table>
+      </div>
+      <aside className="assistant-routing-focus">
+        <strong>{roleNames[role.role]??role.role}{role.model_id?' · '+role.model_id:''}</strong>
+        <dl><dt>绑定来源</dt><dd>{routingSource[role.source]??role.source}</dd>
+          {role.profile_revision&&<><dt>档案版本</dt><dd>{role.profile_revision}</dd></>}</dl>
+        {Boolean(role.candidates?.length)&&<ol aria-label="有序模型">{role.candidates?.map(candidate=><li key={candidate.profile_id}>
+          {candidate.model_id||'档案不可用'} <small>{routingState[candidate.status]??candidate.status}</small>
+        </li>)}</ol>}
+      </aside>
+    </div>
+  </section>
+}
+
+function operationsLink(tool:string, result:unknown) {
+  if(tool!=='get_cluster_trends'&&tool!=='get_token_usage_stats'&&tool!=='get_incident_workflow'&&tool!=='get_incident_step_logs') return
+  const {incident_id:incident,range}=result as {incident_id?:string;range?:string} ?? {}
+  const params=new URLSearchParams()
+  if (typeof incident==='string'&&/^(?:[a-f0-9]{32}|inc-[0-9]{1,16})$/.test(incident))params.set('incident',incident)
+  if (range==='24h'||range==='7d'||range==='30d')params.set('range',range)
+  return '/operations'+(params.size?'?'+params:'')
+}
+
+export function AssistantCard({item,navigate,canManageModels=false}:{item:AssistantItem;navigate:(path:string)=>void;canManageModels?:boolean}) {
   const [current,setCurrent]=useState(item)
   const [expanded,setExpanded]=useState(false)
   const [pending,setPending]=useState(false)
@@ -85,10 +131,15 @@ export function AssistantCard({item,navigate}:{item:AssistantItem;navigate:(path
   const request=preview?previewText({input:preview.input,...(preview.target===undefined?{}:{target:preview.target})}):undefined
   const result=current.state==='completed'?previewText(current.result):undefined
   const form=current.state==='form_required'?trustedForm(current.tool,current.form):undefined
+  const operations=current.state==='completed'?operationsLink(current.tool,current.result):undefined
+  if(current.state==='completed'&&current.tool==='get_current_model_routing'){
+    return <article className="assistant-card"><RoutingCard result={current.result} navigate={navigate} canManageModels={canManageModels}/></article>
+  }
   return <article className="assistant-card">
     {surfaces?surfaces.map(surface=><SurfaceView key={surface.id} surface={surface} expanded={expanded} detailsID={detailsID} canToggle={details.length>0} toggle={()=>setExpanded(value=>!value)}/>):
       <h3>{current.state==='completed'?'工具已返回结果':current.state==='confirmation_required'?'请核对操作后决定是否确认':'此操作需要在设置中完成'}</h3>}
     {current.state==='completed'&&<>
+      {operations&&<button type="button" className="outline" onClick={()=>navigate(operations)}>在运维工作台查看</button>}
       {details.length>0&&!hasToggle&&<button type="button" className="text-button assistant-detail-toggle" aria-expanded={expanded} aria-controls={detailsID} onClick={()=>setExpanded(value=>!value)}>{expanded?'收起详情':'展开详情'}</button>}
       {details.length>0&&<div id={detailsID} hidden={!expanded}><LocalDetails items={details} navigate={navigate}/></div>}
       {!details.length&&result&&<details className="assistant-result"><summary>查看返回数据</summary><pre>{result.text}</pre></details>}
@@ -96,7 +147,7 @@ export function AssistantCard({item,navigate}:{item:AssistantItem;navigate:(path
     {preview&&request&&<>
       <dl className="assistant-preview-fields">{request.fields.map((field,index)=><div key={index}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
       <details><summary>查看完整参数</summary><pre className="assistant-preview">{request.text}</pre></details>
-      <p className="muted">有效至 {new Intl.DateTimeFormat('zh-CN',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(preview.expires_at_unix_ms)}</p>
+      <p className="muted">有效至 {displayDate(preview.expires_at_unix_ms,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</p>
       {!request.safe&&<p className="error">内容含敏感字段或无法完整显示，请在对应页面处理。</p>}
       {outcome?<p role="status">{outcome}</p>:expired?<p role="status">确认已失效，请重新预览。</p>:
         <footer><button type="button" className="outline" disabled={pending} onClick={()=>void decide(false)}>取消</button>

@@ -1,7 +1,10 @@
 declare global {
   interface Window {
     clusbotDrafts?: Record<string,string>
-    webkit?: {messageHandlers?: {drafts?: {postMessage(value:{key:string;value:string|null}):void}}}
+    webkit?: {messageHandlers?: {
+      drafts?: {postMessage(value:{key:string;value:string|null}):void}
+      clusbotNotifications?: {postMessage(value: {action:'status'|'request'|'send'; kind?:string; id?:string}):Promise<string>}
+    }}
   }
 }
 

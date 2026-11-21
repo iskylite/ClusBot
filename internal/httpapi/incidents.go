@@ -23,7 +23,7 @@ func (s Server) createIncident(w http.ResponseWriter, r *http.Request) {
 
 func (s Server) incidentWorkflow(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !validID(id) {
+	if !validIncidentID(id) {
 		fail(w, http.StatusBadRequest, "invalid_incident", "故障事件标识无效")
 		return
 	}
@@ -39,7 +39,7 @@ func (s Server) incidentWorkflow(w http.ResponseWriter, r *http.Request) {
 func (s Server) incidentStepLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	step := strings.TrimSpace(r.PathValue("step"))
-	if !validID(id) || step == "" || len(step) > 40 {
+	if !validIncidentID(id) || !validIncidentStep(step) {
 		fail(w, http.StatusBadRequest, "invalid_incident_step", "故障事件或阶段参数无效")
 		return
 	}
@@ -50,4 +50,31 @@ func (s Server) incidentStepLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, http.StatusOK, logs)
+}
+
+// Older local demo databases use incident identifiers such as inc-117.
+func validIncidentID(id string) bool {
+	if validID(id) {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(id, "inc-")
+	return ok && len(suffix) > 0 && len(suffix) <= 16 && strings.Trim(suffix, "0123456789") == ""
+}
+
+func validIncidentStep(step string) bool {
+	switch step {
+	case "observe", "root_cause", "self_heal", "ticket", "acceptance":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s Server) recentIncidents(w http.ResponseWriter, r *http.Request) {
+	items, err := s.Store.RecentIncidents(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, items)
 }

@@ -29,9 +29,9 @@ export function MaterialPicker({limitReached,disabled,choose,upload,replacement,
   return <div className="material-picker">
     <button type="button" className={'text-button'+(replacement?.enabled?' replacing':'')} aria-expanded={open}
       disabled={disabled||(limitReached&&!replacement)} onClick={()=>{setOpen(!open);setQuery('')}}>
-      <Paperclip size={16}/>{replacement?.enabled?'仅用本轮材料':'选取材料'}</button>
+      <Paperclip size={16}/>{replacement?.enabled?'仅用本轮材料':'添加材料'}</button>
     {open && <div className="material-menu">
-      <input type="file" ref={input} hidden aria-label="上传文件" accept={allowImages ? ".md,.txt,image/png,image/jpeg" : ".md,.txt"} onChange={async event=>{
+      <input type="file" ref={input} hidden aria-label="上传文件" accept={allowImages ? ".md,.txt,.log,.csv,.tsv,.json,.yaml,.yml,image/png,image/jpeg" : ".md,.txt,.log,.csv,.tsv,.json,.yaml,.yml"} onChange={async event=>{
         const file=event.target.files?.[0]
         event.target.value=''
         if(file){await upload(file);setOpen(false)}

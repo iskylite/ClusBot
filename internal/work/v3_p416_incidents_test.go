@@ -287,3 +287,39 @@ var (
 	_ = strings.Contains
 	_ = context.Background
 )
+
+func TestIncidentWorkflowAndLogsNeverMixIncidentAttempts(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "incident-logs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := t.Context()
+	if err := store.SeedDomainDemo(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// The demo links only op-002 to inc-117. Add a second self-heal to another
+	// incident and receipts to verify each stage sees only its own execution.
+	statements := []string{
+		`UPDATE operations SET task_id='inc-121' WHERE operation_id='op-003'`,
+		`INSERT INTO self_heal_executions(execution_id,policy_id,object_ref,operation_id,state,created_at,updated_at)
+		 VALUES ('other-heal','shp-001','node-112','op-003','admitted',1,1)`,
+		`INSERT INTO operation_attempts(attempt_id,operation_id,attempt_number,dispatched_at,receipt)
+		 VALUES ('current-attempt','op-002',1,1,'CURRENT-RECEIPT'),('foreign-attempt','op-003',1,1,'FOREIGN-RECEIPT')`,
+	}
+	for _, statement := range statements {
+		if _, err := store.db.ExecContext(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, step := range []string{"observe", "self_heal"} {
+		logs, err := store.IncidentStepLogs(ctx, "inc-117", step)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Join(logs.Lines, "\n")
+		if strings.Contains(lines, "FOREIGN-RECEIPT") || strings.Contains(lines, "CURRENT-RECEIPT") != (step == "self_heal") {
+			t.Fatalf("unexpected %s logs: %s", step, lines)
+		}
+	}
+}

@@ -177,5 +177,7 @@ const formTargets:Record<string,string> = {
   configure_mcp_permission:'/connections',
 }
 export function trustedForm(tool:unknown,target:unknown):string|undefined {
+  if(tool==='manage_accounts' && target==='account_management')return '/account#users'
+  if(tool==='change_my_password' && target==='account_password')return '/account#password'
   return typeof tool==='string' && Object.hasOwn(formTargets,tool) && target===formTargets[tool]?formTargets[tool]:undefined
 }
