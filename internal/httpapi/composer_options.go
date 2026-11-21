@@ -17,10 +17,11 @@ type composerSlashCommand struct {
 }
 
 type composerTaskOption struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Status  string `json:"status"`
-	OwnerID string `json:"owner_id,omitempty"`
+	ID            string `json:"id"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	OwnerID       string `json:"owner_id,omitempty"`
+	Referenceable bool   `json:"referenceable,omitempty"`
 }
 
 type composerReplyModel struct {
@@ -166,6 +167,16 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 			resp.Tasks = resp.Tasks[:30]
 		}
 	} else {
+		conversation := r.URL.Query().Get("conversation_id")
+		if conversation != "" && !validID(conversation) {
+			fail(w, http.StatusBadRequest, "invalid_conversation", "会话标识无效")
+			return
+		}
+		references, err := s.Store.MessageTaskReferenceOptions(r.Context(), s.principal(r), conversation)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 		items, err := s.Store.ListTasks(r.Context(), work.TaskFilter{Limit: 30})
 		if err != nil {
 			writeError(w, err)
@@ -173,7 +184,7 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, t := range items {
 			resp.Tasks = append(resp.Tasks, composerTaskOption{
-				ID: t.ID, Title: t.Title, Status: t.Status, OwnerID: account.PrincipalID,
+				ID: t.ID, Title: t.Title, Status: t.Status, OwnerID: account.PrincipalID, Referenceable: references[t.ID],
 			})
 		}
 	}

@@ -182,6 +182,23 @@ func TestServerAccountRuntimeIsolation(t *testing.T) {
 	taskA, taskB := a["task_id"].(string), b["task_id"].(string)
 	runA, runB := a["run_id"].(string), b["run_id"].(string)
 	convA := a["conversation_id"].(string)
+	findOption := func(cookie *http.Cookie, conversation, task string) map[string]any {
+		items := decode(request("GET", "/assistant/composer-options?conversation_id="+conversation, "", cookie, 200))["tasks"].([]any)
+		for _, item := range items {
+			entry := item.(map[string]any)
+			if entry["id"] == task {
+				return entry
+			}
+		}
+		return nil
+	}
+	if mine := findOption(admin, convA, taskA); mine["referenceable"] != true {
+		t.Fatalf("expected own conversation task reference: %+v", mine)
+	}
+	if foreign := findOption(member, convA, taskB); foreign == nil || foreign["referenceable"] == true {
+		t.Fatalf("cross-account conversation surfaced a structured task reference: %+v", foreign)
+	}
+
 	if taskA == "" || taskB == "" || taskA == taskB || runA == runB {
 		t.Fatalf("duplicate entity identity: %v %v", a, b)
 	}

@@ -579,14 +579,14 @@ type ComposerProps = {
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate,strategy?:'role_routing'|'deterministic_only')=>Promise<Receipt>
   onReceipt:(path:string,receipt?:Receipt)=>void|Promise<void>
   onAssistantReceipt?:(item:AssistantItem,text:string)=>void
-  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:(model?:ReplyModel,text?:string)=>void; isolatedRecovery?:boolean; hidden?:boolean; onReferenceTask?:(reference:TaskReference)=>void
+  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:(model?:ReplyModel,text?:string)=>void; isolatedRecovery?:boolean; hidden?:boolean; referenceConversationID?:string; onReferenceTask?:(reference:TaskReference)=>void
 }
 
-function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden,onReferenceTask}:ComposerProps) {
+function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden,referenceConversationID,onReferenceTask}:ComposerProps) {
   const allowImages = useContext(VisionContext)
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
-  const {options,error:optionsError}=useComposerOptions()
+  const {options,error:optionsError}=useComposerOptions(referenceConversationID)
   const textarea=useRef<HTMLTextAreaElement>(null)
   const compositionEnd=useRef<number|undefined>(undefined)
   const [strategy,setStrategy]=useState<'role_routing'|'deterministic_only'>('role_routing')
@@ -1226,7 +1226,7 @@ function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(p
       <Composer inputRef={chatInput} hidden={isolatedOpen} isolatedRecovery={Boolean(isolatedRequest)}
         onAssistantReceipt={promote?undefined:(item,text)=>setAssistantItems(previous=>[...previous,{id:crypto.randomUUID(),item,text:/(?:密码|密钥|凭据|password|passwd|secret|credential|token|api[_ -]?key|authorization)/i.test(text)?'助手工具请求（内容已隐藏）':text}])}
         openIsolated={!promote&&(!conversation?.archived||isolatedRequest)?(model,text)=>{setIsolatedModel(model);setIsolatedText(text);setIsolatedOpen(true)}:undefined}
-        onReferenceTask={id&&!promote?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={!promote&&taskReference&&<MessageReference
+        referenceConversationID={!promote?id:undefined} onReferenceTask={id&&!promote?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={!promote&&taskReference&&<MessageReference
         label={(taskReference.passive?'引用任务 · ':'基准控制目标 · ')+taskReference.title+' · '+taskReference.taskID+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
         onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
         onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'输入消息，输入 / 调用指令，输入 @ 引用任务或成员…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery,strategy)=>{

@@ -4,20 +4,20 @@ import {api} from './api'
 
 export type ReplyModel={profile_id:string;name:string;model_id:string;brand:string;is_default:boolean;revision:number;available:boolean}
 type SlashCommand={command:string;usage:string;description:string;mode:string}
-type TaskOption={id:string;title:string;status:string}
+type TaskOption={id:string;title:string;status:string;referenceable?:boolean}
 type UserOption={principal_id:string;username:string;display_name:string}
 type ReplyStrategy={id:string;label:string;description:string;default?:boolean;calls_model:boolean;scope:string}
 export type ComposerOptions={slash_commands:SlashCommand[];tasks:TaskOption[];users:UserOption[];reply_strategies:ReplyStrategy[];reply_models:ReplyModel[]}
 const brandLogos=import.meta.glob('./ai-brands/*.svg',{eager:true,query:'?url',import:'default'}) as Record<string,string>
 
-export function useComposerOptions(){
+export function useComposerOptions(conversationID?:string){
   const [options,setOptions]=useState<ComposerOptions>()
   const [error,setError]=useState('')
   useEffect(()=>{
     let active=true
-    api<ComposerOptions>('/assistant/composer-options').then(data=>{if(active)setOptions(data)}).catch(e=>{if(active)setError(e instanceof Error?e.message:'无法读取输入选项')})
+    api<ComposerOptions>('/assistant/composer-options'+(conversationID?'?conversation_id='+encodeURIComponent(conversationID):'')).then(data=>{if(active)setOptions(data)}).catch(e=>{if(active)setError(e instanceof Error?e.message:'无法读取输入选项')})
     return()=>{active=false}
-  },[])
+  },[conversationID])
   return {options,error}
 }
 
@@ -33,7 +33,10 @@ export function useComposerSuggestions({value,setValue,input,options,canReferenc
   const query=(match?.[2]??'').toLocaleLowerCase()
   const start=match?cursor-match[0].trimStart().length:cursor
   const suggestions:Suggestion[]=trigger==='/'?(options?.slash_commands??[]).filter(item=>(item.command+' '+item.description).toLocaleLowerCase().includes(query)).map(item=>({key:item.command,title:item.command,detail:item.description,value:item.command==='记住'?'记住：':item.command+' '})):
-    trigger==='@'?[...(options?.tasks??[]).filter(item=>(item.title+' '+item.id).toLocaleLowerCase().includes(query)).map(task=>({key:'task:'+task.id,title:task.title,detail:canReference?'任务 · '+task.id:'请在已有对话中引用任务',value:'',task,disabled:!canReference})),
+    trigger==='@'?[...(options?.tasks??[]).filter(item=>(item.title+' '+item.id).toLocaleLowerCase().includes(query)).map(task=>{
+      if (canReference && task.referenceable) return {key:'task:'+task.id,title:task.title,detail:'只读任务引用 · '+task.id,value:'',task}
+      return {key:'task:'+task.id,title:task.title,detail:'文本提及 · '+task.id,value:'@'+task.id+' '}
+    }),
       ...(options?.users??[]).filter(item=>(item.username+' '+item.display_name).toLocaleLowerCase().includes(query)).map(user=>({key:'user:'+user.principal_id,title:user.display_name||user.username,detail:'@'+user.username+' · 文本提及',value:'@'+user.username+' '}))]:[]
   const visible=Boolean(match&&!dismissed)
   const enabled=suggestions.filter(item=>!item.disabled)

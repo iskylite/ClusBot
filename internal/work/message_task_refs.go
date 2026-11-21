@@ -1,6 +1,7 @@
 package work
 
 import (
+	"context"
 	"database/sql"
 )
 
@@ -39,6 +40,40 @@ func checkMessageTaskRef(tx *sql.Tx, actor, conversation string, ref *MessageTas
 	var id string
 	return tx.QueryRow(`SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
 WHERE c.id=? AND t.id=? AND `+visibleMessageTask, conversation, ref.TaskID).Scan(&id)
+}
+
+// MessageTaskReferenceOptions applies the same identity and visibility rules
+// as submission, so the composer can distinguish a link from a text mention.
+func (s *Store) MessageTaskReferenceOptions(ctx context.Context, actor, conversation string) (map[string]bool, error) {
+	options := map[string]bool{}
+	if conversation == "" {
+		return options, nil
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if actor != "user:session" {
+		allowed, err := ownsPersonalBusiness(tx, actor)
+		if err != nil || !allowed {
+			return options, err
+		}
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
+		WHERE c.id=? AND `+visibleMessageTask, conversation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		options[id] = true
+	}
+	return options, rows.Err()
 }
 
 // enrichMessageTaskRefs is only for authenticated message display. Model
