@@ -27,7 +27,7 @@ func (s Server) conversationHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) messageHistory(w http.ResponseWriter, r *http.Request) {
-	if !validID(r.PathValue("id")) {
+	if !validConversationID(r.PathValue("id")) {
 		fail(w, 400, "invalid_conversation", "会话标识无效")
 		return
 	}
@@ -61,7 +61,7 @@ func (s Server) cancelConversation(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &input) {
 		return
 	}
-	if !validID(input.RunID) || !validID(r.PathValue("id")) {
+	if !validID(input.RunID) || !validConversationID(r.PathValue("id")) {
 		fail(w, 400, "invalid_run", "执行标识无效")
 		return
 	}
@@ -74,7 +74,7 @@ func (s Server) cancelConversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) conversationEvents(w http.ResponseWriter, r *http.Request) {
-	if !validID(r.PathValue("id")) {
+	if !validConversationID(r.PathValue("id")) {
 		fail(w, 400, "invalid_conversation", "会话标识无效")
 		return
 	}

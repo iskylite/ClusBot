@@ -378,9 +378,9 @@ func (p *Provider) requestStreamOnce(ctx context.Context, request responseReques
 	}
 	var result responseData
 	if p.protocol == ProtocolChat {
-		result, err = readChatStream(res.Body, emit)
+		result, err = readChatStream(ctx, res.Body, emit)
 	} else {
-		result, err = readResponsesStream(res.Body, len(request.Tools) > 0, emit)
+		result, err = readResponsesStream(ctx, res.Body, len(request.Tools) > 0, emit)
 		result.observeModel(result.Model)
 	}
 	if err == nil && ctx.Err() == nil && recordReceipt != nil {
@@ -454,7 +454,7 @@ func (p *Provider) sendWithRetry(ctx context.Context, body []byte, noRetry bool)
 	}
 }
 
-func readResponsesStream(body io.Reader, hasTools bool, emit func(string) error) (responseData, error) {
+func readResponsesStream(ctx context.Context, body io.Reader, hasTools bool, emit func(string) error) (responseData, error) {
 	var err error
 	const maxEventBytes = 2 << 20
 	const maxOutputItems = 32
@@ -495,6 +495,12 @@ func readResponsesStream(body io.Reader, hasTools bool, emit func(string) error)
 			return responseData{}, errors.New("invalid model event")
 		}
 		switch event.Type {
+		case "response.reasoning_summary_text.delta":
+			if event.Delta != "" {
+				if err = work.EmitReasoning(ctx, event.Delta); err != nil && ctx.Err() != nil {
+					return responseData{}, err
+				}
+			}
 		case "response.output_text.delta":
 			if emit != nil {
 				if err = emit(event.Delta); err != nil {

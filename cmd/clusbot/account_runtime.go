@@ -31,6 +31,7 @@ type accountRuntime struct {
 	stores     map[string]*work.Store
 	background sync.WaitGroup
 	discovery  *work.HTTPDiscoverySource
+	benchmark  *work.HTTPBenchmarkProvider
 }
 
 func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (func(), error) {
@@ -48,6 +49,7 @@ func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (
 	}); err != nil {
 		return nil, err
 	}
+	api.ModelConcurrency = cfg.Runtime.MaxActiveRuns
 	api.Store.ConfigureAccountModelConcurrency(cfg.Runtime.MaxActiveRuns)
 	root := filepath.Join(cfg.DataDir, "account-data")
 	if err := accountDirectory(root); err != nil {
@@ -62,6 +64,14 @@ func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (
 	runtime := &accountRuntime{
 		ctx: businessCtx, cancel: cancel, root: root, cfg: cfg, api: *api,
 		handlers: make(map[string]http.Handler), stores: make(map[string]*work.Store),
+	}
+	if cfg.desktop && cfg.Benchmark.BaseURL != "" {
+		runtime.benchmark, err = work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
+			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
+		if err != nil {
+			runtime.close()
+			return nil, err
+		}
 	}
 	if cfg.Discovery.BaseURL != "" {
 		runtime.discovery, err = work.NewHTTPDiscoverySource(cfg.Discovery.BaseURL, cfg.Discovery.Source, cfg.Discovery.Scopes, os.Getenv(cfg.Discovery.CredentialEnv))
@@ -151,6 +161,11 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 	if err := db.BindAccountBusinessStore(a.ctx, principal); err != nil {
 		return nil, err
 	}
+	if a.benchmark != nil {
+		if err := db.InstallBenchmarkProvider(a.ctx, a.benchmark); err != nil {
+			return nil, err
+		}
+	}
 	if err := accountDirectory(filepath.Join(dir, "workspace")); err != nil {
 		return nil, err
 	}
@@ -206,6 +221,25 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 	a.background.Go(approvals.Wait)
 	a.background.Go(func() { db.RunChatAdmissions(a.ctx, available, a.api.Settings.RouteSubmission) })
 	handler := a.api.PersonalHandler(db)
+	if a.benchmark != nil {
+		// These already-authorized account routes need the pinned adapter to
+		// inspect and revise existing runs. Do not expose it to admission or
+		// dispatch routes, and do not start an account benchmark worker.
+		benchmarkAPI := a.api
+		benchmarkAPI.BenchmarkProvider = a.benchmark
+		benchmarkHandler := benchmarkAPI.PersonalHandler(db)
+		mux := http.NewServeMux()
+		for _, route := range []string{
+			"GET /api/v1/domain/benchmarks/{id}",
+			"POST /api/v1/conversations/{id}/benchmark-revision-preview",
+			"GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}",
+			"POST /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}/confirm",
+		} {
+			mux.Handle(route, benchmarkHandler)
+		}
+		mux.Handle("/", handler)
+		handler = mux
+	}
 	a.handlers[principal] = handler
 	a.stores[principal] = db
 	opened = true

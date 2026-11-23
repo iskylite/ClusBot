@@ -97,6 +97,12 @@ func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
 		benchmarkError(w, err)
 		return
 	}
+	if s.ServerMode && p.DispatchControl.Available {
+		// Account runtimes have no benchmark dispatcher. Do not offer a pause
+		// that this runtime cannot subsequently resume and execute.
+		p.DispatchControl.Available = false
+		p.DispatchControl.UnavailableReason = "当前账号模式尚未接入基准派发控制"
+	}
 	jsonResponse(w, http.StatusOK, p)
 }
 
@@ -254,6 +260,43 @@ func (s Server) benchmarkExecutionControl(w http.ResponseWriter, r *http.Request
 		return
 	}
 	jsonResponse(w, http.StatusOK, result)
+}
+
+func (s Server) benchmarkTaskDispatchControl(w http.ResponseWriter, r *http.Request) {
+	task := r.PathValue("id")
+	if !validID(task) {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	if s.ServerMode {
+		fail(w, http.StatusServiceUnavailable, "benchmark_dispatch_unavailable", "当前账号模式尚未接入基准派发控制")
+		return
+	}
+	var in work.BenchmarkTaskDispatchInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.ControlBenchmarkTaskDispatch(r.Context(), s.principal(r), task, in, s.BenchmarkProvider)
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) benchmarkTaskDispatchReceipt(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	task, ids := r.PathValue("id"), r.URL.Query()["client_request_id"]
+	if !validID(task) || len(ids) != 1 {
+		benchmarkError(w, work.ErrBenchmarkInput)
+		return
+	}
+	out, err := s.Store.ReadBenchmarkTaskDispatchReceipt(r.Context(), s.principal(r), task, ids[0])
+	if err != nil {
+		benchmarkError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
 }
 
 func (s Server) confirmBenchmarkExecutionSuggestion(w http.ResponseWriter, r *http.Request) {

@@ -227,13 +227,14 @@ type IncidentStepAction struct {
 
 // IncidentWorkflowStage 表示运维处置五步流程的一个交互节点（①观测 / ②根因 / ③自愈 / ④工单 / ⑤验收）。
 type IncidentWorkflowStage struct {
-	StepKey    string               `json:"step_key"`
-	Label      string               `json:"label"`
-	Status     string               `json:"status"` // completed, active, conditional, pending, blocked
-	Summary    string               `json:"summary"`
-	PolicyNote string               `json:"policy_note,omitempty"`
-	ImpactNote string               `json:"impact_note,omitempty"`
-	Actions    []IncidentStepAction `json:"actions"`
+	StepKey          string               `json:"step_key"`
+	Label            string               `json:"label"`
+	Status           string               `json:"status"` // completed, active, conditional, pending, blocked
+	Summary          string               `json:"summary"`
+	PolicyNote       string               `json:"policy_note,omitempty"`
+	ProposalRiskNote string               `json:"proposal_risk_note,omitempty"`
+	ImpactNote       string               `json:"impact_note,omitempty"`
+	Actions          []IncidentStepAction `json:"actions"`
 }
 
 // IncidentWorkflowView 是故障处置五步流程及右侧详情抽屉的结构化投影。
@@ -281,17 +282,19 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		return IncidentWorkflowView{}, err
 	}
 
-	var propCount int
-	var lastPropCap, lastPropRisk string
-	err = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(MAX(capability_key),''), COALESCE(MAX(risk_boundary),'') FROM incident_proposals WHERE incident_id=?`, incidentID).
-		Scan(&propCount, &lastPropCap, &lastPropRisk)
-	if err != nil {
+	var lastPropID, lastPropCap, lastPropRisk, lastPropState string
+	var lastPropTime int64
+	err = s.db.QueryRowContext(ctx, `SELECT proposal_id, capability_key, risk_boundary, state, created_at
+		FROM incident_proposals WHERE incident_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, incidentID).
+		Scan(&lastPropID, &lastPropCap, &lastPropRisk, &lastPropState, &lastPropTime)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return IncidentWorkflowView{}, err
 	}
 
 	var ticketID, ticketState, ticketAssignee string
-	err = s.db.QueryRowContext(ctx, `SELECT ticket_id, state, assignee FROM tickets WHERE incident_id=? ORDER BY created_at DESC LIMIT 1`, incidentID).
-		Scan(&ticketID, &ticketState, &ticketAssignee)
+	var ticketUpdatedAt int64
+	err = s.db.QueryRowContext(ctx, `SELECT ticket_id, state, assignee, updated_at FROM tickets WHERE incident_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1`, incidentID).
+		Scan(&ticketID, &ticketState, &ticketAssignee, &ticketUpdatedAt)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return IncidentWorkflowView{}, err
 	}
@@ -307,13 +310,14 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 	defer healRows.Close()
 	healActions := []IncidentStepAction{}
 	healStatus := "pending"
+	healHasProgress := false
 	for healRows.Next() {
 		var eid, obj, opID, st, blk, vo string
 		var ts int64
 		if err := healRows.Scan(&eid, &obj, &opID, &st, &blk, &vo, &ts); err != nil {
 			return IncidentWorkflowView{}, err
 		}
-		summary := fmt.Sprintf("%s 自愈执行 (%s)", obj, st)
+		summary := fmt.Sprintf("%s 自愈记录 (%s)", obj, st)
 		if vo != "" {
 			summary += " · " + vo
 		}
@@ -328,6 +332,9 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 			HasLogs:    opID != "" || vo != "" || blk != "",
 			LogPreview: vo,
 		})
+		if st != "proposed" {
+			healHasProgress = true
+		}
 		if st == "admitted" || st == "dispatched" {
 			healStatus = "active"
 		} else if st == "verified" && healStatus == "pending" {
@@ -344,16 +351,18 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		StepKey: "observe",
 		Label:   "① 观测",
 		Status:  "completed",
-		Summary: "已采集故障症状与影响面快照",
+		Summary: "已登记故障症状",
 		Actions: []IncidentStepAction{{ActionID: inc.IncidentID + ":obs", Timestamp: inc.CreatedAt, Summary: "症状登记: " + inc.Symptoms, Status: "completed"}},
 	}
 	rcStatus := "active"
-	rcSummary := fmt.Sprintf("待收敛 (%d 条假设)", hypCount)
-	if inc.RootCauseProven || supportedHyp > 0 {
+	rcSummary := fmt.Sprintf("待收敛（%d 条假设，%d 条获支持）", hypCount, supportedHyp)
+	rootCause := ""
+	if inc.RootCauseProven {
 		rcStatus = "completed"
-		rcSummary = "已定位: " + inc.RootCause
-		if inc.RootCause == "" {
-			rcSummary = "已核实假设证据"
+		rootCause = inc.RootCause
+		rcSummary = "根因已证实"
+		if rootCause != "" {
+			rcSummary = "已证实: " + rootCause
 		}
 	}
 	rootCauseStage := IncidentWorkflowStage{
@@ -363,29 +372,40 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		Summary: rcSummary,
 		Actions: []IncidentStepAction{{ActionID: inc.IncidentID + ":rc", Timestamp: inc.UpdatedAt, Summary: rcSummary, Status: rcStatus, HasLogs: inc.RootCauseEvidence != "", LogPreview: inc.RootCauseEvidence}},
 	}
-	if len(healActions) == 0 && propCount > 0 {
-		healStatus = "active"
-		healActions = append(healActions, IncidentStepAction{ActionID: inc.IncidentID + ":prop", Timestamp: inc.UpdatedAt, Summary: fmt.Sprintf("候选处置 %s", lastPropCap), Status: "proposed"})
+	healExecutionCount := len(healActions)
+	healSummary := "暂无自愈记录"
+	if healExecutionCount > 0 {
+		healSummary = fmt.Sprintf("最近 %d 条自愈记录", healExecutionCount)
+	}
+	proposalRiskNote := ""
+	if lastPropID != "" {
+		healSummary += "，有处置提案"
+		healActions = append(healActions, IncidentStepAction{ActionID: lastPropID, Timestamp: lastPropTime, Summary: fmt.Sprintf("处置提案 %s", lastPropCap), Status: lastPropState})
+		if lastPropRisk != "" {
+			proposalRiskNote = lastPropCap + "：" + lastPropRisk
+		}
 	}
 	selfHealStage := IncidentWorkflowStage{
-		StepKey:    "self_heal",
-		Label:      "③ 自愈",
-		Status:     healStatus,
-		Summary:    fmt.Sprintf("%d 条自愈记录", len(healActions)),
-		PolicyNote: lastPropRisk,
-		ImpactNote: inc.ImpactScope,
-		Actions:    healActions,
+		StepKey:          "self_heal",
+		Label:            "③ 自愈",
+		Status:           healStatus,
+		Summary:          healSummary,
+		ProposalRiskNote: proposalRiskNote,
+		ImpactNote:       inc.ImpactScope,
+		Actions:          healActions,
 	}
-	ticketStatus := "conditional"
-	ticketSummary := "若自愈失败自动转单"
+	ticketStatus := "pending"
+	ticketSummary := "暂无关联工单"
 	ticketActions := []IncidentStepAction{}
 	if ticketID != "" {
 		ticketStatus = "active"
 		if ticketState == "verified" || ticketState == "closed" {
 			ticketStatus = "completed"
+		} else if ticketState == "failed" {
+			ticketStatus = "blocked"
 		}
 		ticketSummary = fmt.Sprintf("工单 %s (%s)", ticketID, ticketState)
-		ticketActions = append(ticketActions, IncidentStepAction{ActionID: ticketID, Timestamp: inc.UpdatedAt, Summary: ticketSummary + " · " + ticketAssignee, Status: ticketState})
+		ticketActions = append(ticketActions, IncidentStepAction{ActionID: ticketID, Timestamp: ticketUpdatedAt, Summary: ticketSummary + " · " + ticketAssignee, Status: ticketState})
 	}
 	ticketStage := IncidentWorkflowStage{
 		StepKey: "ticket",
@@ -416,9 +436,9 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		activeStep = "acceptance"
 	case ticketID != "":
 		activeStep = "ticket"
-	case len(healActions) > 0:
+	case healHasProgress:
 		activeStep = "self_heal"
-	case hypCount > 0 || inc.State == "investigating":
+	case hypCount > 0 || inc.RootCauseProven || inc.State == "investigating":
 		activeStep = "root_cause"
 	default:
 		activeStep = "observe"
@@ -432,7 +452,7 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		ActiveStep:       activeStep,
 		RecoveryVerified: inc.RecoveryVerified,
 		RootCauseProven:  inc.RootCauseProven,
-		RootCause:        inc.RootCause,
+		RootCause:        rootCause,
 		Stages:           []IncidentWorkflowStage{observeStage, rootCauseStage, selfHealStage, ticketStage, accStage},
 	}, nil
 }

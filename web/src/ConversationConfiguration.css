@@ -1,0 +1,41 @@
+.v31-workspace .conversation-binding-card {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 9px;
+  background: var(--selected);
+}
+.conversation-binding-card-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.conversation-binding-card-row > svg { flex: none; color: var(--accent); }
+.v31-workspace .conversation-binding-card select {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 3px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+}
+.conversation-binding-card select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conversation-binding-card-badge {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.v31-workspace .conversation-binding-card-detail { margin: 2px 0 0; color: var(--muted); overflow-wrap: anywhere; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.v31-workspace .conversation-binding-card .error { margin: 6px 0 0; overflow-wrap: anywhere; }
+.v31-workspace .conversation-binding-card .text-button { font-size: inherit; }
+.v31-workspace .conversation-binding-notice { margin: 8px 0 0; color: var(--muted); }
+.conversation-binding-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+@media (max-width: 820px) {
+  .v31-workspace .conversation-config-fields { grid-template-columns: 1fr; }
+  .v31-workspace .conversation-binding-card select { min-height: 40px; font-size: 16px; }
+}

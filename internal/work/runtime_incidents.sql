@@ -74,3 +74,51 @@ CREATE TABLE IF NOT EXISTS incident_proposals (
 );
 
 CREATE INDEX IF NOT EXISTS proposals_by_incident ON incident_proposals(incident_id, state);
+
+-- A confirmation is bound to a principal, incident, target and observed
+-- revisions. It is also the stable request key for ticket submission.
+CREATE TABLE IF NOT EXISTS incident_action_previews (
+  preview_id TEXT PRIMARY KEY,
+  incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
+  subject TEXT NOT NULL,
+  action TEXT NOT NULL,
+  object_ref TEXT NOT NULL,
+  description TEXT NOT NULL,
+  incident_updated_at INTEGER NOT NULL,
+  asset_identity TEXT NOT NULL,
+  asset_revision INTEGER NOT NULL,
+  ownership_epoch INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS incident_ticket_operations (
+  operation_id TEXT PRIMARY KEY REFERENCES operations(operation_id),
+  incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
+  object_ref TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS incident_ticket_operations_by_incident ON incident_ticket_operations(incident_id, object_ref);
+
+-- The independent checker supplies this evidence. A ticket-system receipt or
+-- a human-entered description cannot create a passing verification receipt.
+CREATE TABLE IF NOT EXISTS ticket_health_verifications (
+  ticket_id TEXT PRIMARY KEY REFERENCES tickets(ticket_id),
+  object_ref TEXT NOT NULL,
+  asset_identity TEXT NOT NULL,
+  checked_asset_revision INTEGER NOT NULL,
+  asset_revision INTEGER NOT NULL,
+  ownership_epoch INTEGER NOT NULL,
+  external_state_version INTEGER NOT NULL,
+  evidence TEXT NOT NULL,
+  verified_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS incident_ticket_rechecks (
+  preview_id TEXT PRIMARY KEY REFERENCES incident_action_previews(preview_id),
+  incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
+  ticket_id TEXT NOT NULL REFERENCES tickets(ticket_id),
+  subject TEXT NOT NULL,
+  evidence_digest TEXT NOT NULL,
+  confirmed_at INTEGER NOT NULL
+);

@@ -107,3 +107,47 @@ func TestRunEventReplayCursorScopeAndReset(t *testing.T) {
 		t.Fatalf("current snapshot unavailable after reset: %s", got)
 	}
 }
+
+func TestRunEventRealtimeReasoningAndWakeup(t *testing.T) {
+	a := setupA1(t, filepath.Join(t.TempDir(), "run-realtime.sqlite"))
+	defer a.close()
+	ctx := t.Context()
+
+	run, err := a.store.Submit(ctx, "fixture-realtime-run", "think and reply", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wake, unsubscribe := a.store.SubscribeRunEvents(run.ID)
+	defer unsubscribe()
+
+	streamCtx, cancelStream := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelStream()
+	req := a.request(http.MethodGet, "/api/v1/runs/"+run.ID+"/events", "").WithContext(streamCtx)
+	res, err := a.ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK || res.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected SSE stream, got %d %v", res.StatusCode, res.Header)
+	}
+
+	// Emit a reasoning.delta event directly via Store and confirm both wake channel and SSE receive it.
+	if _, err := a.store.StopConversation(ctx, run.ConversationID, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-wake:
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("expected SubscribeRunEvents to wake up immediately on run state change")
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "event: done\n") {
+		t.Fatalf("expected SSE stream to finish with done event, got: %s", body)
+	}
+}

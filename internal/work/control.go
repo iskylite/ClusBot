@@ -118,7 +118,13 @@ func (s *Store) resumeTask(ctx context.Context, taskID, requestKey string, revis
 	if err != nil {
 		return Run{}, err
 	}
-	return run, tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	if run.Status == "queued" {
+		s.notifyQueue()
+	}
+	return run, nil
 }
 
 var ErrBenchmarkRecoveryUnsupported = errors.New("基准任务不能用普通助手继续、重试或重新分派；请查看原作业对账，或另行提交新的基准任务")
@@ -312,6 +318,11 @@ AND NOT EXISTS(SELECT 1 FROM runs WHERE id=messages.run_id AND memory_command=1)
 		}
 	} else if err = reuseTaskRead(tx, taskID, r.ID, task.Status != "cancelled"); err != nil {
 		return Run{}, err
+	}
+	if !task.RequirementsChanged {
+		if err = inheritRerunNoAutomaticTools(tx, taskID, r.ID); err != nil {
+			return Run{}, err
+		}
 	}
 	if _, err = tx.Exec("INSERT INTO submissions VALUES(?,?,?)", requestKey, fingerprint, r.ID); err != nil {
 		return Run{}, err

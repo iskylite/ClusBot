@@ -179,6 +179,29 @@ func TestV31AccountProfileRoleGuardMaterialPreviewAndWorkflowLogs(t *testing.T) 
 		t.Fatalf("unexpected csv preview: %+v", prev)
 	}
 
+	downloadURL := "/api/v1/materials/" + mat.ID + "/download"
+	w = f.request(http.MethodGet, downloadURL, nil, adminCookie)
+	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Disposition"), "attachment; filename=pod7-ib-diag.csv") || !strings.Contains(w.Body.String(), "246.1 GB/s,18,自愈隔离") {
+		t.Fatalf("download material: %d %v %s", w.Code, w.Header(), w.Body)
+	}
+	w = f.request(http.MethodGet, downloadURL, nil, nil)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated material download: %d %s", w.Code, w.Body)
+	}
+
+	temporaryMember := f.login("alex", "temp-password-1234")
+	w = f.request(http.MethodPost, "/api/v1/me/password", map[string]string{
+		"current_password": "temp-password-1234",
+		"new_password":     "member password changed 123",
+	}, temporaryMember)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("change member password: %d %s", w.Code, w.Body)
+	}
+	w = f.request(http.MethodGet, downloadURL, nil, f.login("alex", "member password changed 123"))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("download another user's material: %d %s", w.Code, w.Body)
+	}
+
 	w = f.request(http.MethodDelete, "/api/v1/materials/"+mat.ID, nil, adminCookie)
 	if w.Code != http.StatusNoContent {
 		t.Fatalf("delete pending material: %d %s", w.Code, w.Body)

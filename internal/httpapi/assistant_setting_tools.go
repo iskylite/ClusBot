@@ -60,6 +60,7 @@ func assistantSettingTools() []assistantTool {
 // presented as a working link until that UI is implemented.
 func assistantSettingForms() map[string]string {
 	return map[string]string{
+		"configure_conversation":   "conversation_configuration",
 		"configure_model_provider": "/settings#model-default",
 		"configure_model_profile":  "/settings#model-profiles",
 		"configure_model_role":     "/settings#model-roles",

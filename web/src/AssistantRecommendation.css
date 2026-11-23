@@ -1,0 +1,14 @@
+.v31-workspace .assistant-recommendation {width:min(100%,600px);overflow-wrap:anywhere}
+.assistant-recommendation .assistant-card-title h3 svg {color:var(--accent)}
+.v31-workspace .assistant-recommendation-origin {margin:8px 0;color:var(--muted)}
+.assistant-recommendation fieldset {display:grid;gap:5px;min-width:0;margin:0;padding:0;border:0}
+.assistant-recommendation legend {margin-bottom:5px;color:var(--muted);font-size:11px}
+.assistant-recommendation-option {display:flex;align-items:flex-start;gap:8px;min-width:0;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--panel);cursor:pointer}
+.assistant-recommendation-option[data-selected="true"] {border-color:color-mix(in srgb,var(--accent) 35%,var(--line));background:var(--selected)}
+.assistant-recommendation-option input {flex:none;margin:3px 0 0;accent-color:var(--accent)}
+.assistant-recommendation-copy {display:grid;gap:2px;flex:1;min-width:0}
+.assistant-recommendation-copy strong {font-weight:600}
+.assistant-recommendation-copy > span {color:var(--muted)}
+.assistant-recommendation-badge {flex:none;padding:1px 6px;border:1px solid var(--line);border-radius:5px;background:var(--surface);color:var(--accent);font-size:11px}
+.v31-workspace .assistant-recommendation-state {margin:8px 0;color:var(--muted)}
+.assistant-recommendation footer {display:flex}

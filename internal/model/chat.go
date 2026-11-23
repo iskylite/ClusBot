@@ -2,6 +2,7 @@ package model
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -127,8 +128,10 @@ type chatChunk struct {
 		Index  int
 		Finish string `json:"finish_reason"`
 		Delta  struct {
-			Content string
-			Calls   []struct {
+			Content          string
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
+			Calls            []struct {
 				Index int
 				chatCall
 			} `json:"tool_calls"`
@@ -136,7 +139,7 @@ type chatChunk struct {
 	}
 }
 
-func readChatStream(body io.Reader, emit func(string) error) (responseData, error) {
+func readChatStream(ctx context.Context, body io.Reader, emit func(string) error) (responseData, error) {
 	const maxEventBytes = 2 << 20
 	reader := bufio.NewScanner(body)
 	reader.Buffer(make([]byte, 4096), maxEventBytes)
@@ -189,6 +192,19 @@ func readChatStream(body io.Reader, emit func(string) error) (responseData, erro
 				return result, errors.New("unexpected chat completion choice")
 			}
 			finish = choice.Finish
+			reasoning := choice.Delta.ReasoningContent
+			if reasoning == "" {
+				reasoning = choice.Delta.Reasoning
+			}
+			if reasoning != "" {
+				outputBytes += len(reasoning)
+				if outputBytes > maxEventBytes {
+					return result, errors.New("model output exceeds size limit")
+				}
+				if err := work.EmitReasoning(ctx, reasoning); err != nil && ctx.Err() != nil {
+					return result, err
+				}
+			}
 			outputBytes += len(choice.Delta.Content)
 			if outputBytes > maxEventBytes {
 				return result, errors.New("model output exceeds size limit")

@@ -48,7 +48,9 @@
 
 ### 超管全站任务
 
-`GET /api/v1/admin/tasks` 跨账号列出任务，返回 `owner_id` 和分页游标，可按既有任务筛选参数查询。用 `/api/v1/admin/tasks/{owner}/{id}` 读取详情，其下 `/runs`、`/artifacts`、`/artifacts/{artifact}/content` 分别读取执行状态、成果列表和成果文件。该入口也支持 `PATCH /{owner}/{id}` 编辑标题，以及在任务路径下用 `POST /pause`、`/cancel`、`/resume`、`/acceptance` 暂停、取消、恢复或重跑、验收。写入沿用任务版本和状态规则，任务及后续执行继续归原账号。任务目标、范围和交付要求由原账号维护，跨账号恢复或重跑沿用原任务输入。个人接口仍按登录账号访问。
+`GET /api/v1/admin/tasks` 跨账号列出任务，返回 `owner_id`、分页游标、分组计数及每个任务的运行和产物数，可按任务编号前缀、标题、目标、状态和负责人筛选。用 `/api/v1/admin/tasks/{owner}/{id}` 读取详情，其下 `/runs`、`/artifacts`、`/artifacts/{artifact}/content` 分别读取执行状态、成果列表和成果文件。该入口也支持 `PATCH /{owner}/{id}` 编辑标题，以及在任务路径下用 `POST /pause`、`/cancel`、`/resume`、`/acceptance` 暂停、取消、恢复或重试、验收。
+
+已验收的普通任务通过 `POST /rerun` 在原任务下创建新一轮运行。请求包含当前 `revision` 和 `client_request_id`。重跑沿用源运行的输入、材料及 Skill 绑定，执行前复核权限。旧运行、成果和验收记录保留，本轮成果重新验收。专用流程和有外部操作或自动工具记录的任务由各自受控入口处理。任务及后续执行归原账号，个人接口按登录账号访问。
 
 ## 状态与执行边界
 

@@ -3,6 +3,7 @@ import {api,APIError} from './api'
 
 export type BenchmarkProgress = {
   task_id:string; profile:string; version:number; plan_revision:number; state:string; stop_requested:boolean
+  dispatch_control?:{paused:boolean;available:boolean;control_version:number;unavailable_reason?:string}
   asset_scope:{source:string;target_count:number;target_refs:string[]}
   cases:BenchmarkCase[]
 }
@@ -37,6 +38,7 @@ export function buildSkipRequest(taskID:string,stepID:string,caseKey:string,revi
 export function benchmarkReadiness(p:BenchmarkProgress) {
   if (p.state==='cancelled') return '已确认停止'
   if (p.stop_requested) return '停止请求已登记，正在核对'
+  if (p.dispatch_control?.paused || p.state==='paused') return '已暂停后续派发'
   if (p.cases.some(c=>c.operation?.state==='reconcile')) return '外部执行结果待核实'
   switch (p.state) {
     case 'pending': return '等待执行'
@@ -107,6 +109,60 @@ export function useBenchmarkProgress(taskID:string, enabled=true) {
   return {progress:current?.value??undefined,unavailable:current?.unavailable??false,checking:enabled&&!current,error:current?.error??'',refresh}
 }
 
+type TaskDispatchReceipt = {task_id:string;action:'pause'|'resume';state:'paused'|'resumed';plan_revision:number;control_version:number}
+
+export function useBenchmarkTaskDispatch(progress:BenchmarkProgress|undefined,refresh:()=>Promise<void>,onApplied?:(receipt:TaskDispatchReceipt)=>void) {
+  const [busy,setBusy]=useState(false)
+  const [notice,setNotice]=useState<{text:string;error?:boolean}>()
+  const lock=useRef(false)
+  const pending=useRef<{target:string;key:string}|undefined>(undefined)
+  const noticeVersion=useRef<number|undefined>(undefined)
+  useEffect(()=>{
+    if(noticeVersion.current!==undefined&&progress?.dispatch_control&&progress.dispatch_control.control_version>noticeVersion.current) {
+      noticeVersion.current=undefined;setNotice(undefined)
+    }
+  },[progress?.dispatch_control?.control_version])
+  async function apply() {
+    const control=progress?.dispatch_control
+    if(!progress||!control?.available||lock.current)return
+    const action=control.paused?'resume':'pause'
+    const target=JSON.stringify([progress.task_id,action,progress.plan_revision,control.control_version])
+    const key=pending.current?.target===target?pending.current.key:crypto.randomUUID()
+    pending.current={target,key};lock.current=true;setBusy(true);setNotice(undefined);noticeVersion.current=undefined
+    const base='/domain/benchmarks/'+encodeURIComponent(progress.task_id)+'/dispatch-control'
+    const valid=(receipt:TaskDispatchReceipt)=>receipt.task_id===progress.task_id&&receipt.action===action&&
+      receipt.state===(action==='pause'?'paused':'resumed')&&receipt.plan_revision===progress.plan_revision&&receipt.control_version===control.control_version+1
+    let receipt:TaskDispatchReceipt|undefined
+    try {
+      receipt=await api<TaskDispatchReceipt>(base,{action,expected_plan_revision:progress.plan_revision,
+        expected_control_version:control.control_version,client_request_id:key})
+      if(!valid(receipt))throw new Error('回执无法核对')
+    } catch(error) {
+      if(error instanceof APIError&&error.status!==undefined&&error.status<500) {
+        pending.current=undefined
+        setNotice({text:error.status===409?'任务或控制状态已变化，正在刷新；请核对后重试。':error.message,error:true})
+      } else {
+        try {
+          const found=await api<TaskDispatchReceipt>(base+'?'+new URLSearchParams({client_request_id:key}))
+          if(valid(found))receipt=found
+        } catch { /* Preserve the original request key until its outcome is known. */ }
+        if(!receipt||!valid(receipt)) {
+          receipt=undefined
+          setNotice({text:'请求结果尚未核实；再次操作会沿用同一请求。',error:true})
+        }
+      }
+    }
+    if(receipt) {
+      pending.current=undefined
+      noticeVersion.current=receipt.control_version
+      setNotice({text:action==='pause'?'已暂停后续派发，已派发作业继续核对。':'已恢复后续派发，执行前仍会核对条件。'})
+      onApplied?.(receipt)
+    }
+    try {await refresh()} finally {lock.current=false;setBusy(false)}
+  }
+  return {apply,busy,notice}
+}
+
 export function BenchmarkExecution({progress,refresh,onChange,compact=false,stale=false,conversationID,conversationBusy=false}:{
   progress:BenchmarkProgress;refresh:()=>Promise<void>;onChange?:()=>void;compact?:boolean;stale?:boolean;conversationID?:string;conversationBusy?:boolean
 }) {
@@ -117,6 +173,7 @@ export function BenchmarkExecution({progress,refresh,onChange,compact=false,stal
   const [reportError,setReportError]=useState('')
   const [reportBusy,setReportBusy]=useState(false)
   const [reportGeneration,setReportGeneration]=useState(0)
+  const taskDispatch=useBenchmarkTaskDispatch(progress,refresh,()=>onChange?.())
   const lock=useRef(false)
   const inFlightKeys=useRef(new Map<string,string>())
   const reportSignature=JSON.stringify([progress.plan_revision,progress.state,progress.cases.map(c=>[c.step_id,c.phase,c.operation?.state])])
@@ -166,7 +223,10 @@ export function BenchmarkExecution({progress,refresh,onChange,compact=false,stal
   return <section className="benchmark-execution" aria-label="基准执行">
     <header className="benchmark-execution-title"><div><h3>基准执行</h3><p className="muted">方案 {progress.profile} v{progress.version} · 本次修订 {revision}</p></div>
       <span className="muted">证据已核实 {verified} / {progress.cases.length}</span>
+      {progress.dispatch_control?.available&&<button type="button" className="outline" disabled={stale||taskDispatch.busy} onClick={()=>void taskDispatch.apply()}>{taskDispatch.busy?'正在核对…':progress.dispatch_control.paused?'恢复后续派发':'暂停后续派发'}</button>}
     </header>
+    {progress.dispatch_control?.unavailable_reason&&<p className="muted">{progress.dispatch_control.unavailable_reason}</p>}
+    {taskDispatch.notice&&<p role={taskDispatch.notice.error?'alert':'status'} className={taskDispatch.notice.error?'error':'muted'}>{taskDispatch.notice.text}</p>}
     <details className="benchmark-targets"><summary>资产目标数 {progress.asset_scope.target_count}</summary>
       <p className="muted">这是任务冻结的资产目标引用数，不表示 GPU 数量或实时容量。</p>
       <ul>{(progress.asset_scope.target_refs??[]).map(ref=><li key={ref}>{ref}</li>)}</ul>

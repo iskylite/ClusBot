@@ -10,12 +10,13 @@ const TaskPageLimit = 200
 
 type TaskFilter struct {
 	Scope, Query, Status string
+	MatchID              bool
 	AfterUpdatedAt       int64
 	AfterID              string
 	Limit                int
 }
 
-const taskSearch = `(?='' OR scope_label=?) AND (?='' OR instr(lower(title),lower(?))>0 OR instr(lower(goal),lower(?))>0)`
+const taskSearch = `(?='' OR scope_label=?) AND (?='' OR instr(lower(title),lower(?))>0 OR instr(lower(goal),lower(?))>0 OR (? AND instr(id,lower(?))=1))`
 const taskUpdatedOrder = "updated_at DESC,id"
 
 type taskListQueryer interface {
@@ -23,7 +24,7 @@ type taskListQueryer interface {
 }
 
 func queryTasks(ctx context.Context, q taskListQueryer, filter TaskFilter, where, order string, args ...any) ([]Task, error) {
-	params := taskSearchArgs(filter.Scope, filter.Query)
+	params := taskSearchArgs(filter.Scope, filter.Query, filter.MatchID)
 	params = append(params, args...)
 	params = append(params, filter.Limit)
 	rows, err := q.QueryContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE "+taskSearch+" AND ("+where+") ORDER BY "+order+" LIMIT ?", params...)
@@ -42,8 +43,8 @@ func queryTasks(ctx context.Context, q taskListQueryer, filter TaskFilter, where
 	return items, rows.Err()
 }
 
-func taskSearchArgs(scope, query string) []any {
-	return []any{scope, scope, query, query, query}
+func taskSearchArgs(scope, query string, matchID bool) []any {
+	return []any{scope, scope, query, query, query, matchID, query}
 }
 
 func taskPageLimit(limit int) int {
@@ -55,6 +56,17 @@ func taskPageLimit(limit int) int {
 
 func (s *Store) ListTasks(ctx context.Context, filter TaskFilter) ([]Task, error) {
 	filter.Limit = taskPageLimit(filter.Limit)
+	return s.listTasks(ctx, filter)
+}
+
+// ListAdminTasks includes one extra row per owner so a merged page can expose
+// a cursor only when more matching tasks actually exist.
+func (s *Store) ListAdminTasks(ctx context.Context, filter TaskFilter) ([]Task, error) {
+	filter.Limit = taskPageLimit(filter.Limit) + 1
+	return s.listTasks(ctx, filter)
+}
+
+func (s *Store) listTasks(ctx context.Context, filter TaskFilter) ([]Task, error) {
 	return queryTasks(ctx, s.db, filter, `(?='' OR status=?) AND (?='' OR updated_at<? OR (updated_at=? AND id>?))`, taskUpdatedOrder,
 		filter.Status, filter.Status, filter.AfterID, filter.AfterUpdatedAt, filter.AfterUpdatedAt, filter.AfterID)
 }
@@ -116,7 +128,7 @@ func (s *Store) Overview(ctx context.Context, filter OverviewFilter) (OverviewSn
 	for _, group := range overviewGroups {
 		var count int
 		if err = tx.QueryRowContext(ctx, "SELECT count(*) FROM tasks WHERE "+taskSearch+" AND ("+group.where+")",
-			taskSearchArgs(filter.Scope, filter.Query)...).Scan(&count); err != nil {
+			taskSearchArgs(filter.Scope, filter.Query, false)...).Scan(&count); err != nil {
 			return OverviewSnapshot{}, err
 		}
 		snapshot.Counts[group.name] = count

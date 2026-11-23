@@ -15,18 +15,49 @@ const keysAre = (value:Record<string,unknown>,keys:string[]) => Object.keys(valu
 const validID = (value:unknown):value is string => typeof value==='string' && idPattern.test(value)
 
 export type AssistantTool = {name:string;description:string;mode:'read'|'confirm'|'form';params?:string[];label?:string}
+export type RoleBindingPrefill={role?:string;profile_id?:string;profile_revision?:number;provider_revision?:number}
+export type ProviderCredentialsPrefill={provider_id?:string;provider_revision?:number}
 export type AssistantReply = {state:'completed';tool:string;result:unknown;surface?:unknown} |
   {state:'confirmation_required';confirmation_id:string;expires_at_unix_ms:number;input:Record<string,unknown>;target?:unknown;surface?:unknown} |
-  {state:'form_required';tool:string;form:string}
-export type AssistantItem = AssistantReply|AssistantTool[]
+  {state:'form_required';tool:string;form:string;prefill?:RoleBindingPrefill|ProviderCredentialsPrefill}
+type AssistantFailure = {state:'failed';tool:string;message:string}
+export type AssistantCardItem = AssistantReply|AssistantTool[]
+export type AssistantItem = AssistantCardItem|{state:'batch_completed';items:(AssistantReply|AssistantFailure)[]}
+
+function isAssistantReply(value:unknown):value is AssistantReply {
+  if(!object(value))return false
+  if(value.state==='completed')return typeof value.tool==='string' && value.tool.length>0 && Object.hasOwn(value,'result')
+  if(value.state==='form_required'){
+    if(value.tool==='role_binding_prefill'||value.tool==='provider_credentials_prefill'){
+      if(!object(value.prefill))return false
+      const p=value.prefill
+      const revision=(v:unknown)=>typeof v==='number'&&Number.isSafeInteger(v)&&v>0
+      const recordID=(v:unknown)=>typeof v==='string'&&/^[a-f\d]{32}$/.test(v)
+      if(value.tool==='role_binding_prefill'){
+        return value.form==='model_role_binding' && Object.keys(p).every(key=>['role','profile_id','profile_revision','provider_revision'].includes(key)) &&
+          (p.role===undefined||typeof p.role==='string'&&['general_router','conversation_reply','task_worker','benchmark_admission','benchmark_revision','benchmark_execution'].includes(p.role)) &&
+          (p.profile_id===undefined?p.profile_revision===undefined&&p.provider_revision===undefined:recordID(p.profile_id)&&revision(p.profile_revision)&&revision(p.provider_revision))
+      }
+      return value.form==='model_provider_credentials' && Object.keys(p).every(key=>['provider_id','provider_revision'].includes(key)) &&
+        (p.provider_id===undefined?p.provider_revision===undefined:recordID(p.provider_id)&&revision(p.provider_revision))
+    }
+    return typeof value.tool==='string' && typeof value.form==='string'
+  }
+  return value.state==='confirmation_required' && typeof value.confirmation_id==='string' && /^[a-f\d]{48}$/.test(value.confirmation_id) && typeof value.expires_at_unix_ms==='number' && Number.isSafeInteger(value.expires_at_unix_ms) && value.expires_at_unix_ms>=0 && value.expires_at_unix_ms<=8640000000000000 && object(value.input) && typeof value.input.tool==='string'
+}
 
 // Only a recognizable receipt may consume the composer's draft.
 export function isAssistantItem(value:unknown):value is AssistantItem {
   if(Array.isArray(value))return value.length<=200 && value.every(item=>object(item) && typeof item.name==='string' && /^[a-z0-9_]{1,80}$/.test(item.name) && typeof item.description==='string' && ['read','confirm','form'].includes(String(item.mode)) && (item.label===undefined||typeof item.label==='string') && (item.params===undefined||(Array.isArray(item.params)&&item.params.every((p:unknown)=>typeof p==='string'))))
-  if(!object(value))return false
-  if(value.state==='completed')return typeof value.tool==='string' && value.tool.length>0 && Object.hasOwn(value,'result')
-  if(value.state==='form_required')return typeof value.tool==='string' && typeof value.form==='string'
-  return value.state==='confirmation_required' && typeof value.confirmation_id==='string' && /^[a-f\d]{48}$/.test(value.confirmation_id) && typeof value.expires_at_unix_ms==='number' && Number.isSafeInteger(value.expires_at_unix_ms) && value.expires_at_unix_ms>=0 && value.expires_at_unix_ms<=8640000000000000 && object(value.input) && typeof value.input.tool==='string'
+  if(object(value)&&value.state==='batch_completed'){
+    return Array.isArray(value.items)&&value.items.length>=2&&value.items.length<=6&&value.items.every(item=>
+      isAssistantReply(item)||(object(item)&&item.state==='failed'&&typeof item.tool==='string'&&typeof item.message==='string'&&item.message.length>0&&item.message.length<=1000))
+  }
+  return isAssistantReply(value)
+}
+
+export function assistantReplyCards(item:AssistantItem):(AssistantCardItem|AssistantFailure)[] {
+  return !Array.isArray(item)&&item.state==='batch_completed'?item.items:[item]
 }
 
 export function parseSurfaces(value:unknown):Surface[]|undefined {

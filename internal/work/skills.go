@@ -201,28 +201,41 @@ func (s *Store) skillForRun(ctx context.Context, run Run) (*SkillVersion, error)
 	}
 	defer tx.Rollback()
 	if run.Generation == 0 {
-		// A matching explicit choice wins. Select only for the actual run's
-		// task scope; no free text, tool grants or chat-only run can apply it.
-		var skill string
-		var version int
-		var source string
-		err = tx.QueryRow(`SELECT b.skill_id,b.version,'conversation_selection'
+		boundary, err := readRerunInputBoundary(tx, run.ID)
+		if err != nil {
+			return nil, err
+		}
+		if boundary != nil {
+			// Keep the source Run's binding (including an absent binding).
+			// Current authorization is still checked below before use.
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO run_skills(run_id,skill_id,version,binding_source)
+SELECT ?,skill_id,version,binding_source FROM run_skills WHERE run_id=?`, run.ID, boundary.SourceRunID); err != nil {
+				return nil, err
+			}
+		} else {
+			// A matching explicit choice wins. Select only for the actual run's
+			// task scope; no free text, tool grants or chat-only run can apply it.
+			var skill string
+			var version int
+			var source string
+			err = tx.QueryRow(`SELECT b.skill_id,b.version,'conversation_selection'
 FROM runs r JOIN tasks t ON t.id=r.task_id
 JOIN conversation_skill_bindings b ON b.conversation_id=r.conversation_id
 JOIN personal_skills s ON s.id=b.skill_id AND s.scope_label=t.scope_label
 WHERE r.id=? UNION ALL
 SELECT s.id,s.active_version,'scope_default' FROM personal_skills s JOIN tasks t ON t.scope_label=s.scope_label
 WHERE t.id=? AND s.active_version IS NOT NULL LIMIT 1`, run.ID, run.TaskID).Scan(&skill, &version, &source)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		if err == nil {
-			if err := rememberSkillReference(tx, skill, version); err != nil {
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil, err
 			}
-			if _, err = tx.Exec("INSERT OR IGNORE INTO run_skills(run_id,skill_id,version,binding_source) VALUES(?,?,?,?)",
-				run.ID, skill, version, source); err != nil {
-				return nil, err
+			if err == nil {
+				if err := rememberSkillReference(tx, skill, version); err != nil {
+					return nil, err
+				}
+				if _, err = tx.Exec("INSERT OR IGNORE INTO run_skills(run_id,skill_id,version,binding_source) VALUES(?,?,?,?)",
+					run.ID, skill, version, source); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

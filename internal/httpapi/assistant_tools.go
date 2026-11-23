@@ -38,8 +38,9 @@ type assistantPreview struct {
 
 type assistantBridge struct {
 	http.Handler
-	mu      sync.Mutex
-	pending map[string]assistantPreview
+	mu              sync.Mutex
+	pending         map[string]assistantPreview
+	recommendations map[string]assistantRecommendation
 }
 
 type assistantBridgeKey struct{}
@@ -56,6 +57,7 @@ func (s Server) registerAssistantTools(api *http.ServeMux) {
 	api.HandleFunc("POST /api/v1/assistant/tools", s.assistantInvoke)
 	api.HandleFunc("POST /api/v1/assistant/confirm", s.assistantConfirm)
 	api.HandleFunc("DELETE /api/v1/assistant/confirm/{id}", s.assistantDiscard)
+	api.HandleFunc("POST /api/v1/assistant/recommendations/{id}/selection", s.assistantRecommendationSelection)
 }
 
 func registeredAssistantTools() []assistantTool {
@@ -127,17 +129,217 @@ func (s Server) assistantFormAllowed(r *http.Request, name string) bool {
 		return name != "change_my_password" && name != "manage_accounts"
 	}
 	account, ok := accountFromContext(r)
-	return ok && (account.IsSuperadmin || name == "change_my_password")
+	return ok && (account.IsSuperadmin || name == "change_my_password" || name == "configure_conversation")
 }
 
 func (s Server) assistantTools(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, s.assistantToolViews(r))
 }
 
+// The recommendation tool is offered to the model only. It does not name or
+// grant access to an operation, provider, route, script or target.
+func (s Server) assistantModelToolViews(r *http.Request) []assistantToolView {
+	return append(s.assistantToolViews(r), assistantToolView{
+		Name: assistantRecommendationTool, Label: "提出候选方案", Mode: "proposal",
+		Description: "仅根据请求提出 1 至 4 个供用户选择的文字建议，不代表实际能力、授权或执行。参数放在 body：title、可选 summary、options（每项 label、可选 detail 和 recommended）。",
+	})
+}
+
 func (s Server) assistantInvoke(w http.ResponseWriter, r *http.Request) {
+	var raw json.RawMessage
+	if decode(w, r, &raw) {
+		if !s.invokeAssistantRequest(w, r, raw, false) {
+			fail(w, 400, "invalid_assistant_arguments", "工具参数格式无效，批量调用需要 2 至 6 项")
+		}
+	}
+}
+
+// A batch is a bounded collection of independent existing tool invocations.
+// Validate its envelope before invoking anything, then keep each item's
+// authorization, confirmation and result separate.
+func (s Server) invokeAssistantRequest(w http.ResponseWriter, r *http.Request, raw json.RawMessage, modelProposal bool) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false
+	}
+	if calls, batch := fields["calls"]; batch {
+		var items []json.RawMessage
+		if len(fields) != 1 || json.Unmarshal(calls, &items) != nil || len(items) < 2 || len(items) > 6 {
+			return false
+		}
+		results := make([]json.RawMessage, 0, len(items))
+		for _, item := range items {
+			results = append(results, s.invokeAssistantBatchItem(r, item, modelProposal))
+		}
+		jsonResponse(w, http.StatusOK, struct {
+			State string            `json:"state"`
+			Items []json.RawMessage `json:"items"`
+		}{"batch_completed", results})
+		return true
+	}
+	input, ok := decodeAssistantToolInput(raw)
+	if ok && input.Tool == assistantRecommendationTool && modelProposal && !readOnlyAssistant(r) {
+		draft, valid := decodeAssistantRecommendation(raw)
+		if !valid || assistantInputContainsCredential(input) {
+			return false
+		}
+		s.issueAssistantRecommendation(w, r, draft)
+		return true
+	}
+	if !ok || (modelProposal && (!assistantKnownTool(input.Tool) || assistantInputContainsCredential(input))) {
+		return false
+	}
+	s.invokeAssistantTool(w, r, input)
+	return true
+}
+
+func decodeAssistantToolInput(raw json.RawMessage) (assistantToolInput, bool) {
 	var input assistantToolInput
-	if decode(w, r, &input) {
-		s.invokeAssistantTool(w, r, input)
+	if !bytes.HasPrefix(bytes.TrimSpace(raw), []byte("{")) {
+		return input, false
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if d.Decode(&input) != nil {
+		return input, false
+	}
+	return input, true
+}
+
+func assistantKnownTool(name string) bool {
+	if _, ok := assistantSettingForms()[name]; ok {
+		return true
+	}
+	for _, tool := range registeredAssistantTools() {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+var assistantCredentialValue = regexp.MustCompile(`(?i)(?:\b(?:sk|rk)-[a-z0-9_-]{10,}|\bbearer\s+[^\s]{8,}|-----begin [a-z ]*private key-----|(?:api[ _-]?key|password|passwd|secret|access[ _-]?token|密码|密钥|凭据)\s*[:=：]\s*[^\s]+)`)
+var assistantCredentialMention = regexp.MustCompile(`(?i)(?:password|passwd|secret|credential|api[ _-]?key|(?:private|access|signing)[ _-]?key|(?:access|refresh)[ _-]?token|密码|密钥|凭据)`)
+
+// Credentials belong in the trusted settings forms, not a batch receipt or
+// model proposal. Do not echo rejected field names or values in failures.
+func assistantInputContainsCredential(in assistantToolInput) bool {
+	data, err := json.Marshal(in)
+	if err != nil {
+		return true
+	}
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return true
+	}
+	pending := []any{value}
+	for len(pending) != 0 {
+		v := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		switch v := v.(type) {
+		case map[string]any:
+			for key, entry := range v {
+				normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(key))
+				if strings.Contains(normalized, "password") || strings.Contains(normalized, "passwd") ||
+					strings.Contains(normalized, "secret") || strings.Contains(normalized, "credential") ||
+					strings.Contains(normalized, "token") || strings.Contains(normalized, "apikey") ||
+					strings.Contains(normalized, "privatekey") || strings.Contains(normalized, "accesskey") ||
+					strings.Contains(normalized, "signingkey") || strings.Contains(normalized, "authorization") ||
+					strings.Contains(key, "密码") || strings.Contains(key, "密钥") || strings.Contains(key, "凭据") {
+					return true
+				}
+				pending = append(pending, entry)
+			}
+		case []any:
+			pending = append(pending, v...)
+		case string:
+			if assistantCredentialValue.MatchString(v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s Server) invokeAssistantBatchItem(r *http.Request, raw json.RawMessage, modelProposal bool) json.RawMessage {
+	input, ok := decodeAssistantToolInput(raw)
+	tool := "unknown"
+	if assistantKnownTool(input.Tool) || (modelProposal && input.Tool == assistantRecommendationTool) {
+		tool = input.Tool
+	}
+	failure := func(message string) json.RawMessage {
+		data, _ := json.Marshal(map[string]string{"state": "failed", "tool": tool, "message": message})
+		return data
+	}
+	if !ok || input.Tool == "" {
+		return failure("工具参数格式无效")
+	}
+	if assistantInputContainsCredential(input) {
+		return failure("请在可信设置表单中处理凭据")
+	}
+	if input.Tool == assistantRecommendationTool && modelProposal && !readOnlyAssistant(r) {
+		draft, valid := decodeAssistantRecommendation(raw)
+		if !valid {
+			return failure("建议格式无效，请重新提出")
+		}
+		rec := &assistantResponse{headers: make(http.Header)}
+		s.issueAssistantRecommendation(rec, r, draft)
+		if rec.status >= 300 || rec.overflow {
+			return failure(assistantBatchFailureMessage(rec.status, rec.Bytes()))
+		}
+		return append(json.RawMessage(nil), rec.Bytes()...)
+	}
+	if _, isForm := assistantSettingForms()[input.Tool]; isForm && (len(input.Params) != 0 || len(input.Query) != 0 || len(input.Body) != 0) {
+		return failure("设置表单不接受对话参数，请打开表单填写")
+	}
+	rec := &assistantResponse{headers: make(http.Header)}
+	s.invokeAssistantTool(rec, r, input)
+	if rec.overflow {
+		return failure("结果过大，请使用详情入口")
+	}
+	if rec.status >= 300 {
+		return failure(assistantBatchFailureMessage(rec.status, rec.Bytes()))
+	}
+	var result struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(rec.Bytes(), &result) != nil ||
+		(result.State != "completed" && result.State != "form_required" && result.State != "confirmation_required") {
+		return failure("无法读取工具结果，请重试")
+	}
+	return append(json.RawMessage(nil), rec.Bytes()...)
+}
+
+func assistantBatchFailureMessage(status int, body []byte) string {
+	var result struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &result)
+	switch result.Code {
+	case "assistant_tool_unavailable":
+		return "工具不可用或无访问权限"
+	case "invalid_assistant_arguments":
+		return "请提供有效的对象和参数"
+	case "assistant_target_unavailable":
+		return "无法读取目标任务"
+	case "assistant_preview_busy":
+		return "待确认操作过多，请稍后再试"
+	case "assistant_result_too_large":
+		return "结果过大，请使用详情入口"
+	}
+	switch status {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return "请提供有效的对象和参数"
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		return "工具或目标不可用，或无访问权限"
+	case http.StatusConflict:
+		return "状态已变化，请重新查询后再试"
+	case http.StatusRequestEntityTooLarge:
+		return "结果过大，请使用详情入口"
+	case http.StatusTooManyRequests:
+		return "请求过多，请稍后再试"
+	default:
+		return "工具暂时不可用，请稍后再试"
 	}
 }
 
@@ -425,6 +627,8 @@ func assistantReadShortcut(text string) string {
 		return "list_tasks"
 	case "有哪些待处理", "查看待我处理", "查看待处理事项":
 		return "list_attention"
+	case "查看资产发现", "查看资产发现状态", "查看集群资产发现状态":
+		return "get_discovery_setup_status"
 	}
 	return ""
 }
@@ -452,18 +656,22 @@ func (s Server) interpretAssistantCommand(w http.ResponseWriter, r *http.Request
 		s.invokeAssistantTool(w, r, assistantToolInput{Tool: name})
 		return
 	}
+	switch strings.TrimRight(strings.TrimSpace(text), "？?。！!") {
+	case "本会话配置", "配置本会话", "会话能力绑定":
+		s.invokeAssistantTool(w, r, assistantToolInput{Tool: "configure_conversation"})
+		return
+	}
 	if readOnlyAssistant(r) {
 		fail(w, 400, "invalid_read_only_query", "此问法需要模型理解。请通过 /assistant 查看只读工具，或提交明确的工具名称和参数")
 		return
 	}
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "密码") || strings.Contains(lower, "密钥") ||
-		strings.Contains(lower, "api key") || strings.Contains(lower, "api_key") || strings.Contains(lower, "凭据") {
+	if assistantCredentialValue.MatchString(text) || assistantCredentialMention.MatchString(text) {
 		form := "configure_model_provider"
 		switch {
-		case strings.Contains(lower, "重置密码"):
+		case strings.Contains(lower, "重置密码") || (strings.Contains(lower, "reset") && strings.Contains(lower, "password")):
 			form = "manage_accounts"
-		case strings.Contains(lower, "密码"):
+		case strings.Contains(lower, "密码") || strings.Contains(lower, "password") || strings.Contains(lower, "passwd"):
 			form = "change_my_password"
 		case strings.Contains(lower, "mcp"):
 			form = "configure_mcp_connection"
@@ -471,13 +679,11 @@ func (s Server) interpretAssistantCommand(w http.ResponseWriter, r *http.Request
 		s.invokeAssistantTool(w, r, assistantToolInput{Tool: form})
 		return
 	}
-	raw, err := s.Settings.InterpretAssistantTool(r.Context(), text, s.assistantToolViews(r))
-	var in assistantToolInput
-	if err != nil || json.Unmarshal(raw, &in) != nil || in.Tool == "" {
+	raw, err := s.Settings.InterpretAssistantTool(r.Context(), text, s.assistantModelToolViews(r))
+	if err != nil || !s.invokeAssistantRequest(w, r, raw, true) {
 		fail(w, 409, "assistant_intent_unresolved", "无法确定操作，请补充目标或从工具目录选择")
 		return
 	}
-	s.invokeAssistantTool(w, r, in)
 }
 
 func (s Server) assistantConversationCommand(w http.ResponseWriter, r *http.Request, text string) bool {
@@ -494,18 +700,57 @@ func (s Server) assistantConversationCommand(w http.ResponseWriter, r *http.Requ
 		s.assistantTools(w, r)
 		return true
 	}
-	var input assistantToolInput
 	if strings.HasPrefix(args, "{") {
-		d := json.NewDecoder(strings.NewReader(args))
-		d.DisallowUnknownFields()
-		if !json.Valid([]byte(args)) || d.Decode(&input) != nil {
-			fail(w, 400, "invalid_assistant_arguments", "工具参数格式无效")
-			return true
+		if !json.Valid([]byte(args)) {
+			message := "JSON 格式有误，请检查英文双引号、逗号和括号。草稿已保留。"
+			if quote := assistantCurlyJSONQuote(args); quote != "" {
+				message = "JSON 中的中文弯引号（" + quote + "）不能用作边界，请将其改为英文双引号（\"）。草稿已保留。"
+				if strings.Contains(args, `"calls"`) {
+					message += "批量调用需要 2 至 6 项；单次调用请使用 {\"tool\":\"工具名\"}。"
+				}
+			}
+			fail(w, 400, "invalid_assistant_arguments", message)
+		} else if !s.invokeAssistantRequest(w, r, json.RawMessage(args), false) {
+			message := "工具参数格式有误，请检查 tool、params、query 和 body。草稿已保留。"
+			var fields map[string]json.RawMessage
+			if json.Unmarshal([]byte(args), &fields) == nil && fields["calls"] != nil {
+				message = "批量调用只接受 calls 列表，列表需要 2 至 6 项；单次调用请使用 {\"tool\":\"工具名\"}。草稿已保留。"
+			}
+			fail(w, 400, "invalid_assistant_arguments", message)
 		}
-	} else {
+	} else if !s.assistantOperationAdvice(w, r, args) {
 		s.interpretAssistantCommand(w, r, args)
-		return true
 	}
-	s.invokeAssistantTool(w, r, input)
 	return true
+}
+
+// Detect a likely smart quote used as a JSON delimiter, without changing the
+// submitted text or echoing potentially sensitive tool arguments.
+func assistantCurlyJSONQuote(raw string) string {
+	inString, escaped := false, false
+	for i, char := range raw {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inString && char == '\\' {
+			escaped = true
+			continue
+		}
+		if char == '"' {
+			inString = !inString
+			continue
+		}
+		if char != '“' && char != '”' {
+			continue
+		}
+		if !inString {
+			return string(char)
+		}
+		after := strings.TrimLeft(raw[i+len(string(char)):], " \t\r\n")
+		if len(after) == 0 || strings.ContainsRune(",}] :", rune(after[0])) {
+			return string(char)
+		}
+	}
+	return ""
 }

@@ -21,7 +21,9 @@ func (s Server) PersonalHandler(store *work.Store) http.Handler {
 
 func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, route string, account work.Account, instance http.Handler) {
 	switch route {
-	case "GET /api/v1/assistant/tools", "GET /api/v1/assistant/model-routing", "GET /api/v1/assistant/connections", "POST /api/v1/assistant/tools", "POST /api/v1/assistant/confirm", "DELETE /api/v1/assistant/confirm/{id}", "POST /api/v1/assistant/interpret":
+	case "GET /api/v1/assistant/tools", "GET /api/v1/assistant/model-routing", "GET /api/v1/assistant/connections",
+		"POST /api/v1/assistant/tools", "POST /api/v1/assistant/confirm", "DELETE /api/v1/assistant/confirm/{id}",
+		"POST /api/v1/assistant/interpret", "POST /api/v1/assistant/recommendations/{id}/selection":
 		instance.ServeHTTP(w, r)
 		return
 	}
@@ -107,9 +109,10 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 
 func accountPersonalRoute(route string) bool {
 	switch route {
-	case "GET /api/v1/preferences", "PUT /api/v1/preferences",
+	case "GET /api/v1/preferences", "PUT /api/v1/preferences", "GET /api/v1/settings/data/storage",
 		"GET /api/v1/domain/snapshot", "GET /api/v1/domain/cluster-trends", "GET /api/v1/domain/cluster-inventory",
 		"GET /api/v1/domain/benchmarks/{id}", "GET /api/v1/domain/benchmarks/{id}/report",
+		"POST /api/v1/domain/benchmarks/{id}/dispatch-control", "GET /api/v1/domain/benchmarks/{id}/dispatch-control",
 		"GET /api/v1/domain/benchmarks/{id}/evidence", "GET /api/v1/domain/benchmarks/{id}/evidence/{artifact}",
 		"POST /api/v1/domain/asset-acceptance", "GET /api/v1/domain/asset-acceptance/{task_id}",
 		"GET /api/v1/domain/discovery/setup-status", "POST /api/v1/domain/discovery/authorizations",
@@ -123,7 +126,7 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/runs/{id}/skill-binding",
 		"GET /api/v1/workspace/files", "POST /api/v1/attachments/workspace",
 		"POST /api/v1/attachments", "POST /api/v1/attachments/uploads/{id}/part",
-		"GET /api/v1/materials/{id}/preview", "DELETE /api/v1/materials/{id}",
+		"GET /api/v1/materials/{id}/preview", "GET /api/v1/materials/{id}/download", "DELETE /api/v1/materials/{id}",
 		"GET /api/v1/incidents", "POST /api/v1/incidents", "GET /api/v1/incidents/{id}/workflow", "GET /api/v1/incidents/{id}/steps/{step}/logs",
 		"GET /api/v1/memories", "POST /api/v1/memories", "GET /api/v1/memories/source/{message}",
 		"PATCH /api/v1/memories/{id}", "DELETE /api/v1/memories/{id}",
@@ -132,13 +135,17 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/tasks", "POST /api/v1/tasks", "GET /api/v1/tasks/{id}",
 		"GET /api/v1/tasks/{id}/runs", "GET /api/v1/tasks/{id}/runs/{run_id}", "GET /api/v1/tasks/{id}/manifest",
 		"PATCH /api/v1/tasks/{id}", "POST /api/v1/tasks/{id}/acceptance", "POST /api/v1/tasks/{id}/pause",
-		"POST /api/v1/tasks/{id}/cancel", "POST /api/v1/tasks/{id}/resume", "POST /api/v1/tasks/{id}/ack-read",
+		"POST /api/v1/tasks/{id}/cancel", "POST /api/v1/tasks/{id}/resume", "POST /api/v1/tasks/{id}/rerun", "POST /api/v1/tasks/{id}/ack-read",
 		"POST /api/v1/tasks/{id}/publications", "POST /api/v1/publications/{id}/decision", "POST /api/v1/publications/{id}/reconcile",
 		"GET /api/v1/runtime/queue/explicit-tasks", "GET /api/v1/admissions", "GET /api/v1/admissions/{key}",
 		"GET /api/v1/conversations", "POST /api/v1/conversations", "GET /api/v1/conversations/{id}",
 		"GET /api/v1/conversations/history", "GET /api/v1/conversations/{id}/history", "GET /api/v1/conversations/{id}/events",
 		"POST /api/v1/conversations/{id}/cancel", "PATCH /api/v1/conversations/{id}", "DELETE /api/v1/conversations/{id}",
 		"POST /api/v1/conversations/{id}/messages", "POST /api/v1/conversations/{id}/resume",
+		"POST /api/v1/conversations/{id}/benchmark-revision-preview",
+		"GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}",
+		"GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}",
+		"POST /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}/confirm",
 		"POST /api/v1/conversations/{id}/task", "POST /api/v1/conversations/isolated-replies", "POST /api/v1/conversations/{id}/isolated-replies",
 		"GET /api/v1/runs/{id}", "GET /api/v1/runs/{id}/events",
 		"GET /api/v1/conversations/{id}/mcp-selection", "PUT /api/v1/conversations/{id}/mcp-selection",

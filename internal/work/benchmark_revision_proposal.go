@@ -35,6 +35,10 @@ const revisionInstructionHelp = "请用准确的测项 ID，一次只改一处�
 var (
 	removeBenchmarkCaseText = regexp.MustCompile(`^(?:请)?移除测试项[ \t]+([a-zA-Z0-9_.-]{1,128})[。]?$`)
 	setBenchmarkParamText   = regexp.MustCompile(`^(?:请)?将测试项[ \t]+([a-zA-Z0-9_.-]{1,128})[ \t]+的参数[ \t]+([a-zA-Z0-9_.-]{1,128})[ \t]+改为[ \t]+([a-zA-Z0-9_.+%-]{1,256})([ \t]+并同步实测要求)?[。]?$`)
+	// The conversational example has one fixed, locally identifiable case.
+	// The current plan and dispatch boundary are still checked by the normal
+	// revision validator; an absent case never selects a different one.
+	removeCollectivePreviewText = regexp.MustCompile(`^(?:(?:查|查询)[ \t]+[^，,。；;]{1,80}四层状态[，,][ \t]*)?(?:请)?把(?:本次)?(?:尚未|未)派发的集合通信(?:测试项|测项|测试)(?:移除|删除|去掉)[，,][ \t]*(?:先)?(?:预览|预演)(?:影响|差异)[。]?$`)
 )
 
 func parseBenchmarkRevisionText(text string) (BenchmarkRevisionIntent, error) {
@@ -49,6 +53,19 @@ func parseBenchmarkRevisionText(text string) (BenchmarkRevisionIntent, error) {
 		return BenchmarkRevisionIntent{Action: "set_parameter", CaseKey: m[1], Parameter: m[2], Value: m[3], ChangeActual: m[4] != ""}, nil
 	}
 	return BenchmarkRevisionIntent{}, fmt.Errorf("%w：%s", ErrBenchmarkInput, revisionInstructionHelp)
+}
+
+func benchmarkRevisionChatShortcut(text string, allowActual bool) (string, bool, error) {
+	if intent, err := parseBenchmarkRevisionText(text); err == nil {
+		if intent.ChangeActual && !allowActual {
+			return "", true, fmt.Errorf("%w：请显式确认是否连同实测要求一起修订", ErrBenchmarkInput)
+		}
+		return text, true, nil
+	}
+	if removeCollectivePreviewText.MatchString(strings.TrimSpace(text)) {
+		return "移除测试项 collective", true, nil
+	}
+	return "", false, nil
 }
 
 // ProposeBenchmarkRevision translates a deliberately bounded instruction

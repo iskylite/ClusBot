@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const source=await readFile(new URL('../src/assistantSurface.ts',import.meta.url),'utf8')
 const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText
-const {parseSurfaces,assistantDetails,previewText,trustedForm,isAssistantItem}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'))
+const {parseSurfaces,assistantDetails,previewText,trustedForm,isAssistantItem,assistantReplyCards}=await import('data:text/javascript;base64,'+Buffer.from(js).toString('base64'))
 const catalog='https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json'
 const makeSurface=()=>[
   {version:'1.0',createSurface:{surfaceId:'a',catalogId:catalog}},
@@ -74,4 +74,31 @@ test('only recognizable tool responses are considered receipts',()=>{
   assert.equal(isAssistantItem({state:'confirmation_required',confirmation_id:'a'.repeat(48),expires_at_unix_ms:1,input:{tool:'create_task'}}),true)
   assert.equal(isAssistantItem([{name:'list_tasks',description:'查看任务',mode:'read'}]),true)
   assert.equal(isAssistantItem([{name:'../../bad',description:'x',mode:'read'}]),false)
+})
+
+test('independent card receipts stay ordered and invalid batches do not consume a draft',()=>{
+  const completed={state:'completed',tool:'list_tasks',result:[]}
+  const failed={state:'failed',tool:'get_task',message:'未能读取该任务'}
+  const confirmation={state:'confirmation_required',confirmation_id:'a'.repeat(48),expires_at_unix_ms:1,input:{tool:'pause_task'}}
+  const receipt={state:'batch_completed',items:[completed,failed,confirmation]}
+  assert.equal(isAssistantItem(receipt),true)
+  assert.deepEqual(assistantReplyCards(receipt),[completed,failed,confirmation])
+  assert.deepEqual(assistantReplyCards(completed),[completed])
+  assert.equal(isAssistantItem({...receipt,items:[completed]}),false)
+  assert.equal(isAssistantItem({...receipt,items:Array(7).fill(completed)}),false)
+  assert.equal(isAssistantItem({...receipt,items:[completed,{...confirmation,confirmation_id:'wrong'}]}),false)
+  assert.equal(isAssistantItem({...receipt,items:[completed,{...failed,message:{text:'invalid'}}]}),false)
+})
+
+test('model setup receipts accept only local identifiers and revisions',()=>{
+  const id='a'.repeat(32)
+  const role={state:'form_required',tool:'role_binding_prefill',form:'model_role_binding',prefill:{role:'task_worker',profile_id:id,profile_revision:2,provider_revision:3}}
+  const provider={state:'form_required',tool:'provider_credentials_prefill',form:'model_provider_credentials',prefill:{provider_id:id,provider_revision:3}}
+  assert.equal(isAssistantItem({state:'batch_completed',items:[role,provider]}),true)
+  assert.equal(isAssistantItem({...role,prefill:{role:'unknown',profile_id:id,profile_revision:2,provider_revision:3}}),false)
+  assert.equal(isAssistantItem({...role,prefill:{role:'task_worker',profile_id:id,profile_revision:2}}),false)
+  assert.equal(isAssistantItem({...provider,prefill:{provider_id:'../../settings',provider_revision:3}}),false)
+  assert.equal(isAssistantItem({...provider,prefill:{provider_id:id,provider_revision:3,api_key:'secret'}}),false)
+  assert.equal(isAssistantItem({...provider,form:'https://attacker.example'}),false)
+  assert.equal(isAssistantItem({...provider,prefill:{}}),true)
 })

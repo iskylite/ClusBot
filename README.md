@@ -56,7 +56,11 @@ cd /tmp/clusbot-release
 
 在装有 Xcode 命令行工具的 Mac 上运行 `make dmg`，产物为 `dist/ClusBot-arm64.dmg`，适用于 macOS 14 或更新版本的 Apple Silicon Mac。
 
-挂载镜像，将 `ClusBot.app` 拖到「应用程序」，然后双击启动。应用会启动本机服务并自动建立会话，在自己的窗口中显示界面。退出应用会停止随它启动的服务。数据保存在 `~/Library/Application Support/ClusBot`。
+挂载镜像，将 `ClusBot.app` 拖到「应用程序」，然后双击启动。全新数据目录首次启动会打开「初始化超级管理员」，创建账号后进入个人助手。重新启动时登录已创建的账号。升级前已有账号的数据目录继续使用原账号，旧版无账号的本机工作区继续按原方式打开，保留原有数据和访问方式。退出应用会停止随它启动的本机服务。数据保存在 `~/Library/Application Support/ClusBot`。应用版本可在 Finder 的「显示简介」和应用菜单的「关于 ClusBot」查看。
+
+桌面版启动时会读取数据目录中的 `config.yaml`（如有）。基准连接使用 `benchmark.base_url`、`benchmark.connection`、`benchmark.revision` 和 `benchmark.tools`。在桌面账号模式下，已拥有任务及所需授权的账号可读取进度、预览和应用修订，已有基准派发流程继续使用本机模式。本机模式的工单使用 `tickets.base_url`，独立复检使用 `tickets.health_url`。
+
+用现有 `import-domain-assets` 命令导入集群资产时，将 POD 登记为 `kind: pod`，并在成员节点填写 `pod_ref`。POD 和节点都需要 `allow_read: true` 才会纳入可见分组。可转工单的资产需要读取和维修授权，例如在可信资产清单中同时设置 `allow_read: true` 与 `allow_repair: true`。
 
 桌面界面默认随窗口缩放，长内容在各栏内滚动。「显示」菜单可放大、缩小或恢复适应窗口。未发送的对话和事项草稿、未保存的记忆编辑可在退出应用后继续。下载成果或工具回执时，系统会询问保存位置。
 

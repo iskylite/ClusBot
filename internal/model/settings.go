@@ -367,6 +367,16 @@ func validateSettings(value work.ModelSettings) error {
 				return InvalidSettings("推理强度档位必须为 1 至 32 字节")
 			}
 		}
+		for key, source := range a.Sources {
+			switch key {
+			case "context_tokens", "max_output_tokens", "vision", "file_input", "tool_calling", "structured_output", "reasoning", "reasoning_levels", "reasoning_effort":
+			default:
+				return InvalidSettings("模型属性来源无效")
+			}
+			if source != "provider" && source != "manual" {
+				return InvalidSettings("模型属性来源无效")
+			}
+		}
 	}
 	if !keyReference.MatchString(value.KeyRef) {
 		return InvalidSettings("密钥引用格式为 env:环境变量名")

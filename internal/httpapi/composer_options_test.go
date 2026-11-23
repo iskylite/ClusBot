@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,22 @@ func TestComposerOptionsServerModeAndBrandInference(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("DEEPSEEK_API_KEY_TEST", "dummy")
+	yes := true
+	capable, err := settings.SaveProfile(ctx, "", model.ProfileInput{
+		Name: "Capable", BaseURL: "https://api.deepseek.com/v1", ModelID: "deepseek-capable",
+		Protocol: model.ProtocolResponses, KeyRef: "env:DEEPSEEK_API_KEY_TEST",
+		Attributes: &work.ModelAttributes{Vision: &yes, Reasoning: &yes},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := settings.SaveProfile(ctx, "", model.ProfileInput{
+		Name: "Unknown", BaseURL: "https://api.deepseek.com/v1", ModelID: "deepseek-unknown",
+		Protocol: model.ProtocolResponses, KeyRef: "env:DEEPSEEK_API_KEY_TEST",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var mu sync.Mutex
 	stores := map[string]*work.Store{}
@@ -136,6 +153,18 @@ func TestComposerOptionsServerModeAndBrandInference(t *testing.T) {
 	if len(memberResp.Users) != 2 {
 		t.Fatalf("expected 2 mentionable users, got %+v", memberResp.Users)
 	}
+	models := make(map[string]composerReplyModel)
+	for _, item := range memberResp.ReplyModels {
+		models[item.ProfileID] = item
+	}
+	if got, ok := models[capable.ID]; !ok || !got.Vision || !got.Reasoning {
+		t.Fatalf("explicit capabilities not returned: %+v", got)
+	}
+	if got, ok := models[unknown.ID]; !ok || got.Vision || got.Reasoning {
+		t.Fatalf("unknown capabilities reported as supported: %+v", got)
+	} else if encoded, _ := json.Marshal(got); strings.Contains(string(encoded), `"vision"`) || strings.Contains(string(encoded), `"reasoning"`) {
+		t.Fatalf("unknown capabilities should be omitted: %s", encoded)
+	}
 	if strings.Contains(w.Body.String(), "password") || strings.Contains(w.Body.String(), "dummy") {
 		t.Fatalf("composer-options leaked sensitive fields: %s", w.Body)
 	}
@@ -156,5 +185,29 @@ func TestComposerOptionsServerModeAndBrandInference(t *testing.T) {
 	}
 	if got := inferModelBrand("Qwen3.5-235B", ""); got != "qwen" {
 		t.Fatalf("qwen brand = %q, want qwen", got)
+	}
+}
+
+func TestComposerModelCapabilitiesRequiresExplicitSupport(t *testing.T) {
+	yes, no := true, false
+	cases := []struct {
+		name       string
+		attributes *work.ModelAttributes
+		vision     bool
+		reasoning  bool
+	}{
+		{"unknown", nil, false, false},
+		{"disabled", &work.ModelAttributes{Vision: &no, Reasoning: &no}, false, false},
+		{"explicit", &work.ModelAttributes{Vision: &yes, Reasoning: &yes}, true, true},
+		{"levels", &work.ModelAttributes{ReasoningLevels: []string{"low", "high"}}, false, true},
+		{"disabled overrides levels", &work.ModelAttributes{Reasoning: &no, ReasoningLevels: []string{"low"}}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			vision, reasoning := composerModelCapabilities(tc.attributes)
+			if vision != tc.vision || reasoning != tc.reasoning {
+				t.Fatalf("got vision=%t reasoning=%t, want %t %t", vision, reasoning, tc.vision, tc.reasoning)
+			}
+		})
 	}
 }

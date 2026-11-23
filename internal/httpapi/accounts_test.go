@@ -164,6 +164,52 @@ func TestServerBootstrapSessionAndLegacyRoutesClosed(t *testing.T) {
 	}
 }
 
+func TestDesktopLoopbackAccountSession(t *testing.T) {
+	store, err := work.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	const origin = "http://127.0.0.1:52123"
+	handler := (Server{Store: store, ServerMode: true, Origin: origin, Hosts: []string{"127.0.0.1:52123"}}).Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})
+	request := func(method, path, body, requestOrigin string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		r := httptest.NewRequest(method, origin+path, strings.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:12345"
+		if body != "" {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		if requestOrigin != "" {
+			r.Header.Set("Origin", requestOrigin)
+		}
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+		return w
+	}
+	credentials := `{"username":"admin","password":"correct horse battery staple"}`
+	if w := request("POST", "/api/v1/bootstrap", credentials, origin, nil); w.Code != http.StatusCreated {
+		t.Fatalf("bootstrap: %d %s", w.Code, w.Body)
+	}
+	if w := request("POST", "/api/v1/session", credentials, "https://attacker.example", nil); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin login accepted: %d", w.Code)
+	}
+	w := request("POST", "/api/v1/session", credentials, origin, nil)
+	if w.Code != http.StatusOK || len(w.Result().Cookies()) != 1 {
+		t.Fatalf("login: %d %s", w.Code, w.Body)
+	}
+	cookie := w.Result().Cookies()[0]
+	if cookie.Secure || !cookie.HttpOnly || cookie.SameSite != http.SameSiteStrictMode {
+		t.Fatalf("incorrect loopback cookie: %+v", cookie)
+	}
+	w = request("GET", "/api/v1/session", "", "", cookie)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"authenticated":true`) || !strings.Contains(w.Body.String(), `"username":"admin"`) {
+		t.Fatalf("session: %d %s", w.Code, w.Body)
+	}
+}
+
 func TestConcurrentBootstrapOnlyOneSucceeds(t *testing.T) {
 	f := newAccountFixture(t)
 	codes := make([]int, 2)

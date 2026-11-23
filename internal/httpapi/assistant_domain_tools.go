@@ -2,6 +2,7 @@ package httpapi
 
 func assistantDomainTools() []assistantTool {
 	return []assistantTool{
+		{Name: "get_cluster_inventory", Description: "分页读取当前账号已授权节点，并汇总全部已授权节点的最近健康记录和已确认 POD 关系。query 可传 limit、after 和精确 pod_ref。", Method: "GET", Path: "/api/v1/domain/cluster-inventory"},
 		{Name: "get_cluster_trends", Description: "读取已授权节点的历史在役率及故障趋势。query 可传 range（24h、7d 或 30d）。", Method: "GET", Path: "/api/v1/domain/cluster-trends"},
 		{Name: "list_benchmark_profiles", Description: "列出已发布基准方案。", Method: "GET", Path: "/api/v1/domain/benchmark-profiles"},
 		{Name: "get_benchmark_profile", Description: "查看已发布基准方案的指定版本。参数 key、version。", Method: "GET", Path: "/api/v1/domain/benchmark-profiles/{key}/versions/{version}"},

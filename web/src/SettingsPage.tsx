@@ -8,10 +8,11 @@ import {ModelSettings as ModelCatalogSettings} from './ModelSettings'
 
 const message = (error: unknown) => error instanceof Error ? error.message : '请求未完成，请重试'
 
-export function SettingsPage({ onSaved,openConnections,openProposals }: { onSaved: (value: Settings) => void; openConnections:()=>void; openProposals:()=>void }) {
+export function SettingsPage({ onSaved,openProposals,view='model' }: { onSaved: (value: Settings) => void; openConnections:()=>void; openProposals:()=>void; view?:'model'|'skills' }) {
   const [settings, setSettings] = useState<Settings & {default_source?:string}>()
   const [error, setError] = useState('')
   const [modelRevision, setModelRevision] = useState(0)
+  const [anchor, setAnchor] = useState(location.hash)
 
   const refreshSettings = useCallback(async () => {
     const value = await api<Settings & {default_source?:string}>('/settings')
@@ -21,6 +22,7 @@ export function SettingsPage({ onSaved,openConnections,openProposals }: { onSave
   }, [onSaved])
 
   useEffect(() => {
+    if(view!=='model') return
     let active = true
     api<Settings & {default_source?:string}>('/settings').then(value => {
       if (active) {
@@ -29,37 +31,64 @@ export function SettingsPage({ onSaved,openConnections,openProposals }: { onSave
       }
     }).catch(error => { if (active) setError(message(error)) })
     return () => { active = false }
-  }, [onSaved])
+  }, [onSaved,view])
 
-  const scrollToAnchor = useCallback(() => {
-    if(!['#model-default','#model-profiles','#model-roles','#model-routing','#skill-directory'].includes(location.hash))return
-    requestAnimationFrame(()=>document.getElementById(location.hash.slice(1))?.scrollIntoView({block:'start'}))
+  useEffect(()=>{
+    const update=()=>setAnchor(location.hash)
+    window.addEventListener('hashchange',update)
+    window.addEventListener('popstate',update)
+    window.addEventListener('clusbot:navigate',update)
+    return()=>{window.removeEventListener('hashchange',update);window.removeEventListener('popstate',update);window.removeEventListener('clusbot:navigate',update)}
   },[])
   useEffect(()=>{
-    scrollToAnchor()
-    window.addEventListener('hashchange',scrollToAnchor)
-    window.addEventListener('clusbot:navigate',scrollToAnchor)
-    return()=>{window.removeEventListener('hashchange',scrollToAnchor);window.removeEventListener('clusbot:navigate',scrollToAnchor)}
-  },[scrollToAnchor])
-  useEffect(()=>{if(settings)scrollToAnchor()},[Boolean(settings),scrollToAnchor])
+    if(anchor!=='#model-roles')return
+    const frame=requestAnimationFrame(()=>document.getElementById(anchor.slice(1))?.scrollIntoView({block:'start'}))
+    return()=>cancelAnimationFrame(frame)
+  },[anchor,Boolean(settings)])
 
-  return <main className="main settings-page">
-    <header className="page-heading"><h1>设置</h1></header>
-    <nav aria-label="设置分区" className="model-settings-nav">
-      <a href="#model-routing">阶段策略</a><a href="#model-default">旧默认模型</a><a href="#model-profiles">旧模型档案</a><a href="#model-roles">旧角色绑定</a><a href="#skill-directory">Skill 目录</a>
-    </nav>
-    <ModelCatalogSettings onChanged={refreshSettings}/>
-    {settings?.default_source === 'profile' ? <section id="model-default" className="settings-card"><h2>旧默认模型</h2><p className="muted">当前默认模型来自目录。需要编辑旧默认时，请先在上方恢复旧默认模型。</p></section> : settings ? <ModelForm key={settings.revision} initial={settings} onSaved={onSaved}/> : error ?
-      <p className="error" role="alert">{error}</p> :
-      <p className="muted" role="status">正在加载设置…</p>}
-    <ModelRolesSettings refreshKey={modelRevision}/>
-    <SkillDirectorySettings openProposals={openProposals}/>
-    <section className="settings-card" aria-labelledby="settings-connections-title">
-      <h2 id="settings-connections-title">MCP 工具与连接</h2>
-      <p className="muted">管理连接、试连和工具授权。保存连接不试连；会话选择在对话内单独设置。</p>
-      <button type="button" className="outline" onClick={openConnections}>打开工具与连接</button>
-    </section>
+  const legacyModelDetail=['#model-default','#model-profiles','#model-roles'].includes(anchor)
+  const modelRoutingView=anchor==='#model-routing'
+  function navigateModel(target:string){
+    if(location.pathname+location.search+location.hash!==target){
+      history.pushState(null,'',target)
+      window.dispatchEvent(new Event('clusbot:navigate'))
+    }
+  }
+
+  return <main className={'main settings-page'+(view==='skills'?' settings-skills-page':'')}>
+    <h1 className="settings-sr-only">{view==='skills'?'Skills':'模型'}</h1>
+    {view==='skills' ? <SkillDirectorySettings openProposals={openProposals}/> : <>
+      {legacyModelDetail ? <a className="model-link" href="/settings?tab=model">返回模型设置</a> : (
+        <nav className="model-subnav" aria-label="模型设置分区">
+          <button type="button" aria-current={!modelRoutingView?'page':undefined} onClick={()=>navigateModel('/settings?tab=model')}>提供方与模型</button>
+          <button type="button" aria-current={modelRoutingView?'page':undefined} onClick={()=>navigateModel('/settings?tab=model#model-routing')}>阶段模型策略</button>
+        </nav>
+      )}
+      {anchor==='#model-default' ? settings?.default_source === 'profile' ?
+        <LegacyDefault onRestored={refreshSettings}/> : settings ? <ModelForm key={settings.revision} initial={settings} onSaved={onSaved}/> : error ?
+          <p className="error" role="alert">{error}</p> : <p className="muted" role="status">正在加载设置…</p> :
+        anchor==='#model-profiles'||anchor==='#model-roles' ? <ModelRolesSettings refreshKey={modelRevision}/> :
+        <ModelCatalogSettings onChanged={refreshSettings} mode={modelRoutingView?'routing':'catalog'}/>}
+    </>}
   </main>
+}
+
+function LegacyDefault({onRestored}:{onRestored:()=>Promise<void>}) {
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  async function restore() {
+    setBusy(true);setError('')
+    try {
+      const current=await api<{revision:number}>('/settings/model/default')
+      await api('/settings/model/default',{source:'legacy_default',revision:current.revision},'PUT')
+      await onRestored()
+    } catch(error) { setError(message(error)) } finally { setBusy(false) }
+  }
+  return <section id="model-default" className="settings-card"><h2>旧默认模型</h2>
+    <p className="muted">当前默认模型来自目录。恢复旧默认模型后可编辑其设置。</p>
+    <div><button type="button" className="outline" disabled={busy} onClick={()=>void restore()}>{busy?'正在恢复…':'恢复旧默认模型'}</button></div>
+    {error&&<p className="error" role="alert">{error}</p>}
+  </section>
 }
 
 function fields(settings: Settings): ModelSettings {
@@ -87,8 +116,10 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
   const payload = () => ({ ...draft, attributes, api_key: removeKey ? '' : apiKeyInput.current?.value.trim() || undefined })
   const attributesChanged = attributes.context_tokens !== stored.attributes?.context_tokens ||
     attributes.max_output_tokens !== stored.attributes?.max_output_tokens ||
+    attributes.tool_calling !== stored.attributes?.tool_calling || attributes.structured_output !== stored.attributes?.structured_output || attributes.file_input !== stored.attributes?.file_input ||
     attributes.vision !== stored.attributes?.vision || attributes.reasoning !== stored.attributes?.reasoning || attributes.reasoning_effort !== stored.attributes?.reasoning_effort ||
-    JSON.stringify(attributes.reasoning_levels) !== JSON.stringify(stored.attributes?.reasoning_levels ?? [])
+    JSON.stringify(attributes.reasoning_levels) !== JSON.stringify(stored.attributes?.reasoning_levels ?? []) ||
+    JSON.stringify(attributes.sources ?? {}) !== JSON.stringify(stored.attributes?.sources ?? {})
   const dirty = attributesChanged || removeKey || hasAPIKey || draft.protocol !== stored.protocol || draft.base_url !== stored.base_url || draft.model_id !== stored.model_id || draft.api_key_ref !== stored.api_key_ref
 
   function resetFeedback() {
@@ -167,13 +198,21 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
       const selected = result.find(model => model.id === draft.model_id)
       if (selected) {
         const current = draft.attributes ?? {}
-        setDraft(previous => ({...previous, attributes: {
-          ...current,
-          context_tokens: current.context_tokens ?? selected.attributes.context_tokens,
-          max_output_tokens: current.max_output_tokens ?? selected.attributes.max_output_tokens,
-          vision: current.vision ?? selected.attributes.vision,
-          reasoning: current.reasoning ?? selected.attributes.reasoning,
-        }}))
+        const merged:ModelAttributes = {...current, sources:{...current.sources}}
+        for (const key of ['context_tokens','max_output_tokens','vision','file_input','tool_calling','structured_output','reasoning'] as const) {
+          if (current[key] === undefined && current.sources?.[key] !== 'manual' && selected.attributes[key] !== undefined) {
+            Object.assign(merged, {[key]:selected.attributes[key]})
+            const origin = selected.attributes.sources?.[key]
+            if (origin) merged.sources![key] = origin
+          }
+        }
+        if (!reasoningLevels.length && current.sources?.reasoning_levels !== 'manual' && merged.reasoning !== false && selected.attributes.reasoning_levels?.length) {
+          merged.reasoning_levels = selected.attributes.reasoning_levels
+          setLevels(selected.attributes.reasoning_levels.join(', '))
+          const origin = selected.attributes.sources?.reasoning_levels
+          if (origin) merged.sources!.reasoning_levels = origin
+        }
+        setDraft(previous => ({...previous, attributes:merged}))
       }
     } catch (error) {
       setDiscoveryError(message(error))
@@ -190,15 +229,25 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
     resetFeedback()
   }
 
-  function editAttribute<K extends keyof ModelAttributes>(key: K, value: ModelAttributes[K]) {
-    setDraft(previous => ({...previous, attributes: {...previous.attributes, [key]: value}}))
+  function editAttribute<K extends Exclude<keyof ModelAttributes,'sources'>>(key: K, value: ModelAttributes[K]) {
+    setDraft(previous => ({...previous, attributes: {...previous.attributes, [key]: value, sources:{...previous.attributes?.sources,[key]:'manual'}}}))
     resetFeedback()
+  }
+  function editLevels(value:string) {
+    setLevels(value)
+    setDraft(previous => ({...previous, attributes:{...previous.attributes,sources:{...previous.attributes?.sources,reasoning_levels:'manual'}}}))
+    resetFeedback()
+  }
+  function attributeSource(key:Exclude<keyof ModelAttributes,'sources'>) {
+    const origin = attributes.sources?.[key]
+    const value = key === 'reasoning_levels' ? reasoningLevels : attributes[key]
+    return origin === 'provider' ? '服务声明' : origin === 'manual' ? '手动' : value !== undefined && (!Array.isArray(value) || value.length > 0) ? '来源未记录' : '未知'
   }
 
   return <form id="model-default" className="settings-card" onSubmit={save}>
     <section className="settings-fields" aria-labelledby="model-settings-title">
       <header className="settings-section-heading">
-        <h2 id="model-settings-title">默认模型</h2>
+        <h2 id="model-settings-title">旧默认模型</h2>
         {stored.mode === 'demo' && <span className="mode-note">当前使用本地演示</span>}
       </header>
       <div className="settings-model-row">
@@ -271,23 +320,23 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
       <section className="settings-fields settings-model-attributes" aria-labelledby="model-attributes-title">
         <h3 id="model-attributes-title">模型属性</h3>
         <label className="settings-field">
-          <span>上下文窗口（Token）</span>
+          <span>上下文窗口（Token） · {attributeSource('context_tokens')}</span>
           <input type="number" min={1} step={1} placeholder="未知" value={attributes.context_tokens ?? ''}
             disabled={Boolean(busy)} onChange={event => editAttribute('context_tokens', event.target.value ? event.target.valueAsNumber : undefined)}/>
         </label>
         <label className="settings-field">
-          <span>最大输出长度（Token）</span>
+          <span>最大输出长度（Token） · {attributeSource('max_output_tokens')}</span>
           <input type="number" min={1} step={1} placeholder="未知" value={attributes.max_output_tokens ?? ''}
             disabled={Boolean(busy)} onChange={event => editAttribute('max_output_tokens', event.target.value ? event.target.valueAsNumber : undefined)}/>
         </label>
         {([['vision', '图片输入'], ['reasoning', '可调推理强度']] as const).map(([key, label]) => <label className="settings-field" key={key}>
-          <span>{label}</span>
+          <span>{label} · {attributeSource(key)}</span>
           <select value={attributes[key] === undefined ? '' : String(attributes[key])} disabled={Boolean(busy)}
             onChange={event => {
               const value = event.target.value
               editAttribute(key, value ? value === 'true' : undefined)
               if (key === 'reasoning' && value === 'false') {
-                setLevels('')
+                editLevels('')
                 editAttribute('reasoning_effort', undefined)
               }
             }}>
@@ -295,10 +344,10 @@ function ModelForm({ initial, onSaved }: { initial: Settings; onSaved: (value: S
           </select>
         </label>)}
         <label className="settings-field">
-          <span>推理强度档位</span>
+          <span>推理强度档位 · {attributeSource('reasoning_levels')}</span>
           <input placeholder="例如 low, medium, high" value={levels} maxLength={528}
             disabled={Boolean(busy) || attributes.reasoning === false}
-            onChange={event => {setLevels(event.target.value); resetFeedback()}}/>
+            onChange={event => editLevels(event.target.value)}/>
 
         </label>
         {!!reasoningLevels.length && attributes.reasoning !== false && <label className="settings-field">

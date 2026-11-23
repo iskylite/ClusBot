@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"clusbot/internal/work"
+	"encoding/base64"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 func (s Server) materialFiles(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +141,37 @@ func (s Server) previewMaterial(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	jsonResponse(w, http.StatusOK, preview)
+}
+
+func (s Server) downloadMaterial(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validID(id) {
+		fail(w, http.StatusBadRequest, "invalid_material", "材料标识无效")
+		return
+	}
+	material, content, err := s.Store.MaterialContent(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	data := []byte(content)
+	if strings.HasPrefix(material.Path, "images/") {
+		_, encoded, found := strings.Cut(content, ";base64,")
+		if !found {
+			fail(w, http.StatusUnprocessableEntity, "invalid_material", "图片内容无效")
+			return
+		}
+		data, err = base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			fail(w, http.StatusUnprocessableEntity, "invalid_material", "图片内容无效")
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": material.Name}))
+	_, _ = w.Write(data)
 }
 
 func (s Server) deletePendingMaterial(w http.ResponseWriter, r *http.Request) {

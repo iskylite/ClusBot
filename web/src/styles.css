@@ -1,5 +1,6 @@
 :root {
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: "Noto Sans SC Variable", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
   color: #25262f;
   background: #fff;
   font-synthesis: none;
@@ -381,17 +382,33 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .filename-input span { color: var(--muted); }
 .filename-input input { width: 100%; min-width: 0; border: 0; }
 
-.formatted { white-space: normal; }
+.formatted { white-space: normal; min-width: 0; }
 .formatted > :first-child { margin-top: 0; }
 .formatted > :last-child { margin-bottom: 0; }
-.formatted :is(h1,h2,h3,h4) { margin: 1em 0 .45em; line-height: 1.35; font-size: 1em; }
-.formatted h1 { font-size: 1.2em; }
+.formatted :is(h1,h2,h3,h4) { margin: 1em 0 .45em; line-height: 1.35; font-weight: 600; }
+.formatted h1 { font-size: 1.24em; font-weight: 650; }
+.formatted h2 { font-size: 1.12em; font-weight: 650; }
+.formatted h3 { font-size: 1.03em; }
+.formatted h4 { font-size: .98em; }
 .formatted p { margin: .55em 0; }
 .formatted :is(ul,ol) { margin: .55em 0; padding-left: 1.4em; }
+.formatted ul:has(> li > input[type="checkbox"]) { list-style: none; padding-left: .4em; }
+.formatted li > input[type="checkbox"] { margin: 0 .45em 0 0; vertical-align: middle; accent-color: var(--accent); }
 .formatted li + li { margin-top: .25em; }
 .formatted blockquote { margin: .65em 0; border-left: 2px solid var(--line); padding-left: .8em; color: var(--muted); }
-.formatted code { font-size: .9em; overflow-wrap: anywhere; }
-.formatted pre { overflow: auto; background: var(--panel); padding: 10px; border-radius: 7px; }
+.formatted :not(pre) > code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-family: var(--font-mono, ui-monospace, monospace); font-size: .88em; overflow-wrap: anywhere; }
+.formatted pre { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); padding: 10px 12px; border-radius: 8px; margin: .65em 0; }
+.formatted pre > code { display: block; background: transparent; padding: 0; border: 0; white-space: pre; overflow-wrap: normal; font-family: var(--font-mono, ui-monospace, monospace); font-size: .88em; line-height: 1.55; }
+.formatted hr { border: 0; border-top: 1px solid var(--line); margin: .9em 0; }
+.formatted del { color: var(--muted); }
+.formatted .md-table-wrap { max-width: 100%; overflow-x: auto; margin: .7em 0; border: 1px solid var(--line); border-radius: 8px; }
+.formatted table { width: 100%; border-collapse: collapse; font-size: .92em; line-height: 1.5; background: var(--surface, white); }
+.formatted thead { background: var(--panel); }
+.formatted th, .formatted td { padding: 7px 10px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); text-align: left; vertical-align: top; }
+.formatted th:last-child, .formatted td:last-child { border-right: 0; }
+.formatted tbody tr:last-child td { border-bottom: 0; }
+.formatted th { font-weight: 600; white-space: nowrap; }
+.formatted tbody tr:nth-child(even) { background: color-mix(in srgb, var(--panel) 45%, transparent); }
 .message .formatted { white-space: normal; }
 
 .material-picker { position: relative; }

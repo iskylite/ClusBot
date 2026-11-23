@@ -38,10 +38,12 @@ type Server struct {
 	Settings                *model.Settings
 	WorkspacePath           string
 	TicketProvider          *work.TicketProvider
+	TicketEffectChecker     work.EffectChecker
 	BenchmarkProvider       work.BenchmarkProvider
 	BenchmarkEvents         *work.BenchmarkEventReceiver
 	DiscoverySource         work.DiscoveryScanSource
 	MaxPendingExplicitTasks int
+	ModelConcurrency        int
 }
 
 type submission struct {
@@ -167,7 +169,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 			r.URL.Path == "/memory" || r.URL.Path == "/memory/new" || r.URL.Path == "/memory/candidates" ||
 			r.URL.Path == "/memory/skill-proposals" || r.URL.Path == "/settings" ||
 			r.URL.Path == "/connections" || r.URL.Path == "/connections/new" ||
-			(len(parts) == 2 && (parts[0] == "tasks" || parts[0] == "chat" || parts[0] == "artifacts" || parts[0] == "memory" || parts[0] == "connections") && validID(parts[1]))
+			(len(parts) == 2 && parts[0] == "chat" && validConversationID(parts[1])) ||
+			(len(parts) == 2 && (parts[0] == "tasks" || parts[0] == "artifacts" || parts[0] == "memory" || parts[0] == "connections") && validID(parts[1]))
 		if len(parts) == 3 && parts[0] == "memory" && parts[1] == "new" {
 			messageID, err := strconv.ParseInt(parts[2], 10, 64)
 			valid = err == nil && messageID > 0
@@ -248,6 +251,7 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/attachments", s.uploadMaterial)
 	api.HandleFunc("POST /api/v1/attachments/uploads/{id}/part", s.selectUploadPart)
 	api.HandleFunc("GET /api/v1/materials/{id}/preview", s.previewMaterial)
+	api.HandleFunc("GET /api/v1/materials/{id}/download", s.downloadMaterial)
 	api.HandleFunc("DELETE /api/v1/materials/{id}", s.deletePendingMaterial)
 	api.HandleFunc("GET /api/v1/experience-candidates", s.experienceCandidates)
 	api.HandleFunc("POST /api/v1/experience-candidates/from-acceptance", s.captureAcceptedExperience)
@@ -318,6 +322,8 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/domain/benchmarks", s.submitBenchmark)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}", s.benchmarkProgress)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/report", s.benchmarkReport)
+	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/dispatch-control", s.benchmarkTaskDispatchControl)
+	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/dispatch-control", s.benchmarkTaskDispatchReceipt)
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/cases/{step}/execution-control", s.benchmarkExecutionControl)
 	api.HandleFunc("GET /api/v1/domain/benchmarks/{id}/revision", s.benchmarkRevision)
 	api.HandleFunc("POST /api/v1/domain/benchmarks/{id}/revision/preview", s.reviseBenchmark(false))
@@ -338,6 +344,11 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
 	api.HandleFunc("GET /api/v1/incidents/{id}/workflow", s.incidentWorkflow)
 	api.HandleFunc("GET /api/v1/incidents/{id}/steps/{step}/logs", s.incidentStepLogs)
+	api.HandleFunc("GET /api/v1/incidents/{id}/ticket/options", s.incidentTicketOptions)
+	api.HandleFunc("POST /api/v1/incidents/{id}/ticket/preview", s.previewIncidentTicket)
+	api.HandleFunc("POST /api/v1/incidents/{id}/ticket/confirm", s.confirmIncidentTicket)
+	api.HandleFunc("POST /api/v1/incidents/{id}/recheck/preview", s.previewIncidentRecheck)
+	api.HandleFunc("POST /api/v1/incidents/{id}/recheck/confirm", s.confirmIncidentRecheck)
 	api.HandleFunc("POST /api/v1/loans", s.lendAsset)
 	api.HandleFunc("POST /api/v1/loans/return", s.returnAsset)
 	s.registerAdminTasks(api)
@@ -360,6 +371,7 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/tasks/{id}/pause", s.control("pause"))
 	api.HandleFunc("POST /api/v1/tasks/{id}/cancel", s.control("stop"))
 	api.HandleFunc("POST /api/v1/tasks/{id}/resume", s.resume)
+	api.HandleFunc("POST /api/v1/tasks/{id}/rerun", s.personalRerunCompletedTask)
 	api.HandleFunc("POST /api/v1/tasks/{id}/ack-read", s.acknowledgeRead)
 	api.HandleFunc("GET /api/v1/conversations", func(w http.ResponseWriter, r *http.Request) {
 		items, err := s.Store.Conversations(r.URL.Query().Get("archived") == "1")
@@ -439,6 +451,13 @@ func validID(id string) bool {
 	return strings.Trim(id, "0123456789abcdef") == ""
 }
 
+// Older persisted conversations, including demo conversations, may use a
+// readable ID. Restrict path characters while letting the scoped store decide
+// whether that conversation exists.
+func validConversationID(id string) bool {
+	return len(id) > 0 && len(id) <= 128 && strings.Trim(id, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-") == ""
+}
+
 func (s Server) signature(expiry string) string {
 	mac := hmac.New(sha256.New, []byte(s.Token))
 	mac.Write([]byte("session:" + expiry))
@@ -484,7 +503,12 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 		if !decode(w, r, &in) {
 			return
 		}
-		in.Text = strings.TrimSpace(in.Text)
+		// A composed benchmark command carries the user's requirement as data;
+		// retain its exact whitespace for the advisory model and conversation.
+		_, _, benchmarkPreview, benchmarkPreviewErr := work.ParseBenchmarkCommandPreview(in.Text)
+		if !benchmarkPreview {
+			in.Text = strings.TrimSpace(in.Text)
+		}
 		in.Scope = strings.TrimSpace(in.Scope)
 		if in.Filename != nil {
 			*in.Filename = strings.TrimSpace(*in.Filename)
@@ -520,6 +544,36 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 			if !s.assistantConversationCommand(w, r, in.Text) {
 				fail(w, 400, "invalid_read_only_query", "请输入明确的查询指令，或通过 /assistant 查看可用查询")
 			}
+			return
+		}
+		commandFields := strings.Fields(in.Text)
+		benchmarkCommand := len(commandFields) > 0 && (commandFields[0] == "/benchmark" || commandFields[0] == "/benchmark-status")
+		if benchmarkCommand && (task || explicitNewTask || (in.TaskRef != nil && !benchmarkPreview) ||
+			in.Read != nil || len(in.Reads) != 0 || in.Criteria != nil || in.Filename != nil ||
+			in.ReplaceMaterials || in.Revision != 0 || in.BenchmarkExecutionTarget != nil ||
+			in.BenchmarkRevisionTarget != nil || in.InterpretBenchmarkExecution) {
+			fail(w, 400, "benchmark_unsupported_context", "此基准指令不能携带所选的任务上下文或配置；请调整后重新发送，未创建任务")
+			return
+		}
+		if benchmarkCommand && !benchmarkPreview && len(in.AttachmentIDs) != 0 {
+			fail(w, 400, "benchmark_unsupported_context", "单独的基准指令不能附带材料；请补充具体要求或移除材料后重新发送")
+			return
+		}
+		if benchmarkPreview {
+			if benchmarkPreviewErr != nil {
+				benchmarkError(w, benchmarkPreviewErr)
+				return
+			}
+			if in.TaskRef != nil && (!validID(r.PathValue("id")) || !validID(in.TaskRef.TaskID)) {
+				fail(w, 400, "invalid_task_reference", "只读任务引用只能用于当前会话的普通消息")
+				return
+			}
+			run, err := s.Store.SubmitBenchmarkCommandPreview(r.Context(), key, s.principal(r), r.PathValue("id"), in.Text, in.Scope, in.AttachmentIDs, in.TaskRef, s.Settings.InterpretBenchmarkCommandPreview)
+			if err != nil {
+				benchmarkError(w, err)
+				return
+			}
+			writeSubmission(w, run)
 			return
 		}
 		if in.TaskRef != nil && (task || !validID(r.PathValue("id")) || !validID(in.TaskRef.TaskID) ||
@@ -596,6 +650,12 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 				writeSubmission(w, run)
 				return
 			}
+		}
+		if r.Header.Get("X-ClusBot-Assistant-Cards") == "1" && !task && !strings.HasPrefix(in.Text, "/") &&
+			in.TaskRef == nil && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
+			in.Criteria == nil && in.Filename == nil && in.Revision == 0 && !in.ReplaceMaterials &&
+			(s.assistantModelSetupChat(w, r, in.Text) || s.assistantOperationChat(w, r, in.Text)) {
+			return
 		}
 		if len(in.Reads) > work.MaxTaskReads || (in.Read != nil && len(in.Reads) > 0) {
 			writeError(w, work.ErrReadSelection)
@@ -898,6 +958,14 @@ func (s Server) detail(task bool) http.HandlerFunc {
 			writeError(w, err)
 			return
 		}
+		if !task && d.Run != nil {
+			target, err := s.Store.ReadBenchmarkRevisionSuggestionForActor(r.Context(), s.principal(r), d.Conversation.ID, d.Run.ID)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			d.Run.BenchmarkRevisionSuggestion = target
+		}
 		jsonResponse(w, 200, d)
 	}
 }
@@ -1016,6 +1084,7 @@ func (s Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	filter.MatchID = true
 	q := r.URL.Query()
 	if value := q.Get("after"); value != "" {
 		cursor, ok := parseTaskCursor(value)
@@ -1028,6 +1097,23 @@ func (s Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListTasks(r.Context(), filter)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if q.Get("actions") == "1" {
+		type taskWithActions struct {
+			work.Task
+			work.TaskListActions
+		}
+		result := make([]taskWithActions, 0, len(items))
+		for _, task := range items {
+			actions, err := s.Store.TaskListActions(r.Context(), task)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			result = append(result, taskWithActions{Task: task, TaskListActions: actions})
+		}
+		jsonResponse(w, 200, result)
 		return
 	}
 	jsonResponse(w, 200, items)
@@ -1076,8 +1162,10 @@ func (s Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
+	wake, unsubscribe := s.Store.SubscribeRunEvents(key)
+	defer unsubscribe()
 	rc := http.NewResponseController(w)
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	ping := time.NewTicker(15 * time.Second)
 	defer ping.Stop()
@@ -1104,6 +1192,7 @@ func (s Server) stream(w http.ResponseWriter, r *http.Request) {
 			select {
 			case <-r.Context().Done():
 				return
+			case <-wake:
 			case <-ticker.C:
 			case <-ping.C:
 				fmt.Fprint(w, ": heartbeat\n\n")

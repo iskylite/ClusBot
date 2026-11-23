@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { Check, KeyRound, LockKeyhole, Pencil, UserPlus, Users, X } from 'lucide-react'
-import clusbotIcon from './clusbot-icon.png'
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { Check, Clock, Copy, KeyRound, Lock, Pencil, RotateCw, ShieldCheck, UserPlus, Users, UserX, X } from 'lucide-react'
+import clusbotIcon from './clusbot-brand.svg'
+import { displayDate } from './GeneralPreferences'
+import { FeedbackCallout } from './Feedback'
 import './account-ui.css'
 
 export type Account = {
@@ -11,6 +13,8 @@ export type Account = {
   status: string
   is_superadmin: boolean
   must_change_password: boolean
+  created_at?: number
+  last_login_at?: number
 }
 
 export type Session = {
@@ -47,6 +51,20 @@ const passwordValid = (value: string) => {
 }
 const usernamePattern = '[A-Za-z0-9][A-Za-z0-9._-]{2,63}'
 const avatarText = (account: Account) => Array.from(account.avatar.trim() || account.display_name.trim() || account.username)[0] || '?'
+const accountStatus = (account: Account) => account.status === 'disabled' ? '已停用' :
+  account.status === 'pending' ? '待激活' : account.must_change_password ? '临时密码待改密' : '正常'
+const temporaryPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+const accountDate = (value: number) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric', month: '2-digit', day: '2-digit', timeZone: document.documentElement.dataset.timezone,
+  }).formatToParts(value)
+  const part = (type: string) => parts.find(item => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+const accountLastLogin = (value: number) => {
+  const day = accountDate(value) === accountDate(Date.now()) ? '今天' : accountDate(value)
+  return `${day} ${displayDate(value, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`
+}
 
 function Brand({ title, subtitle }: { title: string; subtitle: string }) {
   return <div className="acct-brand">
@@ -56,11 +74,12 @@ function Brand({ title, subtitle }: { title: string; subtitle: string }) {
 }
 
 function AccountAvatar({ account }: { account: Account }) {
-  return <span className="acct-avatar" aria-hidden="true">{avatarText(account)}</span>
+  const tone = account.status === 'disabled' ? 'disabled' : accountStatus(account) !== '正常' ? 'pending' : account.is_superadmin ? 'admin' : 'member'
+  return <span className={'acct-avatar acct-avatar-' + tone} aria-hidden="true">{avatarText(account)}</span>
 }
 
 function Feedback({ error, notice }: { error?: string; notice?: string }) {
-  return <>{error && <p className="acct-error" role="alert">{error}</p>}{notice && <p className="acct-notice" role="status">{notice}</p>}</>
+  return <>{error && <FeedbackCallout tone="error" compact role="alert" message={error}/>}{notice && <FeedbackCallout tone="success" compact role="status" message={notice}/>}</>
 }
 
 export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }) {
@@ -123,7 +142,7 @@ export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }
         <input name="password_confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={event => setConfirmation(event.target.value)} required maxLength={1024} disabled={busy}/>
       </label>}
       <Feedback error={error} notice={notice}/>
-      <button type="submit" className="acct-primary acct-login-submit" disabled={busy}>{busy ? '请稍候…' : bootstrapRequired ? '创建首位超级管理员并进入' : '登录进入个人助手'}</button>
+      <button type="submit" className="acct-primary acct-login-submit" disabled={busy}>{bootstrapRequired && <ShieldCheck size={15}/>} {busy ? '请稍候…' : bootstrapRequired ? '创建首位超级管理员并进入' : '登录进入个人助手'}</button>
     </form>
   </main>
 }
@@ -133,7 +152,7 @@ function PasswordFields({ current, setCurrent, password, setPassword, confirmati
   confirmation: string; setConfirmation: (value: string) => void; busy: boolean
 }) {
   return <>
-    <label className="acct-field"><span>当前密码</span><input name="current_password" type="password" autoComplete="current-password" value={current} onChange={event => setCurrent(event.target.value)} required maxLength={1024} disabled={busy}/></label>
+    <label className="acct-field"><span>当前密码</span><input name="current_password" type="password" autoComplete="current-password" data-acct-autofocus value={current} onChange={event => setCurrent(event.target.value)} required maxLength={1024} disabled={busy}/></label>
     <label className="acct-field"><span>新密码</span><input name="new_password" type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} required maxLength={1024} disabled={busy} aria-label="新密码" aria-describedby="acct-password-help"/><small id="acct-password-help">密码须为 12–1024 字节。</small></label>
     <label className="acct-field"><span>确认新密码</span><input name="password_confirmation" type="password" autoComplete="new-password" value={confirmation} onChange={event => setConfirmation(event.target.value)} required maxLength={1024} disabled={busy}/></label>
   </>
@@ -179,12 +198,19 @@ export function ForcedPasswordChange({ account, onLogout }: { account: Account; 
   </section></main>
 }
 
-function Modal({ title, icon, children, onClose, className = '', busy = false }: { title: string; icon?: ReactNode; children: ReactNode; onClose: () => void; className?: string; busy?: boolean }) {
+function Modal({ title, icon, children, onClose, className = '', busy = false }: { title: string; icon?: ReactNode; children: ReactNode | ((close: () => void) => ReactNode); onClose: () => void; className?: string; busy?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => { if (ref.current && !ref.current.open) ref.current.showModal() }, [])
+  useEffect(() => {
+    const dialog = ref.current
+    if (dialog && !dialog.open) {
+      dialog.showModal()
+      dialog.querySelector<HTMLElement>('[data-acct-autofocus]')?.focus()
+    }
+  }, [])
+  const close = () => ref.current?.close()
   return <dialog ref={ref} className={'acct-modal ' + className} aria-labelledby="acct-modal-title" onClose={onClose} onCancel={event => { if (busy) event.preventDefault() }}>
-    <header className="acct-modal-header"><h2 id="acct-modal-title">{icon}{title}</h2><button type="button" className="acct-icon-button" aria-label="关闭" disabled={busy} onClick={() => ref.current?.close()}><X size={17}/></button></header>
-    {children}
+    <header className="acct-modal-header"><h2 id="acct-modal-title">{icon}{title}</h2><button type="button" className="acct-icon-button" aria-label="关闭" disabled={busy} onClick={close}><X size={17}/></button></header>
+    {typeof children === 'function' ? children(close) : children}
   </dialog>
 }
 
@@ -193,67 +219,89 @@ function ProfileDialog({ account, onClose, onSaved }: { account: Account; onClos
   const [avatar, setAvatar] = useState(account.avatar)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>, close: () => void) {
     event.preventDefault(); if (busy) return
     setBusy(true); setError('')
     try {
       const updated = await accountRequest<Account>('/me/profile', { display_name: displayName.trim(), avatar }, 'PATCH')
-      onSaved(updated); onClose()
+      onSaved(updated); close()
     } catch (error) { setError(errorMessage(error)) }
     finally { setBusy(false) }
   }
   return <Modal title="编辑头像与姓名" icon={<Pencil size={16}/>} onClose={onClose} busy={busy}>
-    <form className="acct-modal-form" onSubmit={submit} method="post" action="/api/v1/me/profile">
-      <label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy} autoFocus/></label>
+    {close => <form className="acct-modal-form" onSubmit={event => void submit(event, close)} method="post" action="/api/v1/me/profile">
+      <label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy} data-acct-autofocus/></label>
       <label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(event.target.value)} maxLength={1024} disabled={busy}/></label>
       <Feedback error={error}/>
-      <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={onClose} disabled={busy}>取消</button><button className="acct-primary" type="submit" disabled={busy}>{busy ? '正在保存…' : '保存资料'}</button></div>
-    </form>
+      <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={close} disabled={busy}>取消</button><button className="acct-primary" type="submit" disabled={busy}>{busy ? '正在保存…' : '保存资料'}</button></div>
+    </form>}
   </Modal>
 }
 
 function CreateDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [displayName, setDisplayName] = useState('')
   const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(temporaryPassword)
   const [mustChange, setMustChange] = useState(true)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  const [copyStatus, setCopyStatus] = useState<'copied' | 'failed'>()
+  useEffect(() => {
+    if (!copyStatus) return
+    const timer = window.setTimeout(() => setCopyStatus(undefined), 2400)
+    return () => window.clearTimeout(timer)
+  }, [copyStatus])
+  async function copyPassword() {
+    try {
+      await navigator.clipboard.writeText(password)
+      setCopyStatus('copied')
+    } catch {
+      setCopyStatus('failed')
+    }
+  }
+  async function submit(event: FormEvent<HTMLFormElement>, close: () => void) {
     event.preventDefault(); if (busy) return
     setError('')
     if (!passwordValid(password)) { setError('初始密码须为 12–1024 字节。'); return }
     setBusy(true)
     try {
       await accountRequest('/admin/users', { display_name: displayName.trim(), username: username.trim(), password, is_superadmin: false, must_change_password: mustChange })
-      onCreated(); onClose()
+      onCreated(); close()
     } catch (error) { setError(errorMessage(error)) }
     finally { setBusy(false) }
   }
-  return <Modal title="创建新成员" icon={<UserPlus size={16}/>} onClose={onClose} busy={busy}>
-    <form className="acct-modal-form" onSubmit={submit} method="post" action="/api/v1/admin/users">
-      <label className="acct-field"><span>显示姓名</span><input name="display_name" placeholder="周工 / Alex Zhou" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy} autoFocus/></label>
+  return <Modal title="创建新成员" icon={<UserPlus size={16}/>} onClose={onClose} className="acct-create" busy={busy}>
+    {close => <form className="acct-modal-form" onSubmit={event => void submit(event, close)} method="post" action="/api/v1/admin/users">
+      <label className="acct-field"><span>显示姓名</span><input name="display_name" placeholder="周工 / Alex Zhou" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy} data-acct-autofocus/></label>
       <label className="acct-field"><span>登录用户名</span><input name="username" placeholder="alex.zhou" value={username} onChange={event => setUsername(event.target.value)} required pattern={usernamePattern} title="3–64 位字母、数字或 ._-，首位须为字母或数字" maxLength={64} autoComplete="off" disabled={busy}/></label>
-      <label className="acct-field"><span>初始临时密码</span><input name="password" type="password" autoComplete="new-password" value={password} onChange={event => setPassword(event.target.value)} required maxLength={1024} disabled={busy} aria-describedby="acct-create-password-help"/><small id="acct-create-password-help">密码须为 12–1024 字节。</small></label>
-      <label className="acct-field"><span>账号角色（全站唯一超级管理员由部署初始化确定）</span><input value="普通用户" readOnly aria-readonly="true"/></label>
+      <div className="acct-field">
+        <label htmlFor="acct-create-password">初始临时密码</label><small id="acct-create-password-help" className="acct-visually-hidden">密码须为 12–1024 字节。</small>
+        <div className="acct-password-input">
+          <input id="acct-create-password" name="password" type="text" autoComplete="new-password" value={password} onChange={event => { setPassword(event.target.value); setCopyStatus(undefined) }} required maxLength={1024} disabled={busy} aria-describedby="acct-create-password-help"/>
+          <button type="button" className="acct-icon-button" aria-label="复制临时密码" title="复制临时密码" disabled={busy || !password} onClick={() => void copyPassword()}>{copyStatus === 'copied' ? <Check size={14} aria-hidden="true"/> : <Copy size={14} aria-hidden="true"/>}</button>
+          <span className="acct-copy-status" role="status">{copyStatus === 'copied' ? '已复制' : copyStatus === 'failed' ? '复制失败' : ''}</span>
+        </div>
+      </div>
+      <label className="acct-field"><span>账号角色（全站唯一超级管理员由部署初始化确定）</span><span className="acct-readonly-role"><Lock size={13}/><input value="普通用户" readOnly aria-readonly="true"/><span className="acct-badge">固定角色</span></span></label>
       <label className="acct-checkbox"><input type="checkbox" name="must_change_password" checked={mustChange} onChange={event => setMustChange(event.target.checked)} disabled={busy}/><span>要求该成员首次登录时强制修改密码</span></label>
       <Feedback error={error}/>
-      <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={onClose} disabled={busy}>取消</button><button className="acct-primary" type="submit" disabled={busy}>{busy ? '正在创建…' : '创建用户账号'}</button></div>
-    </form>
+      <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={close} disabled={busy}>取消</button><button className="acct-primary" type="submit" disabled={busy}><Check size={13}/>{busy ? '正在创建…' : '创建用户账号'}</button></div>
+    </form>}
   </Modal>
 }
 
 type Confirmation = 'reset' | 'disable' | 'enable'
-function ConfirmDialog({ action, account, onClose, onConfirm, busy, error }: { action: Confirmation; account: Account; onClose: () => void; onConfirm: () => void; busy: boolean; error: string }) {
+type MemberAction = 'edit' | 'reset' | 'disable' | 'enable'
+function ConfirmDialog({ action, account, onClose, onConfirm, busy, error }: { action: Confirmation; account: Account; onClose: () => void; onConfirm: (close: () => void) => void; busy: boolean; error: string }) {
   const title = action === 'reset' ? '确认重置密码？' : action === 'disable' ? '确认停用账号？' : '确认恢复账号？'
   const detail = action === 'reset' ? `重置后 ${account.display_name} 的现有会话会失效，下次登录时须修改临时密码。` : action === 'disable' ? `停用后 ${account.display_name} 将无法登录，现有会话立即失效。` : `恢复后 ${account.display_name} 可使用现有密码登录。`
   return <Modal title={title} onClose={onClose} className="acct-confirm" busy={busy}>
-    <div className="acct-confirm-body"><p>{detail}</p><Feedback error={error}/></div>
-    <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={onClose} disabled={busy} autoFocus>取消</button><button type="button" className={action === 'disable' ? 'acct-danger' : 'acct-primary'} disabled={busy} onClick={onConfirm}>{busy ? '请稍候…' : action === 'reset' ? '确认重置密码' : action === 'disable' ? '确认停用' : '确认恢复'}</button></div>
+    {close => <><div className="acct-confirm-body"><p>{detail}</p><Feedback error={error}/></div>
+    <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={close} disabled={busy} data-acct-autofocus>取消</button><button type="button" className={action === 'disable' ? 'acct-danger' : 'acct-primary'} disabled={busy} onClick={() => onConfirm(close)}>{busy ? '请稍候…' : action === 'reset' ? '确认重置密码' : action === 'disable' ? '确认停用' : '确认恢复'}</button></div></>}
   </Modal>
 }
 
-function MemberDrawer({ member, onClose, onUpdated }: { member: Account; onClose: () => void; onUpdated: (account: Account) => void }) {
+function MemberDrawer({ member, action, onClose, onUpdated }: { member: Account; action: MemberAction; onClose: () => void; onUpdated: (account: Account) => void }) {
   const [displayName, setDisplayName] = useState(member.display_name)
   const [avatar, setAvatar] = useState(member.avatar)
   const [temporaryPassword, setTemporaryPassword] = useState('')
@@ -262,7 +310,16 @@ function MemberDrawer({ member, onClose, onUpdated }: { member: Account; onClose
   const [confirmError, setConfirmError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const passwordRef = useRef<HTMLInputElement>(null)
+  const statusButtonRef = useRef<HTMLButtonElement>(null)
+  const drawerBusy = busy && !confirmation
   useEffect(() => { setDisplayName(member.display_name); setAvatar(member.avatar); setTemporaryPassword(''); setError(''); setNotice('') }, [member.principal_id])
+  useEffect(() => {
+    if (action === 'reset') passwordRef.current?.focus()
+    else if (action === 'disable' || action === 'enable') { statusButtonRef.current?.focus(); setConfirmation(action) }
+    else headingRef.current?.focus()
+  }, [action, member.principal_id])
   async function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); if (busy) return
     setBusy(true); setError(''); setNotice('')
@@ -277,7 +334,7 @@ function MemberDrawer({ member, onClose, onUpdated }: { member: Account; onClose
     if (!passwordValid(temporaryPassword)) { setError('临时密码须为 12–1024 字节。'); return }
     setConfirmError(''); setConfirmation('reset')
   }
-  async function confirm() {
+  async function confirm(close: () => void) {
     if (!confirmation || busy) return
     setBusy(true); setConfirmError('')
     try {
@@ -288,74 +345,112 @@ function MemberDrawer({ member, onClose, onUpdated }: { member: Account; onClose
         const updated = await accountRequest<Account>('/admin/users/' + encodeURIComponent(member.principal_id), { status: confirmation === 'disable' ? 'disabled' : 'active' }, 'PATCH')
         onUpdated(updated); setNotice(confirmation === 'disable' ? '账号已停用。' : '账号已恢复。')
       }
-      setConfirmation(undefined)
+      close()
     } catch (error) { setConfirmError(errorMessage(error)) }
     finally { setBusy(false) }
   }
   return <aside className="acct-drawer" aria-labelledby="acct-drawer-title">
-    <header className="acct-drawer-header"><AccountAvatar account={member}/><div><h2 id="acct-drawer-title">{member.display_name} (@{member.username})</h2><p>普通用户 · {member.status === 'disabled' ? '已停用' : '正常'} · 独立存储空间</p></div><button type="button" className="acct-icon-button" aria-label="关闭成员详情" onClick={onClose}><X size={17}/></button></header>
+    <header className="acct-drawer-header"><AccountAvatar account={member}/><div><h2 id="acct-drawer-title" ref={headingRef} tabIndex={-1}>{member.display_name} (@{member.username})</h2><p>普通用户 · {accountStatus(member)} · 独立存储空间</p></div><button type="button" className="acct-icon-button" aria-label="关闭成员详情" onClick={onClose}><X size={17}/></button></header>
     <div className="acct-drawer-sections">
       <form className="acct-drawer-section" onSubmit={saveProfile} method="post" action={'/api/v1/admin/users/' + encodeURIComponent(member.principal_id)}>
         <h3>基本资料与账号角色</h3>
-        <div className="acct-field-row"><label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy}/></label><label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(event.target.value)} maxLength={1024} disabled={busy}/></label></div>
-        <label className="acct-field"><span>账号角色</span><input value="普通用户（固定角色）" readOnly aria-readonly="true"/></label>
-        <div className="acct-actions"><button type="submit" className="acct-primary" disabled={busy}><Check size={14}/>保存资料</button></div>
+        <div className="acct-field-row"><label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={drawerBusy}/></label><label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(event.target.value)} maxLength={1024} disabled={drawerBusy}/></label></div>
+        <label className="acct-field"><span>账号角色</span><span className="acct-readonly-role"><Lock size={13}/><input value="普通用户" readOnly aria-readonly="true"/><span className="acct-badge">全站唯一超管 · 不可变更</span></span></label>
+        <div className="acct-actions"><button type="submit" className="acct-primary" disabled={drawerBusy}><Check size={14}/>保存资料</button></div>
       </form>
       <form className="acct-drawer-section" onSubmit={requestReset} method="post" action={'/api/v1/admin/users/' + encodeURIComponent(member.principal_id) + '/password'}>
-        <h3>重置临时密码</h3><p className="acct-muted">重置后立即撤销现有登录会话，下次登录须强制改密。</p>
-        <label className="acct-field"><span className="acct-visually-hidden">新的临时密码</span><input name="password" type="password" placeholder="输入新的临时密码…" autoComplete="new-password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} required maxLength={1024} disabled={busy}/></label>
-        <div className="acct-actions"><button type="submit" className="acct-button" disabled={busy}><KeyRound size={14}/>确认重置密码</button></div>
+        <h3>重置临时密码</h3><p className="acct-muted">重置后立即撤销既有登录会话，下次登录须强制改密。</p>
+        <label className="acct-field"><span className="acct-visually-hidden">新的临时密码</span><input ref={passwordRef} name="password" type="password" placeholder="输入新的临时密码…" autoComplete="new-password" value={temporaryPassword} onChange={event => setTemporaryPassword(event.target.value)} required maxLength={1024} disabled={drawerBusy}/></label>
+        <div className="acct-actions"><button type="submit" className="acct-button" disabled={drawerBusy}><KeyRound size={14}/>确认重置密码</button></div>
       </form>
       <section className={'acct-drawer-section ' + (member.status === 'disabled' ? '' : 'acct-danger-zone')}>
         <h3>{member.status === 'disabled' ? '恢复此成员账号' : '停用此成员账号'}</h3>
-        <p className="acct-muted">{member.status === 'disabled' ? '恢复后该成员可以重新登录。' : '停用后即时失效全部会话并禁止登录，已有任务与产物保留归档。'}</p>
-        <div className="acct-actions"><button type="button" className={member.status === 'disabled' ? 'acct-button' : 'acct-danger-outline'} disabled={busy} onClick={() => { setConfirmError(''); setConfirmation(member.status === 'disabled' ? 'enable' : 'disable') }}>{member.status === 'disabled' ? '恢复账号' : '停用账号'}</button></div>
+        <p className="acct-muted">{member.status === 'disabled' ? '恢复后该成员可以重新登录。' : '停用后即时失效全部会话并禁止登录，已有任务与产物保留。'}</p>
+        <div className="acct-actions"><button ref={statusButtonRef} type="button" className={member.status === 'disabled' ? 'acct-button' : 'acct-danger-outline'} disabled={drawerBusy} onClick={() => { setConfirmError(''); setConfirmation(member.status === 'disabled' ? 'enable' : 'disable') }}>{member.status === 'disabled' ? <><RotateCw size={14}/>恢复账号</> : <><UserX size={14}/>停用账号</>}</button></div>
       </section>
       <Feedback error={error} notice={notice}/>
     </div>
-    {confirmation && <ConfirmDialog action={confirmation} account={member} onClose={() => { if (!busy) setConfirmation(undefined) }} onConfirm={confirm} busy={busy} error={confirmError}/>}
+    {Boolean(member.created_at || member.last_login_at) && <footer className="acct-drawer-meta">
+      <Clock size={12} aria-hidden="true"/>
+      <span>{member.created_at ? <>账号创建时间：<time dateTime={new Date(member.created_at).toISOString()}>{accountDate(member.created_at)}</time> · </> : null}
+        最近登录：{member.last_login_at ? <time dateTime={new Date(member.last_login_at).toISOString()}>{accountLastLogin(member.last_login_at)}</time> : '无记录'}</span>
+    </footer>}
+    {confirmation && <ConfirmDialog action={confirmation} account={member} onClose={() => setConfirmation(undefined)} onConfirm={confirm} busy={busy} error={confirmError}/>}
   </aside>
 }
 
-export function AccountPage({ account, onAccountChange, onLogout, initialSection }: { account: Account; onAccountChange: (account: Account) => void; onLogout: () => void; initialSection?: AccountSection }) {
+export function AccountPage({ account, onAccountChange, onLogout, initialSection, onNavigate }: { account: Account; onAccountChange: (account: Account) => void; onLogout: () => void; initialSection?: AccountSection; onNavigate?: (path: string) => void }) {
   const [users, setUsers] = useState<Account[]>()
   const [loadError, setLoadError] = useState('')
   const [modal, setModal] = useState<'profile' | 'password' | 'create' | undefined>(initialSection === 'profile' || initialSection === 'password' ? initialSection : undefined)
   const [selectedId, setSelectedId] = useState<string>()
+  const [memberAction, setMemberAction] = useState<MemberAction>('edit')
   const [refresh, setRefresh] = useState(0)
   const canManage = account.is_superadmin && !account.must_change_password
+  const showUsers = canManage && initialSection === 'users'
   useEffect(() => {
-    if (!canManage) return
+    if (!showUsers) return
     let active = true
     setLoadError('')
     accountRequest<Account[]>('/admin/users').then(value => { if (active) setUsers(value) }).catch(error => { if (active) setLoadError(errorMessage(error)) })
     return () => { active = false }
-  }, [canManage, refresh])
+  }, [showUsers, refresh])
   function updated(value: Account) {
     setUsers(current => current?.map(user => user.principal_id === value.principal_id ? value : user))
     if (value.principal_id === account.principal_id) onAccountChange(value)
   }
-  const selected = users?.find(user => user.principal_id === selectedId)
+  const selected = showUsers ? users?.find(user => user.principal_id === selectedId) : undefined
+  function openMember(user: Account, action: MemberAction = 'edit') {
+    setMemberAction(action)
+    setSelectedId(user.principal_id)
+  }
+  function navigateSection(event: MouseEvent<HTMLAnchorElement>, path: string) {
+    if (!onNavigate || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    onNavigate(path)
+  }
   return <main className="main account-page">
-    <header className="acct-page-heading"><h1>账号与安全</h1>{canManage && <span> / 用户管理</span>}</header>
+    <h1 className="acct-visually-hidden">账号与安全</h1>
+    <nav className="acct-nav" aria-label="账号设置">
+      <a href="/account" aria-current={!showUsers ? 'page' : undefined} onClick={event => navigateSection(event, '/account')}>本人账号</a>
+      {canManage && <a href="/account#users" aria-current={showUsers ? 'page' : undefined} onClick={event => navigateSection(event, '/account#users')}>用户管理</a>}
+    </nav>
     <div className={'acct-layout' + (selected ? ' has-drawer' : '')}>
       <div className="acct-main-content">
-        <section className="acct-self" aria-label="本人账号">
+        {!showUsers && <section className="acct-self" aria-label="本人账号">
           <AccountAvatar account={account}/><div className="acct-self-copy"><div><strong>{account.display_name} ({account.username})</strong><span className="acct-badge acct-role">{account.is_superadmin ? '超级管理员' : '普通用户'}</span>{account.is_superadmin && <span className="acct-badge acct-good">最后一位超管受保护</span>}</div><p>修改本人密码成功后当前登录会话失效，须重新登录</p></div>
-          <div className="acct-self-actions"><button type="button" className="acct-button" onClick={() => setModal('profile')}><Pencil size={14}/>编辑头像与姓名</button><button type="button" className="acct-button" onClick={() => setModal('password')}><LockKeyhole size={14}/>修改本人密码</button></div>
-        </section>
-        {canManage && <section className="acct-users" aria-labelledby="acct-users-title">
-          <header className="acct-users-heading"><div><Users size={17}/><h2 id="acct-users-title">全站用户管理{users ? ` (${users.length})` : ''}</h2><span className="acct-badge">唯一超级管理员 + 普通用户</span></div><button type="button" className="acct-primary" onClick={() => setModal('create')}><UserPlus size={15}/>创建用户</button></header>
+          <div className="acct-self-actions"><button type="button" className="acct-button" onClick={() => setModal('profile')}><Pencil size={14}/>编辑头像与姓名</button><button type="button" className="acct-button" onClick={() => setModal('password')}><Lock size={14}/>修改本人密码</button></div>
+        </section>}
+        {showUsers && <section className="acct-users" aria-labelledby="acct-users-title">
+          <header className="acct-users-heading"><div><Users size={15}/><h2 id="acct-users-title">全站用户管理{users ? ` (${users.length})` : ''}</h2><span className="acct-badge">唯一超级管理员 + {users ? `${users.filter(user => !user.is_superadmin).length} 位` : ''}普通用户</span></div><button type="button" className="acct-primary" onClick={() => setModal('create')}><UserPlus size={13}/>创建用户</button></header>
           {loadError ? <div><Feedback error={loadError}/><button type="button" className="acct-button" onClick={() => setRefresh(value => value + 1)}>重试</button></div> : !users ? <p className="acct-muted" role="status">正在加载用户…</p> :
-          <div className="acct-table-wrap"><table className="acct-table"><thead><tr><th scope="col">头像 · 显示姓名与用户名</th><th scope="col">账号角色</th><th scope="col">账号状态</th><th scope="col">管理操作</th></tr></thead><tbody>
-            {users.map(user => <tr key={user.principal_id} className={user.principal_id === selectedId ? 'selected' : ''}><td><div className="acct-person"><AccountAvatar account={user}/><div><strong>{user.display_name}</strong><small>@{user.username}</small></div></div></td><td><span className={'acct-badge ' + (user.is_superadmin ? 'acct-role' : '')}>{user.is_superadmin ? '超级管理员' : '普通用户'}</span></td><td><span className={'acct-badge ' + (user.status === 'disabled' ? '' : user.must_change_password ? 'acct-warning' : 'acct-good')}>{user.status === 'disabled' ? '已停用 · 会话已撤销' : user.must_change_password ? '临时密码待改密' : user.is_superadmin ? '正常 · 受保护' : '正常'}</span></td><td>{user.principal_id === account.principal_id ? <button type="button" className="acct-button" onClick={() => setModal('profile')}><Pencil size={14}/>编辑资料</button> : !user.is_superadmin && <button type="button" className="acct-button" onClick={() => setSelectedId(user.principal_id)}><Pencil size={14}/>{user.principal_id === selectedId ? '管理中' : user.status === 'disabled' ? '恢复账号' : '管理'}</button>}</td></tr>)}
+          <div className="acct-table-wrap" tabIndex={0} role="region" aria-labelledby="acct-users-title"><table className="acct-table"><thead><tr><th scope="col">头像 · 显示姓名与用户名</th><th scope="col">账号角色</th><th scope="col">账号状态</th><th scope="col">管理操作</th></tr></thead><tbody>
+            {users.map(user => {
+              const isSelected = user.principal_id === selectedId
+              const status = accountStatus(user)
+              const tone = status === '正常' ? 'acct-good' : user.status === 'disabled' ? 'acct-disabled' : 'acct-warning'
+              return <tr key={user.principal_id} className={isSelected ? 'selected' : ''}>
+                <td><div className="acct-person"><AccountAvatar account={user}/><div><strong>{user.display_name}</strong><small>@{user.username}</small></div></div></td>
+                <td><span className={'acct-badge ' + (user.is_superadmin ? 'acct-role' : '')}>{user.is_superadmin ? '超级管理员' : '普通用户'}</span></td>
+                <td><span className={'acct-badge ' + tone}>{user.status === 'disabled' ? '已停用 · 会话已撤销' : status === '正常' && user.is_superadmin ? '正常 · 受保护' : status}</span></td>
+                <td><div className="acct-table-actions">
+                  {user.principal_id === account.principal_id ? <button type="button" className="acct-button" onClick={() => setModal('profile')}><Pencil size={13}/>编辑资料</button> :
+                    !user.is_superadmin && (isSelected ? <button type="button" className="acct-button acct-member-active" aria-expanded={true} onClick={() => setSelectedId(undefined)}><Pencil size={13}/>管理中</button> :
+                      user.status === 'disabled' ? <button type="button" className="acct-button" onClick={() => openMember(user, 'enable')}><RotateCw size={13}/>恢复账号</button> : <>
+                        <button type="button" className="acct-button" onClick={() => openMember(user)}><Pencil size={13}/>编辑</button>
+                        {!selected && <><button type="button" className="acct-button" onClick={() => openMember(user, 'reset')}><KeyRound size={13}/>重置密码</button>
+                          <button type="button" className="acct-button" onClick={() => openMember(user, 'disable')}><UserX size={13}/>停用</button></>}
+                      </>)}
+                </div></td>
+              </tr>
+            })}
           </tbody></table></div>}
         </section>}
       </div>
-      {selected && !selected.is_superadmin && <MemberDrawer key={selected.principal_id} member={selected} onClose={() => setSelectedId(undefined)} onUpdated={updated}/>}
+      {selected && !selected.is_superadmin && <MemberDrawer key={selected.principal_id} member={selected} action={memberAction} onClose={() => setSelectedId(undefined)} onUpdated={updated}/>}
     </div>
     {modal === 'profile' && <ProfileDialog account={account} onClose={() => setModal(undefined)} onSaved={updated}/>}
-    {modal === 'password' && <Modal title="修改本人密码" icon={<LockKeyhole size={16}/>} onClose={() => setModal(undefined)}><div className="acct-modal-form"><PasswordForm onChanged={onLogout}/></div></Modal>}
+    {modal === 'password' && <Modal title="修改本人密码" icon={<Lock size={16}/>} onClose={() => setModal(undefined)}><div className="acct-modal-form"><PasswordForm onChanged={onLogout}/></div></Modal>}
     {modal === 'create' && canManage && <CreateDialog onClose={() => setModal(undefined)} onCreated={() => setRefresh(value => value + 1)}/>}
   </main>
 }

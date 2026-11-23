@@ -1,12 +1,13 @@
 import { createContext, lazy, Suspense, useContext, useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createPortal } from 'react-dom'
 import {
-  Activity, ArrowDownToLine, ArrowLeft, ArrowUp, Bell, Check, ChevronLeft, ChevronRight, CircleAlert, CirclePause, Clock3, FileOutput, FileText,
-  FolderOpen, Inbox, LayoutList, LoaderCircle, LogOut, MessageCircle, Plus,
-  Search, Settings2, X, Pause, Play, Square, ListChecks, Bookmark, Plug, History, PanelLeft, PanelRight,
-  Archive, ArchiveRestore, Ellipsis, MessageCircleQuestionMark, Pencil, RotateCcw, ShieldCheck, Trash2, type LucideIcon,
+  Activity, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowUp, Bell, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, CirclePause, Clock3, FileOutput, FileText,
+  FolderOpen, Inbox, LayoutList, LoaderCircle, MessageCircle, Paperclip, Plus,
+  Search, Settings2, X, Pause, Play, Square, ListChecks, History, PanelLeft, PanelRight,
+  Archive, ArchiveRestore, MessageCircleQuestionMark, RotateCcw, ShieldCheck, type LucideIcon,
 } from 'lucide-react'
-import { activeRun, api, APIError, awaitingPublication, type Artifact, type Conversation, type ConversationPage, type DeliveryUpdate, type Detail, type Overview, type OverviewGroup, type Receipt, type Material, type Settings, type Task } from './api'
+import { activeRun, api, APIError, awaitingPublication, type Artifact, type ConversationPage, type DeliveryUpdate, type Detail, type Overview, type OverviewGroup, type Receipt, type Material, type Run, type Settings, type Task } from './api'
 import { FormattedText, MemoryReferences, Messages, UsageDetails } from './ExecutionText'
 import { RunHistory } from './RunHistory'
 import { TaskEditor } from './TaskEditor'
@@ -20,22 +21,30 @@ import {MessageHistory,useMessageAnchor} from './MessageHistory'
 import {clearMemoryDrafts} from './memoryDrafts'
 import { ConnectionsPage } from './ConnectionsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
-import { awaitDraftAdmission, beginDraftRequest, changeComposerDraft, clearComposerDrafts, discardComposerDraft, draftGeneration, finishDraftRequest, hasOtherDraftMaterial, releaseDraftRequest, useComposerDraft, type TaskReference } from './composerDrafts'
-import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress} from './BenchmarkExecution'
+import { beginDraftRequest, changeComposerDraft, clearComposerDrafts, draftGeneration, enqueuePendingAdmission, finishDraftRequest, hasOtherDraftMaterial, releaseDraftRequest, removePendingAdmission, restoreRevisionDraft, useComposerDraft, usePendingAdmissions, type TaskReference } from './composerDrafts'
+import {BenchmarkExecution,benchmarkReadiness,useBenchmarkProgress,type BenchmarkProgress} from './BenchmarkExecution'
+import {benchmarkTaskTokens,isBenchmarkRevisionInstruction,namedBenchmarkTasks} from './benchmarkRevisionInput'
 import {useConversationTasks,type TaskLink} from './ConversationTasks'
-import {BenchmarkConversation} from './BenchmarkConversation'
+import {BenchmarkConversation,type RevisionPreview} from './BenchmarkConversation'
+import {ChatTaskDrawer} from './ChatTaskDrawer'
 import {ConversationConfiguration} from './ConversationConfiguration'
 import {IsolatedReplyComposer,isolatedDraftKey} from './IsolatedReplyComposer'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import {AssistantCard} from './AssistantCards'
-import {isAssistantItem,type AssistantItem} from './assistantSurface'
+import {assistantReplyCards,isAssistantItem,type AssistantItem} from './assistantSurface'
 import {ReplyStrategy,useComposerOptions,useComposerSuggestions,type ReplyModel} from './ComposerUI'
 import {AccountPage, ForcedPasswordChange, ServerLogin, type Account, type Session} from './AccountUI'
 import {applyPreferences, displayDate, GeneralPreferencesPage, uiLanguage, useTaskNotifications, type Preferences} from './GeneralPreferences'
-import clusbotIcon from './clusbot-icon.png'
-import {DiscoveryPanel,type DiscoveryStatus} from './DiscoveryPanel'
+import {PreferencesController} from './preferencesController'
+import {SettingsDiagnostics} from './SettingsDiagnostics'
+import clusbotIcon from './clusbot-brand.svg'
+import {WorkspaceSidebar} from './WorkspaceSidebar'
+import {AssistantNoticeMessage, FeedbackCallout} from './Feedback'
+import '@fontsource-variable/noto-sans-sc'
+import '@fontsource-variable/jetbrains-mono'
 import './styles.css'
 import './v31.css'
+import './Feedback.css'
 import './Composer.css'
 
 if (window.clusbotDrafts) document.documentElement.classList.add('desktop-app')
@@ -54,6 +63,41 @@ const errorMessage = (error: unknown) => error instanceof Error ? error.message 
 
 function Brand() {
   return <div className="brand"><img src={clusbotIcon} width={28} height={28} alt=""/><span>ClusBot</span></div>
+}
+
+type CoreRoleStatus = {
+  role: string
+  status: string
+  source?: string
+  modelID?: string
+}
+
+type ModelRoutingSnapshot = {
+  status: string
+  source?: string
+  modelID?: string
+  role?: string
+  enabledModelCount?: number
+  sampleModelName?: string
+  unreadyCoreRoles?: CoreRoleStatus[]
+}
+
+const coreModelRoles = [
+  { role: 'general_router', zh: '对话路由', en: 'Conversation Router' },
+  { role: 'conversation_reply', zh: '普通对话', en: 'Conversation Reply' },
+  { role: 'task_worker', zh: '任务工作', en: 'Task Worker' },
+] as const
+
+const modelRouteReady = (status?: string) => status !== undefined && ['configured','locally_configured','local_demo','demo'].includes(status)
+const modelRouteStatusLabels: Record<string,string> = {
+  not_configured:'未配置',settings_unavailable:'无法读取模型设置',default_unavailable:'全局默认模型不可用',
+  policy_unavailable:'阶段策略不可用',profile_missing:'关联模型已不存在',profile_disabled:'关联模型已停用',
+  provider_disabled:'服务提供方已停用',credential_missing:'凭据不可用',credential_changed:'凭据已变化',
+  profile_revision_changed:'模型配置版本已变化',profile_invalid:'模型配置无效',invalid_configuration:'模型配置无效',
+  default_destination_mismatch:'模型与默认服务不一致',demo_profile_disabled:'演示模式不可用',demo_role_unavailable:'演示模式不可用',
+}
+const modelRouteSourceLabels: Record<string,string> = {
+  business_override:'业务覆盖策略',role_policy:'阶段模型策略',global_default:'全局默认模型',explicit_profile:'旧角色绑定',
 }
 
 function App() {
@@ -136,6 +180,7 @@ const overviewPageSize=8
 const overviewGroupKeys:OverviewGroup[]=['waiting','active','completed']
 const overviewGroupTitles:Record<OverviewGroup,string>={waiting:'需要你决定',active:'正在处理',completed:'最近完成'}
 type OverviewPages=Partial<Record<OverviewGroup,string[]>>
+type ChatToolbarView='materials'|'operations'|'trends'
 
 function Workspace({session,logout,onAccountChange}: {session:Session; logout:()=>void; onAccountChange:(account:Account)=>void}) {
   const [route,setRoute]=useState(location.pathname+location.search+location.hash)
@@ -162,26 +207,44 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   const requestSeq=useRef(0)
   const appliedSeq=useRef(0)
   const [settings, setSettings] = useState<Settings>()
-  const [preferences,setPreferences]=useState<Preferences>()
-  const [preferenceError,setPreferenceError]=useState('')
+  const [preferencesController]=useState(()=>{
+    let storage:Storage|undefined
+    try {storage=window.sessionStorage} catch { /* Preferences remain available in this workspace. */ }
+    return new PreferencesController({
+      load:()=>api<Preferences>('/preferences'),
+      save:value=>api<Preferences>('/preferences',value,'PUT'),
+      isConflict:error=>error instanceof APIError&&error.status===409,
+    },storage,'clusbot:preferences:'+encodeURIComponent(session.user?.principal_id??'local'))
+  })
+  const [preferenceState,setPreferenceState]=useState(()=>preferencesController.snapshot())
+  const preferences=preferenceState.value
   const [sidebarCollapsed,setSidebarCollapsed]=useState(false)
   const [noticeOpen,setNoticeOpen]=useState(false)
-  const [runtimeUnconfigured,setRuntimeUnconfigured]=useState(false)
+  const [teamActivity,setTeamActivity]=useState(false)
+  const [allTaskCount,setAllTaskCount]=useState<number>()
+  const [currentItemsOpen,setCurrentItemsOpen]=useState(false)
+  const currentItemsTrigger=useRef<HTMLButtonElement>(null)
+  const currentItemsPopover=useRef<HTMLElement>(null)
+  const [sidebarTask,setSidebarTask]=useState<{id:string;trigger:HTMLButtonElement}>()
+  const [chatToolbarView,setChatToolbarView]=useState<ChatToolbarView>()
+  const [chatToolbarActions,setChatToolbarActions]=useState<HTMLDivElement|null>(null)
+  const clearSidebarTask=useCallback(()=>setSidebarTask(undefined),[])
+  const [searchOpen,setSearchOpen]=useState(false)
+  const [modelSnapshot,setModelSnapshot]=useState<ModelRoutingSnapshot>()
+  const [modelStatusAttempt,setModelStatusAttempt]=useState(0)
+  const [modelNoticeLifecycle,setModelNoticeLifecycle]=useState<'none'|'active'|'resolved'|'dismissed'>('none')
+  const prevModelUnavailable=useRef(false)
   const multiuser=session.mode==='server'
   const superadmin=Boolean(session.user?.is_superadmin)
   const canManageModels=!multiuser||superadmin
   const english=uiLanguage(preferences?.language)==='en-US'
   const t=(zh:string,en:string)=>english?en:zh
-  const [showDiscovery,setShowDiscovery]=useState(false)
-  const [discovery,setDiscovery]=useState<DiscoveryStatus>()
-  const [discoveryVersion,refreshDiscovery]=useState(0)
 
-  const loadPreferences=useCallback(async()=>{
-    setPreferenceError('')
-    try {setPreferences(await api<Preferences>('/preferences'))}
-    catch(e){setPreferenceError(errorMessage(e))}
-  },[])
-  useEffect(()=>{void loadPreferences()},[loadPreferences])
+  useEffect(()=>{
+    const unsubscribe=preferencesController.subscribe(setPreferenceState)
+    preferencesController.start()
+    return()=>{unsubscribe();preferencesController.stop()}
+  },[preferencesController])
   useLayoutEffect(()=>{if(preferences)applyPreferences(preferences)},[preferences])
   useTaskNotifications(Boolean(preferences?.desktop_notifications))
 
@@ -189,13 +252,14 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   const [detailOpen, setDetailOpen] = useState(false)
   const [menu, setMenu] = useState(false)
   const [error, setError] = useState('')
-  const [newWork, setNewWork] = useState(false)
-  const newWorkTrigger = useRef<HTMLButtonElement>(null)
-  const mobileNewWork = useRef<HTMLButtonElement>(null)
   const justCreatedTask = useRef('')
+  const lastChat = useRef('/chat')
   const compose = useRef<HTMLTextAreaElement>(null)
   const [area,id,source] = path.split('/').slice(1)
   const section = area || 'chat'
+  useEffect(()=>{
+    if(section==='chat'&&path!=='/')lastChat.current=route
+  },[section,path,route])
   const historyView=section==='tasks'&&params.get('view')==='history'
   const isHistory=historyView&&!id
   const historyStatus=historyView?params.get('status')??'':''
@@ -212,8 +276,19 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
     setRoute(location.pathname+location.search+location.hash)
     window.dispatchEvent(new Event('clusbot:navigate'))
     setMenu(false)
+    setCurrentItemsOpen(false)
+    setNoticeOpen(false)
   },[])
+  useEffect(()=>{
+    if(route!=='/')return
+    let active=true
+    api<ConversationPage>('/conversations/history?limit=1').then(({items})=>{
+      if(active&&location.pathname==='/'&&items[0])openRoute('/chat/'+encodeURIComponent(items[0].id),true)
+    }).catch(()=>undefined)
+    return()=>{active=false}
+  },[route,openRoute])
   const navigate=useCallback((next:string)=>openRoute(workRoute(next,scope,search)),[openRoute,scope,search])
+  const returnToChat=()=>navigate(lastChat.current)
   const setSearch=(value:string)=>openRoute(isHistory?taskHistoryRoute('/tasks',scope,value,historyStatus):workRoute(path,scope,value),true)
   const navigateFromOverview=(next:string)=>{
     if(isHistory&&/^\/tasks\/[^/?]+$/.test(next))openRoute(taskHistoryRoute(next,scope,search,historyStatus))
@@ -230,17 +305,58 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   },[])
   useEffect(() => {
     if (canManageModels) void api<Settings>('/settings').then(setSettings).catch(e => setError(errorMessage(e)))
-    else void api<{roles:{role:string;status:string}[]}>('/assistant/model-routing')
-      .then(result=>setRuntimeUnconfigured(result.roles.find(role=>role.role==='conversation_reply')?.status==='not_configured'))
-      .catch(()=>undefined)
+  },[canManageModels])
+  const refreshModelSnapshot=useCallback(async(signal?:{cancelled:boolean})=>{
+    try {
+      const [routing,catalog]=await Promise.all([
+        api<{roles:{role:string;status:string;source?:string;model_id?:string}[]}>('/assistant/model-routing'),
+        canManageModels?api<{name:string;model_id:string;enabled:boolean;provider_enabled:boolean}[]>('/settings/model/catalog').catch(()=>undefined):Promise.resolve(undefined),
+      ])
+      if(signal?.cancelled)return
+      const coreRoles: CoreRoleStatus[] = coreModelRoles.map(spec => {
+        const found = routing.roles?.find(role => role.role === spec.role)
+        return {
+          role: spec.role,
+          status: found?.status ?? 'settings_unavailable',
+          source: found?.source,
+          modelID: found?.model_id,
+        }
+      })
+      const unreadyCoreRoles = coreRoles.filter(item => !modelRouteReady(item.status))
+      const primary =
+        unreadyCoreRoles.find(item => item.status !== 'not_configured' && item.status !== 'settings_unavailable') ??
+        unreadyCoreRoles[0] ??
+        coreRoles.find(item => item.role === 'conversation_reply') ??
+        coreRoles[0]
+      const enabled=catalog?.filter(item=>item.enabled&&item.provider_enabled)
+      setModelSnapshot({
+        status:primary?.status??'settings_unavailable',
+        source:primary?.source,
+        modelID:primary?.modelID,
+        role:primary?.role,
+        enabledModelCount:enabled?.length,
+        sampleModelName:enabled?.[0]?.name||enabled?.[0]?.model_id,
+        unreadyCoreRoles,
+      })
+    } catch {
+      if(!signal?.cancelled)setModelSnapshot({status:'settings_unavailable'})
+    }
   },[canManageModels])
   useEffect(()=>{
     if(section!=='chat')return
-    let active=true
-    api<DiscoveryStatus>('/domain/discovery/setup-status')
-      .then(result=>{if(active)setDiscovery(result)}).catch(()=>undefined)
-    return()=>{active=false}
-  },[section,id,discoveryVersion])
+    const signal={cancelled:false}
+    void refreshModelSnapshot(signal)
+    const onFocus=()=>{if(!document.hidden)void refreshModelSnapshot(signal)}
+    window.addEventListener('focus',onFocus)
+    document.addEventListener('visibilitychange',onFocus)
+    return()=>{signal.cancelled=true;window.removeEventListener('focus',onFocus);document.removeEventListener('visibilitychange',onFocus)}
+  },[section,modelStatusAttempt,refreshModelSnapshot])
+  useEffect(()=>{
+    if(section!=='chat'||!modelSnapshot||modelRouteReady(modelSnapshot.status))return
+    const signal={cancelled:false}
+    const timer=window.setInterval(()=>{if(!document.hidden)void refreshModelSnapshot(signal)},4000)
+    return()=>{signal.cancelled=true;clearInterval(timer)}
+  },[section,modelSnapshot,refreshModelSnapshot])
   useEffect(()=>setOverviewPages(previous=>previous?.filter===filter?previous:undefined),[filter])
   const refresh = useCallback(async (signal?: {cancelled:boolean}) => {
     const sequence=++requestSeq.current
@@ -298,7 +414,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   const visibleTasks = isHistory ? historyPage?.items??[] : section === 'tasks' ? tasks.filter(task => task.status !== 'completed') : tasks
   const previewTask = visibleTasks.find(task => task.id === selected) || visibleTasks[0]
   const focused = detailOpen ? previewTask : undefined
-  const isOverview = section === 'overview' || (section === 'tasks' && !id)
+  const isOverview = section === 'overview' || (section === 'tasks' && isHistory)
   function openTask(task: Task) {
     if (matchMedia('(max-width: 1050px)').matches) navigateFromOverview('/tasks/'+task.id)
     else {
@@ -309,24 +425,12 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   function onTask(path:string) {
     const taskID=path.slice('/tasks/'.length)
     justCreatedTask.current=taskID
-    setNewWork(false)
     setSelected(taskID)
     navigate(path)
     void refresh()
   }
   function submitTask(text:string,key:string,scopeLabel:string,attachments:string[],delivery:DeliveryUpdate) {
     return api<Receipt>('/tasks',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
-  }
-  function openNewWork(trigger:HTMLButtonElement) {
-    newWorkTrigger.current=trigger
-    setNewWork(true)
-    setMenu(false)
-  }
-  function dismissNewWork() {
-    setNewWork(false)
-    const trigger=newWorkTrigger.current
-    const target=trigger?.getClientRects().length?trigger:mobileNewWork.current
-    target?.focus({preventScroll:true})
   }
   const focusNewTaskHeading=useCallback((heading:HTMLHeadingElement|null)=>{
     if(heading&&justCreatedTask.current===id){
@@ -336,81 +440,165 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   },[id])
   const nav = [
     { label:t('个人助手','Assistant'), path:'/chat', icon:MessageCircle, on:section==='chat' },
-    { label:t('任务管理','Tasks'), path:superadmin?'/team-tasks':'/tasks', icon:LayoutList, on:section==='tasks'||section==='team-tasks' },
+    { label:t('任务清单','Task list'), path:superadmin?'/team-tasks':'/tasks', icon:LayoutList, on:section==='tasks'||section==='team-tasks' },
     { label:t('运维趋势','Operations'), path:'/operations', icon:Activity, on:section==='operations' },
-    { label:t('设置','Settings'), path:'/settings', icon:Settings2, on:section==='settings' },
+    { label:t('设置','Settings'), path:'/settings', icon:Settings2, on:section==='settings'||section==='connections' },
   ]
   const sectionTitle=nav.find(item=>item.on)?.label ??
     ({overview:t('工作总览','Overview'),account:t('账号与安全','Account and security'),memory:t('个人记忆','Memory'),
       connections:t('工具与连接','Connections'),artifacts:t('成果','Artifacts')} as Record<string,string>)[section] ?? 'ClusBot'
-  const personalTaskItems=tasks.filter(task=>task.status!=='cancelled').slice(0,3)
-  const settingsTab=params.get('tab') ?? (hash.startsWith('model-')||hash==='skill-directory'?'model':'general')
-  const showModels=canManageModels&&settingsTab==='model'
+  const waitingItems=groups?.waiting??[]
+  const personalTaskItems=[
+    ...waitingItems.filter(task=>task.status_reason!=='acceptance_required'),
+    ...(groups?.active??[]),
+    ...waitingItems.filter(task=>task.status_reason==='acceptance_required'),
+  ]
+    .filter(task=>task.status!=='cancelled'&&task.status!=='completed')
+  const hasCurrentItems=personalTaskItems.length>0
+  const modelUnavailable=modelSnapshot!==undefined&&!modelRouteReady(modelSnapshot.status)
+  const modelStatusUnknown=modelSnapshot?.status==='settings_unavailable'
+  const modelUnselected=modelSnapshot?.status==='not_configured'
+  useEffect(()=>{
+    if(modelUnavailable){
+      prevModelUnavailable.current=true
+      setModelNoticeLifecycle(prev=>prev==='dismissed'?'dismissed':'active')
+    } else if(modelSnapshot!==undefined && modelRouteReady(modelSnapshot.status)){
+      if(prevModelUnavailable.current){
+        prevModelUnavailable.current=false
+        setModelNoticeLifecycle(prev=>prev==='active'?'resolved':'none')
+      }
+    }
+  },[modelUnavailable,modelSnapshot])
+  useEffect(()=>{
+    if(!hasCurrentItems)setCurrentItemsOpen(false)
+  },[hasCurrentItems])
+  function toggleCurrentItems(trigger:HTMLButtonElement){
+    currentItemsTrigger.current=trigger
+    setCurrentItemsOpen(value=>!value)
+  }
+  function openSidebarTask(task:Task,trigger:HTMLButtonElement){
+    const returnFocus=currentItemsPopover.current?.contains(trigger)?currentItemsTrigger.current??trigger:trigger
+    setCurrentItemsOpen(false)
+    setMenu(false)
+    if(section!=='chat')returnToChat()
+    setSidebarTask({id:task.id,trigger:returnFocus})
+  }
+  const settingsArea=section==='settings'||section==='connections'
+  const requestedTab=params.get('tab')
+  const settingsTab=section==='connections'?'connections':
+    requestedTab==='execution'||requestedTab==='diagnostics'?requestedTab:
+    !canManageModels?'general':
+    requestedTab==='skills'||hash==='skill-directory'?'skills':
+    requestedTab==='model'||hash.startsWith('model-')?'model':'general'
+  const settingsTabs=[
+    {id:'general',text:t('常规','General'),path:'/settings'},
+    ...(canManageModels?[
+      {id:'model',text:t('模型','Models'),path:'/settings?tab=model'},
+      {id:'skills',text:'Skills',path:'/settings?tab=skills'},
+    ]:[]),
+    {id:'connections',text:t('MCP 连接与工具','MCP connections'),path:'/connections'},
+    {id:'execution',text:t('执行与权限','Execution and access'),path:'/settings?tab=execution'},
+    {id:'diagnostics',text:t('数据与诊断','Data and diagnostics'),path:'/settings?tab=diagnostics'},
+  ]
+  const showBackInHeader=section==='team-tasks'||section==='tasks'&&!id&&!isHistory
+  const chatView=section==='chat'?chatToolbarView:undefined
+  const chatBreadcrumb=chatView==='materials'?t('材料预览与输入交互','Materials'):
+    chatView==='operations'?t('集群运维与交互卡片','Cluster operations'):
+    chatView==='trends'?t('趋势分析与故障流程','Trends and incidents'):t('对话','Conversation')
   const opsRange=params.get('range')
   const viewRange=opsRange==='24h'||opsRange==='7d'||opsRange==='30d'?opsRange:undefined
   const searchRef = useRef<HTMLInputElement>(null)
+  async function searchWorkspace(event:FormEvent<HTMLFormElement>){
+    event.preventDefault()
+    const value=searchRef.current?.value.trim()
+    if(!value)return
+    setSearchOpen(false)
+    const query=value.toLocaleLowerCase()
+    const view=({
+      '任务管理':superadmin?'/team-tasks':'/tasks','任务清单':superadmin?'/team-tasks':'/tasks','运维趋势':'/operations','工作总览':'/overview','成果':'/artifacts','个人记忆':'/memory',
+      ...(session.user?{'账号与安全':'/account'}:{}),
+    } as Record<string,string>)[query]
+    if(view){navigate(view);return}
+    if(query==='资产发现'){
+      changeComposerDraft('chat:new',draft=>draft.text||draft.request||draft.taskReference||draft.benchmarkPlan||draft.materials.length?{}:{text:'查看资产发现'})
+      navigate('/chat')
+      return
+    }
+
+    if(query==='设置'||query==='settings'){navigate('/settings');return}
+    const setting=settingsTabs.find(item=>item.text.toLocaleLowerCase()===query)
+    if(setting){navigate(setting.path);return}
+    if(canManageModels){
+      try{
+        const profiles=await api<{name:string;model_id:string;provider_id:string}[]>('/settings/model/catalog')
+        const profile=profiles.find(item=>[item.name,item.model_id].some(label=>label?.toLocaleLowerCase()===query))
+        if(profile){navigate('/settings?tab=model&provider='+encodeURIComponent(profile.provider_id));return}
+      }catch{ /* Task search remains available if the catalog is unavailable. */ }
+    }
+    try{
+      const {items}=await api<ConversationPage>('/conversations/history')
+      const conversation=items.find(item=>item.title.toLocaleLowerCase()===query)
+      if(conversation){navigate('/chat/'+encodeURIComponent(conversation.id));return}
+    }catch{ /* Task search remains available if conversation history is unavailable. */ }
+    openRoute((superadmin?'/team-tasks':'/tasks')+'?'+new URLSearchParams({q:value}))
+  }
   useEffect(()=>{
     const shortcut = (event:KeyboardEvent) => {
-      if (!(event.ctrlKey||event.metaKey) || event.key.toLowerCase()!=='k' || event.isComposing) return
+      if (showBackInHeader || chatView==='materials' || !(event.ctrlKey||event.metaKey) || event.key.toLowerCase()!=='k' || event.isComposing) return
       event.preventDefault()
-      searchRef.current?.focus()
+      setSearchOpen(true)
+      requestAnimationFrame(()=>searchRef.current?.focus())
     }
     window.addEventListener('keydown',shortcut)
     return()=>window.removeEventListener('keydown',shortcut)
-  },[])
+  },[chatView,showBackInHeader])
   return <VisionContext.Provider value={Boolean(settings?.attributes?.vision && settings.mode !== 'demo' && settings.mode !== 'unconfigured')}>
-    <div className={'workspace v31-workspace' + (sidebarCollapsed?' rail-collapsed':'') + (isOverview && !focused ? ' overview-without-detail' : '')} data-section={section}>
+    <div className={'workspace v31-workspace' + (sidebarCollapsed?' rail-collapsed':'') + (isOverview && !focused ? ' overview-without-detail' : '')} data-section={section} data-settings={settingsArea||undefined} data-chat-view={chatView}
+      onKeyDown={event=>{
+        if(!currentItemsOpen||event.key!=='Escape'||event.defaultPrevented||event.nativeEvent.isComposing)return
+        const target=event.target as Node
+        if(!currentItemsTrigger.current?.contains(target)&&!currentItemsPopover.current?.contains(target))return
+        event.preventDefault()
+        setCurrentItemsOpen(false)
+        currentItemsTrigger.current?.focus()
+      }}>
     {menu && <button className="scrim v31-scrim" onClick={() => setMenu(false)} aria-label={t('关闭导航','Close navigation')}/>}
-    <aside className={'sidebar v31-sidebar ' + (menu ? 'open' : '')}>
-      <div className="sidebar-masthead">
-        <Brand/>
-        <button type="button" className="icon-button sidebar-collapse" aria-label={sidebarCollapsed?t('展开侧栏','Expand sidebar'):t('折叠侧栏','Collapse sidebar')} aria-expanded={!sidebarCollapsed} onClick={()=>setSidebarCollapsed(!sidebarCollapsed)}><PanelLeft size={16}/></button>
-      </div>
-      <nav aria-label={t('主导航','Main navigation')}>{nav.map(({label,path:target,icon:Icon,on}) =>
-        <button key={target} type="button" className={on?'nav-item current':'nav-item'} aria-label={label} title={sidebarCollapsed?label:undefined} aria-current={on?'page':undefined} onClick={()=>navigate(target)}>
-          <Icon size={16}/><span>{label}</span>
-        </button>)}</nav>
-      {personalTaskItems.length>0&&<section className="sidebar-items">
-        <h2>{t('当前事项','Current tasks')}</h2>
-        {personalTaskItems.map(task=><button key={task.id} type="button" className="sidebar-task" onClick={()=>navigate('/tasks/'+task.id)}>
-          <span className={'status-dot '+task.status}/><span><strong>{task.title}</strong><small>{task.reason||task.status_reason}</small></span>
-        </button>)}
-      </section>}
-      <div className="sidebar-footer">
-        <details className="sidebar-links">
-          <summary className="nav-item"><Ellipsis size={16}/><span>{t('更多','More')}</span></summary>
-          <button type="button" className="nav-item" onClick={()=>navigate('/overview')}><Inbox size={16}/><span>{t('总览','Overview')}</span></button>
-          <button type="button" className="nav-item" onClick={()=>navigate('/artifacts')}><FileText size={16}/><span>{t('成果','Artifacts')}</span></button>
-          <button type="button" className="nav-item" onClick={()=>navigate('/memory')}><Bookmark size={16}/><span>{t('个人记忆','Memory')}</span></button>
-          <button type="button" className="nav-item" onClick={()=>navigate('/connections')}><Plug size={16}/><span>{t('工具与连接','Connections')}</span></button>
-          <button type="button" className="nav-item" ref={newWorkTrigger} onClick={event=>openNewWork(event.currentTarget)}><Plus size={16}/><span>{t('新任务','New task')}</span></button>
-          <button type="button" className="nav-item" onClick={async()=>{try{await api('/session',undefined,'DELETE');logout()}catch(e){setError(errorMessage(e))}}}><LogOut size={16}/><span>{t('退出','Sign out')}</span></button>
-        </details>
-        {session.user && <button type="button" className="sidebar-account" aria-label={t('账号与安全','Account and security')} onClick={()=>navigate('/account')}>
-          <span className="sidebar-avatar">{session.user.avatar||Array.from(session.user.display_name||session.user.username)[0]}</span>
-          <span className="sidebar-account-copy"><strong>{session.user.display_name}</strong><small>{superadmin?t('超级管理员','Administrator'):t('普通用户','Member')}</small></span><ChevronRight size={14}/>
-        </button>}
-      </div>
-    </aside>
+    <WorkspaceSidebar menu={menu} collapsed={sidebarCollapsed} section={section} settingsArea={settingsArea}
+      personalTaskItems={personalTaskItems} allTaskCount={allTaskCount} superadmin={superadmin} user={session.user}
+      t={t} taskReasonIcons={taskReasonIcons} taskStatusIcons={taskStatusIcons}
+      onToggleCollapsed={()=>setSidebarCollapsed(value=>!value)} onReturnToChat={returnToChat}
+      onNavigate={navigate} onOpenTask={openSidebarTask}/>
     <header className="unified-toolbar">
-      <div className="toolbar-title"><button type="button" ref={mobileNewWork} className="icon-button v31-mobile-nav" aria-label={t('打开导航','Open navigation')} onClick={()=>setMenu(!menu)}><PanelLeft size={17}/></button><strong>{sectionTitle}</strong>
-        {section==='chat'&&<><span className="muted toolbar-breadcrumb">/ {t('对话','Conversation')}</span>
-          {superadmin&&<div className="toolbar-view">
-            <button type="button" className="toolbar-chip" aria-pressed={!noticeOpen} onClick={()=>setNoticeOpen(false)}>{t('仅看我的','My activity')}</button>
-            <button type="button" className="toolbar-chip" aria-pressed={noticeOpen} onClick={()=>setNoticeOpen(true)}>{t('全站动态','Team activity')}</button>
+      <div className="toolbar-title"><button type="button" className="icon-button v31-mobile-nav" aria-label={t('打开导航','Open navigation')} aria-controls="workspace-sidebar" aria-expanded={menu} onClick={()=>setMenu(!menu)}><PanelLeft size={14}/></button><strong>{sectionTitle}</strong>
+        {settingsArea&&<Breadcrumb>{settingsTabs.find(item=>item.id===settingsTab)?.text}</Breadcrumb>}
+        {section==='account'&&session.user&&<Breadcrumb>{superadmin&&hash==='users'?t('用户管理','User management'):t('本人账号','My account')}</Breadcrumb>}
+        {section==='chat'&&<><Breadcrumb conversation>{chatBreadcrumb}</Breadcrumb>
+          {hasCurrentItems&&<button className="toolbar-changes" type="button" onClick={event=>toggleCurrentItems(event.currentTarget)} aria-expanded={currentItemsOpen} aria-controls={currentItemsOpen?'current-items-popover':undefined}>
+            <i aria-hidden="true"/>{t('当前事项','Current tasks')} {personalTaskItems.length}<ChevronDown size={10} aria-hidden="true"/>
+          </button>}
+          {superadmin&&(!chatView||teamActivity)&&<div className="toolbar-view" role="group" aria-label={t('会话视角','Conversation view')}>
+            <button type="button" className="toolbar-chip" aria-pressed={!teamActivity} onClick={()=>setTeamActivity(false)}>{t('仅看我的','My activity')}</button>
+            <button type="button" className="toolbar-chip" aria-pressed={teamActivity} onClick={()=>setTeamActivity(true)}>{t('全站动态','Team activity')}</button>
           </div>}</>}
       </div>
-      <div className="toolbar-actions">
-        <form className="toolbar-search" role="search" onSubmit={event=>{
-          event.preventDefault()
-          const q=searchRef.current?.value.trim()
-          if(q)navigate(taskHistoryRoute('/tasks','',q,''))
-        }}><Search size={14}/><input ref={searchRef} aria-label={t('搜索任务','Search tasks')} placeholder={t('搜索任务…','Search tasks…')}/><kbd>⌘K</kbd></form>
-        <button type="button" className="icon-button toolbar-bell" aria-label={t('待处理事项','Updates')} onClick={()=>setNoticeOpen(!noticeOpen)} aria-expanded={noticeOpen}><Bell size={16}/></button>
+      <div className="toolbar-chat-actions" ref={setChatToolbarActions}/>
+      <div className="toolbar-actions" hidden={showBackInHeader||chatView==='materials'}>
+        <button type="button" className="icon-button toolbar-search-trigger" aria-label={t('搜索工作区','Search workspace')} aria-expanded={searchOpen} onClick={()=>{
+          setSearchOpen(!searchOpen)
+          if(!searchOpen)requestAnimationFrame(()=>searchRef.current?.focus())
+        }}><Search size={14}/></button>
+        <form className="toolbar-search" data-open={searchOpen} role="search" onKeyDown={event=>{if(event.key==='Escape')setSearchOpen(false)}} onSubmit={searchWorkspace}>
+          <Search size={13}/><input ref={searchRef} aria-label={t('搜索工作区','Search workspace')} placeholder={canManageModels?t('搜索任务、模型、设置…','Search tasks, models, settings…'):t('搜索任务、设置…','Search tasks, settings…')}/><kbd>⌘K</kbd></form>
+        <button type="button" className="icon-button toolbar-bell" aria-label={t('待处理事项','Updates')} onClick={()=>setNoticeOpen(!noticeOpen)} aria-expanded={noticeOpen}><Bell size={15}/></button>
       </div>
+      {showBackInHeader&&<button type="button" className="outline settings-back" onClick={returnToChat}><ArrowLeft size={14}/>{t('回到个人助手','Back to assistant')}</button>}
+      {currentItemsOpen&&hasCurrentItems&&<aside id="current-items-popover" ref={currentItemsPopover} className="workspace-notices current-items-popover" aria-label={t('当前事项','Current tasks')}>
+        {personalTaskItems.map(task=><button type="button" className="sidebar-task" key={task.id} onClick={event=>openSidebarTask(task,event.currentTarget)}>{task.title}</button>)}
+        <button type="button" className="text-button" onClick={()=>{setCurrentItemsOpen(false);navigate(superadmin?'/team-tasks':'/tasks')}}>{t('任务清单','Task list')}</button>
+      </aside>}
       {noticeOpen&&<aside className="workspace-notices">
         {superadmin ? <Suspense fallback={<p className="muted">{t('正在加载…','Loading…')}</p>}><TaskNotices onOpen={(owner,id)=>{setNoticeOpen(false);navigate('/team-tasks?'+new URLSearchParams({owner,task:id}))}}/></Suspense> :
-          <><h2>{t('待处理事项','Needs attention')}</h2>{groups?.waiting.length?groups.waiting.map(task=><button className="sidebar-task" key={task.id} onClick={()=>{setNoticeOpen(false);navigate('/tasks/'+task.id)}}>{task.title}</button>):<p className="muted">{t('暂无待处理事项','No tasks need attention')}</p>}</>}
+          <><h2>{t('待处理事项','Needs attention')}</h2>{groups?.waiting.length?groups.waiting.map(task=><button className="sidebar-task" key={task.id} onClick={()=>{setNoticeOpen(false);navigate('/tasks?'+new URLSearchParams({task:task.id}))}}>{task.title}</button>):<p className="muted">{t('暂无待处理事项','No tasks need attention')}</p>}</>}
       </aside>}
     </header>
     {isOverview && <>
@@ -458,73 +646,111 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
         else next.delete('run')
         openRoute(next.size?path+'?'+next.toString():path)
       }}/>}
-    {section==='chat' && <Chat key={id || 'new'} id={id} navigate={navigate} assistantManage={canManageModels}
-      introduction={<>
-        {(settings?.mode==='unconfigured'||runtimeUnconfigured)&&<aside className="v31-runtime-notice">
-          <CircleAlert size={17}/><p>{t('当前未配置模型。仍可查看任务、材料和运维记录。','No model is configured. Tasks, materials, and operations are still available.')}</p>
-          {canManageModels&&<button type="button" className="outline" onClick={()=>navigate('/settings?tab=model')}>{t('配置模型','Configure a model')}</button>}
-        </aside>}
-        {discovery&&discovery.state!=='source_unavailable'&&<div className="v31-discovery">
-          <button type="button" className="text-button" aria-expanded={showDiscovery} onClick={()=>setShowDiscovery(!showDiscovery)}>{t('资产发现','Asset discovery')}</button>
-          {showDiscovery&&<DiscoveryPanel status={discovery} refresh={()=>refreshDiscovery(value=>value+1)}/>}
-        </div>}
-      </>}/> }
+    {section==='chat' && <Chat key={id || 'new'} id={id} navigate={navigate} assistantManage={canManageModels} modelConcurrency={settings?.model_concurrency} account={session.user} sidebarTask={sidebarTask} onSidebarTaskOpened={clearSidebarTask}
+      toolbarActions={chatToolbarActions} onToolbarView={setChatToolbarView}
+      activity={superadmin&&teamActivity?<Suspense fallback={<p className="muted">{t('正在加载…','Loading…')}</p>}><TaskNotices limit={4} onOpen={(owner,id)=>navigate('/team-tasks?'+new URLSearchParams({owner,task:id}))}/></Suspense>:undefined}
+      modelNotice={(() => {
+        const coreRoleLabel = (role?: string) => {
+          const spec = coreModelRoles.find(item => item.role === role)
+          return spec ? (english ? spec.en : spec.zh) : (english ? 'Conversation' : '对话')
+        }
+        const unreadyRoles = modelSnapshot?.unreadyCoreRoles ?? []
+        const unreadyRoleNames = unreadyRoles.map(item => coreRoleLabel(item.role)).join(english ? ', ' : '、')
+        const targetStage = modelSnapshot?.role || unreadyRoles[0]?.role || 'conversation_reply'
+        const partiallyConfigured = unreadyRoles.length > 0 && unreadyRoles.length < coreModelRoles.length
+        if (modelNoticeLifecycle==='resolved' && modelSnapshot) return {
+          kind: 'resolved',
+          title: t('对话模型已就绪','Conversation model is ready'),
+          message: `${t('当前生效','Active')}: ${modelSnapshot.modelID || t('已配置模型','Configured model')}（${(modelSnapshot.source && modelRouteSourceLabels[modelSnapshot.source]) || t('模型配置','Model configuration')}）。${t('此前的配置提示已过时，可直接继续对话。','The previous configuration prompt is now outdated; you can continue chatting.')}`,
+          onDismiss: () => setModelNoticeLifecycle('dismissed'),
+        }
+        if (modelUnavailable && modelNoticeLifecycle !== 'dismissed' && modelSnapshot) return {
+          kind: modelStatusUnknown ? 'unknown' : modelUnselected ? (modelSnapshot.enabledModelCount === 0 ? 'no_models' : 'unselected') : 'broken',
+          title: modelStatusUnknown
+            ? t('暂无法确认对话模型状态','Cannot verify conversation model')
+            : modelUnselected
+              ? (modelSnapshot.enabledModelCount === 0
+                ? t('尚未添加可用模型','No enabled models yet')
+                : partiallyConfigured
+                  ? t('部分核心阶段尚未配置模型','Some core stages still need a model')
+                  : t('尚未指定对话使用的模型或策略','No conversation model or policy selected'))
+              : `${coreRoleLabel(modelSnapshot.role)}${t('阶段的',' stage ')}${modelSnapshot.source && modelRouteSourceLabels[modelSnapshot.source] ? modelRouteSourceLabels[modelSnapshot.source] : t('模型配置','model configuration')}${t('不可用',' is unavailable')}`,
+          message: modelStatusUnknown
+            ? t('请重试检查；已知斜杠指令与只读任务查询仍可使用。','Try checking again. Known slash commands and read-only task queries still work.')
+            : !canManageModels
+              ? t('请联系管理员检查对话模型与阶段策略。','Ask an administrator to check the conversation model and routing policy.')
+              : modelUnselected
+                ? (modelSnapshot.enabledModelCount === 0
+                  ? t('当前还没有已启用的服务提供方或模型。请先添加提供方并启用模型，再设为全局默认或配置阶段策略。','No enabled provider or model is available yet. Add a provider and enable a model first, then set it as global default or configure a stage policy.')
+                  : partiallyConfigured
+                    ? `${t('未设置「全局默认模型」时，系统需要「对话路由、普通对话、任务工作」全部就绪才会处理对话。当前未配置的阶段：','Without a Global Default model, all core stages (Conversation Router, Conversation Reply, Task Worker) must be configured before messages are processed. Still unconfigured: ')}${unreadyRoleNames}。`
+                    : `${t('检测到已有可用模型','Available model detected')}（${modelSnapshot.sampleModelName ?? t('已启用模型','enabled model')}），${t('请将其设为「全局默认模型」，或分别为「对话路由、普通对话、任务工作」3 个核心阶段配置阶段模型策略：','please either set it as Global Default or configure stage policies for all 3 core stages (Conversation Router, Conversation Reply, Task Worker):')}`)
+                : `${t('阶段','Stage')}：${coreRoleLabel(modelSnapshot.role)} · ${t('状态','Status')}：${modelRouteStatusLabels[modelSnapshot.status] ?? modelSnapshot.status}${modelSnapshot.modelID ? `（${modelSnapshot.modelID}）` : ''}。${t('请检查对应模型、提供方启用状态与凭据。','Please check the model, provider status, and credentials.')}`,
+          primaryAction: modelStatusUnknown
+            ? { label: t('重新检查','Check again'), onClick: () => setModelStatusAttempt(attempt => attempt + 1) }
+            : canManageModels
+              ? (modelUnselected && modelSnapshot.enabledModelCount !== 0
+                ? (partiallyConfigured
+                  ? { label: t('继续配置阶段策略','Configure next stage'), onClick: () => navigate(`/settings?tab=model&stage=${encodeURIComponent(targetStage)}#model-routing`) }
+                  : { label: t('去设为全局默认模型','Set as global default'), onClick: () => navigate('/settings?tab=model') })
+                : !modelUnselected && (modelSnapshot.source === 'business_override' || modelSnapshot.source === 'role_policy')
+                  ? { label: t('打开阶段模型策略','Open stage policy'), onClick: () => navigate(`/settings?tab=model&stage=${encodeURIComponent(targetStage)}#model-routing`) }
+                  : { label: modelSnapshot.enabledModelCount === 0 ? t('添加提供方与模型','Add provider & model') : t('打开模型设置','Open model settings'), onClick: () => navigate('/settings?tab=model') })
+              : undefined,
+          secondaryAction: canManageModels && modelUnselected && modelSnapshot.enabledModelCount !== 0
+            ? (partiallyConfigured
+              ? { label: t('去设为全局默认模型','Set as global default'), onClick: () => navigate('/settings?tab=model') }
+              : { label: t('配置阶段模型策略','Configure stage policy'), onClick: () => navigate(`/settings?tab=model&stage=${encodeURIComponent(targetStage)}#model-routing`) })
+            : undefined,
+          onDismiss: () => setModelNoticeLifecycle('dismissed'),
+        }
+        return undefined
+      })()}/> }
     {section==='artifacts' && <Artifacts key={JSON.stringify([id,scope,artifactTask])} selected={id} scope={scope} taskID={artifactTask} navigate={navigate}/>}
     {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage selected={id} sourceId={source} navigate={navigate}/>)}
-    {section==='connections' && <ConnectionsPage selected={id} navigate={navigate}/>}
-    {section==='settings' && <>
+    {settingsArea&&<div className="settings-toolbar">
       <nav className="settings-tabs" aria-label={t('设置分类','Settings categories')}>
-        <button type="button" aria-current={!showModels?'page':undefined} onClick={()=>navigate('/settings')}>{t('常规','General')}</button>
-        {canManageModels&&<button type="button" aria-current={showModels?'page':undefined} onClick={()=>navigate('/settings?tab=model')}>{t('模型','Models')}</button>}
-        {canManageModels&&<button type="button" onClick={()=>navigate('/settings?tab=model#skill-directory')}>Skills</button>}
-        <button type="button" onClick={()=>navigate('/connections')}>{t('MCP 连接与工具','MCP connections')}</button>
-        {session.user&&<button type="button" onClick={()=>navigate('/account')}>{t('账号与安全','Account and security')}</button>}
+        {settingsTabs.map(item=><button type="button" key={item.id} aria-current={settingsTab===item.id?'page':undefined} onClick={()=>navigate(item.path)}>{item.text}</button>)}
       </nav>
-      {showModels ? <Suspense fallback={loadingPage}><SettingsPage onSaved={setSettings} openConnections={()=>navigate('/connections')} openProposals={()=>navigate('/memory/skill-proposals')}/></Suspense> :
+      <select className="settings-section-select" aria-label={t('设置分类','Settings categories')} value={settingsTabs.find(item=>item.id===settingsTab)?.path} onChange={event=>navigate(event.target.value)}>
+        {settingsTabs.map(item=><option key={item.id} value={item.path}>{item.text}</option>)}
+      </select>
+      <button type="button" className="outline settings-back" onClick={returnToChat}><ArrowLeft size={14}/>{t('回到个人助手','Back to assistant')}</button>
+    </div>}
+    {preferences&&(preferenceState.status==='error'||preferenceState.status==='conflict')&&!(section==='settings'&&(settingsTab==='general'||settingsTab==='execution'))&&
+      <aside className="preference-outside-alert" role="alert"><CircleAlert size={15} aria-hidden="true"/><span>{t('偏好设置尚未保存。','Preferences are not saved yet.')}</span><button type="button" className="text-button" onClick={()=>navigate('/settings')}>{t('查看','Review')}</button></aside>}
+    {section==='connections'&&<ConnectionsPage selected={id} navigate={navigate}/>}
+    {section==='settings'&&(
+      settingsTab==='diagnostics'?<main className="main v31-wide settings-diagnostics">
+          <h1 className="settings-sr-only">{t('数据与诊断','Data and diagnostics')}</h1>
+          <SettingsDiagnostics workspacePath={multiuser?undefined:settings?.workspace_path} multiuser={multiuser} english={english}/>
+        </main> : settingsTab==='model'||settingsTab==='skills'?<Suspense fallback={loadingPage}><SettingsPage key={settingsTab+':'+(params.get('provider')??'')+':'+(params.get('model')??'')} view={settingsTab} onSaved={value=>{setSettings(value);setModelStatusAttempt(attempt=>attempt+1)}} openConnections={()=>navigate('/connections')} openProposals={()=>navigate('/memory/skill-proposals')}/></Suspense> :
         <main className="main v31-wide general-settings">
-          <h1>{t('常规设置','General settings')}</h1>
-          {preferenceError&&<p className="error" role="alert">{preferenceError} <button type="button" className="text-button" onClick={()=>void loadPreferences()}>{t('重试','Retry')}</button></p>}
-          <GeneralPreferencesPage value={preferences} onSaved={setPreferences} multiuser={multiuser}/>
-        </main>}
-    </>}
-    {section==='account'&&session.user&&<AccountPage key={hash} account={session.user} onAccountChange={onAccountChange} onLogout={logout} initialSection={hash==='password'?'password':hash==='users'?'users':hash==='profile'?'profile':undefined}/>}
+          <GeneralPreferencesPage view={settingsTab==='execution'?'execution':'general'} modelConcurrency={settings?.model_concurrency} state={preferenceState}
+            onChange={(key,value)=>preferencesController.update(key,value)} onRetry={()=>preferencesController.retry()} onResolve={keep=>preferencesController.resolveConflicts(keep)} multiuser={multiuser}/>
+        </main>
+    )}
+    {section==='account'&&session.user&&<AccountPage key={hash} account={session.user} onAccountChange={onAccountChange} onLogout={logout} onNavigate={navigate} initialSection={hash==='password'?'password':hash==='users'?'users':hash==='profile'?'profile':undefined}/>}
     {section==='operations'&&<Suspense fallback={loadingPage}><OperationsPage key={query} isAdmin={superadmin} initialIncident={params.get('incident')??undefined} initialRange={viewRange}/></Suspense>}
-    {section==='team-tasks'&&(superadmin ? <Suspense fallback={loadingPage}><TeamTasksPage key={query} initialOwner={params.get('owner')??undefined} initialTaskID={params.get('task')??undefined}/></Suspense> :
-      <main className="main v31-wide"><h1>{t('任务管理','Tasks')}</h1><button type="button" className="outline" onClick={()=>navigate('/tasks')}>{t('查看我的任务','View my tasks')}</button></main>)}
+    {((section==='tasks'&&!id&&!isHistory)||section==='team-tasks')&&<Suspense fallback={loadingPage}>
+      <TeamTasksPage key={section+':'+query} mode={section==='team-tasks'&&superadmin?'admin':'personal'} navigate={navigate}
+        initialOwner={params.get('owner')??undefined} initialTaskID={params.get('task')??undefined}
+        initialQuery={params.get('q')??undefined} onAllCount={section==='team-tasks'&&superadmin?setAllTaskCount:undefined}/>
+    </Suspense>}
 
-    {newWork&&<NewWorkDialog scope={scope} send={submitTask} onReceipt={onTask} onDismiss={dismissNewWork}/>}
   </div></VisionContext.Provider>
 }
 
-function NewWorkDialog({scope,send,onReceipt,onDismiss}:{scope:string;send:ComposerProps['onSend'];onReceipt:ComposerProps['onReceipt'];onDismiss:()=>void}) {
-  const dialog=useRef<HTMLDialogElement>(null)
-  const input=useRef<HTMLTextAreaElement>(null)
-  useLayoutEffect(()=>{
-    const modal=dialog.current
-    if(!modal)return
-    modal.showModal()
-    input.current?.focus()
-    return()=>{if(modal.open)modal.close()}
-  },[])
-  function dismiss() {
-    dialog.current?.close()
-    onDismiss()
-  }
-  return <dialog className="new-dialog new-work-dialog" aria-labelledby="new-work-title" ref={dialog}
-    onCancel={event=>{event.preventDefault();dismiss()}}
-    onClick={event=>{
-      if(event.target!==event.currentTarget)return
-      const {left,right,top,bottom}=event.currentTarget.getBoundingClientRect()
-      if(event.clientX<left||event.clientX>right||event.clientY<top||event.clientY>bottom)dismiss()
-    }}>
-    <header><h2 id="new-work-title">交代一件事</h2><button type="button" className="icon-button" aria-label="关闭" onClick={dismiss}><X size={20} aria-hidden="true"/></button></header>
-    <Composer draftKey="new:dialog" inputRef={input} placeholder="描述你想完成的事" label="交给助手" assign initialScope={scope} onSend={send} onReceipt={onReceipt}/>
-  </dialog>
+function Breadcrumb({children,conversation=false}:{children:React.ReactNode;conversation?:boolean}) {
+  return <span className={'muted toolbar-breadcrumb'+(conversation?' conversation-breadcrumb':'')}>
+    <span className="toolbar-crumb-divider" aria-hidden="true"/><span className="toolbar-crumb-label">{children}</span>
+  </span>
 }
 
 const taskReasonIcons:Record<string,LucideIcon>={
   input_required:MessageCircleQuestionMark,approval_required:ShieldCheck,acceptance_required:ListChecks,
   delivery_required:FileOutput,file_writing:FileOutput,reconciliation_required:CircleAlert,paused:CirclePause,
+  benchmark_dispatch_paused:CirclePause,
 }
 const taskStatusIcons:Record<Task['status'],LucideIcon>={
   completed:Check,interrupted:CircleAlert,waiting_user:Inbox,cancelled:Square,active:Clock3,
@@ -556,7 +782,7 @@ function TaskGroup({title,tasks,count,selected,choose,waitingAt,pagination}:{
     {tasks.map(task => {
     const Icon = taskReasonIcons[task.status_reason] ?? taskStatusIcons[task.status]
     const backgroundWait=task.status_reason==='file_writing'
-    const tone=task.status_reason==='paused'?'paused':backgroundWait?'active':task.status
+    const tone=task.status_reason==='paused'||task.status_reason==='benchmark_dispatch_paused'?'paused':backgroundWait?'active':task.status
     return <button key={task.id} className={'task-row '+(task.id===selected?'selected':'')} onClick={() => choose(task)}>
       <span className={'task-icon '+tone}><Icon size={17} aria-hidden="true"/></span>
       <span className="task-copy"><strong>{task.title}</strong><small>{task.reason}</small></span>
@@ -571,30 +797,68 @@ function TaskGroup({title,tasks,count,selected,choose,waitingAt,pagination}:{
 function receiptPath(receipt:Receipt,assign:boolean) {
   const validID=(id?:string)=>Boolean(id && /^[a-f\d]{32}$/.test(id))
   if(validID(receipt.task_id))return '/tasks/'+receipt.task_id
-  if(!assign && validID(receipt.conversation_id))return '/chat/'+receipt.conversation_id
+  if(!assign && receipt.conversation_id && /^[a-z\d_-]{1,128}$/i.test(receipt.conversation_id))return '/chat/'+receipt.conversation_id
+}
+
+type OptimisticStartItem = {
+  key:string;text:string;createdAt:number;materials:Material[]
+  taskRef?:{taskID:string;title:string}
+}
+type OptimisticFailInfo = {
+  message:string;unconfirmed:boolean;retry:()=>void;restore:()=>void
 }
 
 type ComposerProps = {
   draftKey:string
+  previewMaterials?:Material[]
   placeholder:string; label:string; onSend:(text:string,key:string,scope:string,attachments:string[],delivery:DeliveryUpdate,strategy?:'role_routing'|'deterministic_only')=>Promise<Receipt>
   onReceipt:(path:string,receipt?:Receipt)=>void|Promise<void>
   onAssistantReceipt?:(item:AssistantItem,text:string)=>void
-  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:(model?:ReplyModel,text?:string)=>void; isolatedRecovery?:boolean; hidden?:boolean; referenceConversationID?:string; onReferenceTask?:(reference:TaskReference)=>void
+  prepareDelivery?:(text:string,attachments:string[],delivery:DeliveryUpdate,strategy:'role_routing'|'deterministic_only')=>Promise<DeliveryUpdate>
+  disabled?:boolean; disabledReason?:string; assign?:boolean; initialScope?:string; task?:Task; inputRef?:React.Ref<HTMLTextAreaElement>; reference?:React.ReactNode; openIsolated?:(model?:ReplyModel,text?:string)=>void; openModelSettings?:()=>void; busyAction?:React.ReactNode; isolatedRecovery?:boolean; hidden?:boolean; referenceConversationID?:string; onReferenceTask?:(reference:TaskReference)=>void
+  onStatusNotice?:(notice:{message:string;unconfirmed?:boolean;retry?:()=>void;dismiss:()=>void}|null)=>void
+  onAdmissionChange?:(admitting:boolean)=>void
+  onOptimisticStart?:(item:OptimisticStartItem)=>void
+  onOptimisticSettle?:(key:string)=>void
+  onOptimisticFail?:(key:string,info:OptimisticFailInfo)=>void
 }
 
-function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceipt,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,isolatedRecovery,hidden,referenceConversationID,onReferenceTask}:ComposerProps) {
+function Composer({draftKey,previewMaterials,placeholder,label,onSend,onReceipt,onAssistantReceipt,prepareDelivery,disabled=false,disabledReason,assign=false,initialScope='',task,inputRef,reference,openIsolated,openModelSettings,busyAction,isolatedRecovery,hidden,referenceConversationID,onReferenceTask,onStatusNotice,onAdmissionChange,onOptimisticStart,onOptimisticSettle,onOptimisticFail}:ComposerProps) {
   const allowImages = useContext(VisionContext)
+  const [sendShortcut,setSendShortcut]=useState(()=>document.documentElement.dataset.sendShortcut==='mod_enter'?'mod_enter':'enter')
+  useEffect(()=>{
+    const root=document.documentElement
+    const update=()=>setSendShortcut(root.dataset.sendShortcut==='mod_enter'?'mod_enter':'enter')
+    const observer=new MutationObserver(update)
+    observer.observe(root,{attributes:true,attributeFilter:['data-send-shortcut']})
+    update()
+    return()=>observer.disconnect()
+  },[])
   const draft=useComposerDraft(draftKey)
   const {text:value,materials,criteria:criteriaDraft}=draft
+  const plan=typeof draft.benchmarkPlan==='string'?draft.benchmarkPlan:undefined
+  const validPlan=plan!==undefined&&/^[^\s@\\/:]+@v?[1-9][0-9]*$/i.test(plan.trim())
+  const hasBody=Boolean(value.trim())
+  const exactCommand=value.trim().match(/^(\/benchmark[ \t]+[^\s@\\/:]+@)v([1-9][0-9]*)$/)
+  const outgoingText=plan===undefined?(exactCommand?exactCommand[1]+exactCommand[2]:value):
+    validPlan?'/benchmark '+(hasBody?plan.trim()+'\n'+value:plan.trim().replace(/@v/i,'@')):''
   const {options,error:optionsError}=useComposerOptions(referenceConversationID)
   const textarea=useRef<HTMLTextAreaElement>(null)
+  const planInput=useRef<HTMLInputElement>(null)
   const compositionEnd=useRef<number|undefined>(undefined)
   const [strategy,setStrategy]=useState<'role_routing'|'deterministic_only'>('role_routing')
   const selectedStrategy=draft.request?.strategy??strategy
   const readDrafts=draft.reads??(draft.read?[draft.read]:[])
   const scope=draft.scope ?? draft.request?.scope ?? initialScope
   const edit=(patch:Partial<typeof draft>)=>{setUnconfirmed(false);changeComposerDraft(draftKey,()=>patch)}
-  const suggestions=useComposerSuggestions({value,setValue:text=>edit({text}),input:textarea,options,canReference:Boolean(onReferenceTask),onReference:item=>onReferenceTask?.({taskID:item.id,title:item.title,passive:true})})
+  const suggestions=useComposerSuggestions({
+    value,setValue:text=>edit({text}),input:textarea,options,canReference:Boolean(onReferenceTask),
+    onReference:item=>onReferenceTask?.({taskID:item.id,title:item.title,passive:true}),
+    onBenchmarkCommand:onAssistantReceipt?text=>{
+      edit({text,benchmarkPlan:plan??''})
+      requestAnimationFrame(()=>planInput.current?.focus())
+    }:undefined,
+  })
   const [pending,setPending]=useState(false)
   const [error,setError]=useState('')
   const [unconfirmed,setUnconfirmed]=useState(false)
@@ -602,8 +866,27 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
   const locked=useRef(false)
   const captureLock=useRef(false)
   const [capturing,setCapturing]=useState(false)
-  const admissionKey=draft.request?.awaitingAdmission ? draft.request.key : undefined
-  const submitting=pending || Boolean(admissionKey)
+  const pendingAdmissions=usePendingAdmissions(draftKey)
+  const pendingAdmissionKeys=pendingAdmissions.map(item=>item.key).join(',')
+  const legacyAdmissionKey=draft.request?.awaitingAdmission ? draft.request.key : undefined
+  const submitting=pending
+  useEffect(()=>{
+    if(!legacyAdmissionKey)return
+    enqueuePendingAdmission(draftKey,{key:legacyAdmissionKey,text:draft.text,createdAt:Date.now()})
+    finishDraftRequest(draftKey,legacyAdmissionKey)
+  },[draftKey,legacyAdmissionKey,draft.text])
+  useEffect(()=>{onAdmissionChange?.(pendingAdmissions.length>0)},[pendingAdmissions.length,onAdmissionChange])
+  const retrySubmit=useEffectEvent(()=>void submit(undefined,true))
+  useEffect(()=>{
+    if(!onStatusNotice)return
+    if(!error){onStatusNotice(null);return}
+    onStatusNotice({
+      message:error,
+      unconfirmed,
+      retry:unconfirmed?()=>retrySubmit():undefined,
+      dismiss:()=>{setError('');setUnconfirmed(false)},
+    })
+  },[error,unconfirmed,onStatusNotice])
   const mounted=useRef(false)
   useLayoutEffect(()=>{
     mounted.current=true
@@ -611,47 +894,50 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
   },[])
   const completeAdmission=useEffectEvent((path:string,receipt:Receipt)=>onReceipt(path,receipt))
   useEffect(()=>{
-    if(!admissionKey)return
-    const requestKey=admissionKey
+    if(!pendingAdmissionKeys)return
+    const keys=pendingAdmissionKeys.split(',')
     let disposed=false
     let timer:number
-    function fail(message:string) {
+    function fail(requestKey:string,message:string) {
       setError(message)
-      releaseDraftRequest(draftKey,requestKey)
+      removePendingAdmission(draftKey,requestKey)
     }
     async function check() {
       if(!document.hidden) {
-        let receipt:Receipt|undefined
-        try {
-          receipt=await api<Receipt>('/admissions/'+encodeURIComponent(requestKey))
-        } catch(e) {
-          if(!disposed && e instanceof APIError && e.code==='admission_not_found') {
-            fail(errorMessage(e))
-            return
+        for(const requestKey of keys) {
+          if(disposed)return
+          let receipt:Receipt|undefined
+          try {
+            receipt=await api<Receipt>('/admissions/'+encodeURIComponent(requestKey))
+          } catch(e) {
+            if(!disposed && e instanceof APIError && e.code==='admission_not_found') {
+              fail(requestKey,errorMessage(e))
+              continue
+            }
           }
-        }
-        if(disposed)return
-        if(receipt) {
-          const path=receiptPath(receipt,assign)
-          if(path) {
-            finishDraftRequest(draftKey,requestKey)
-            try {await completeAdmission(path,receipt)}
-            catch(e) {if(!disposed)setError(errorMessage(e))}
-            return
-          }
-          if(receipt.state==='failed'||receipt.state==='quarantined'||receipt.state==='applied') {
-            fail(receipt.state==='applied'?'已处理，但未找到对应的事项或对话':receipt.reason||'处理失败，请重试')
-            return
+          if(disposed)return
+          if(receipt) {
+            const path=receiptPath(receipt,assign)
+            if(path) {
+              removePendingAdmission(draftKey,requestKey)
+              try {await completeAdmission(path,receipt)}
+              catch(e) {if(!disposed)setError(errorMessage(e))}
+              if(!path.startsWith('/tasks/'))return
+              continue
+            }
+            if(receipt.state==='failed'||receipt.state==='quarantined'||receipt.state==='applied') {
+              fail(requestKey,receipt.state==='applied'?'已处理，但未找到对应的事项或对话':receipt.reason||'处理失败，请重试')
+            }
           }
         }
       }
-      timer=window.setTimeout(check,2000)
+      if(!disposed)timer=window.setTimeout(check,2000)
     }
     void check()
     return()=>{disposed=true;clearTimeout(timer)}
-  },[admissionKey,assign,draftKey])
+  },[pendingAdmissionKeys,assign,draftKey])
   async function capture(load:()=>Promise<Material>) {
-    if (captureLock.current || locked.current || disabled || admissionKey) return
+    if (captureLock.current || locked.current || disabled) return
     captureLock.current=true
     setCapturing(true);setError('')
     const generation=draftGeneration()
@@ -667,7 +953,13 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
   }
   async function submit(event?: FormEvent,reclassify=false) {
     event?.preventDefault()
-    if (locked.current || captureLock.current || disabled || admissionKey || !value.trim()) return
+    if (locked.current || captureLock.current || disabled) return
+    if(plan!==undefined&&!validPlan){setError('请输入方案和版本，例如 pod7@v4。');planInput.current?.focus();return}
+    if (!outgoingText.trim()) return
+    if(plan!==undefined&&selectedStrategy==='deterministic_only'){setError('切换到按角色路由后再发送基准指令。');return}
+    if(plan!==undefined&&!hasBody&&(materials.length||draft.taskReference)){
+      setError('请填写这次基准的要求，或移除材料和任务引用后再发送固定指令。');return
+    }
     if(reclassify&&!unconfirmed)return
     locked.current=true
     setPending(true);setError('');setUnconfirmed(false)
@@ -685,33 +977,99 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
     }
     if(task&&draft.replaceMaterials)delivery.replace_materials=true
     let requestID:string|undefined
+    let revisionRequest=false
+    const snapshot={
+      text:value,
+      materials:[...materials],
+      taskReference:draft.taskReference,
+      benchmarkPlan:plan,
+      outgoingText,
+    }
+    let optimisticKey:string|undefined
+    const executeSend=async(sendKey:string,sendScope:string,sendDelivery:DeliveryUpdate,sendStrategy?:'role_routing'|'deterministic_only',uiKey=sendKey)=>{
+      const receipt=await onSend(snapshot.outgoingText,sendKey,sendScope,snapshot.materials.map(item=>item.id),sendDelivery,sendStrategy)
+      if(onAssistantReceipt && isAssistantItem(receipt)) {
+        if(mounted.current){onAssistantReceipt(receipt,snapshot.outgoingText);finishDraftRequest(draftKey,sendKey);onOptimisticSettle?.(uiKey)}
+        else releaseDraftRequest(draftKey,sendKey)
+        return
+      }
+      const path=receiptPath(receipt,assign)
+      if(!path && receipt.model_pending) {
+        enqueuePendingAdmission(draftKey,{key:sendKey,text:snapshot.outgoingText,createdAt:Date.now()})
+        finishDraftRequest(draftKey,sendKey)
+        onOptimisticSettle?.(uiKey)
+        return
+      }
+      if(!path)throw new Error('未收到有效回执。草稿已保留，可以重试。')
+      finishDraftRequest(draftKey,sendKey)
+      if(mounted.current)await onReceipt(path,receipt)
+      onOptimisticSettle?.(uiKey)
+    }
     try {
       if((!draft.request || reclassify) && (assign || task)) {
         const reads=readDrafts.map(readRequest)
         if(reads.length===1) delivery.mcp_read=reads[0]
         else if(reads.length>1) delivery.mcp_reads=reads
       }
-      const request=beginDraftRequest(draftKey,scope,delivery,selectedStrategy)
+      const prepared=draft.request?.delivery??(prepareDelivery?await prepareDelivery(snapshot.outgoingText,snapshot.materials.map(item=>item.id),delivery,selectedStrategy):delivery)
+      const request=beginDraftRequest(draftKey,scope,prepared,selectedStrategy)
       requestID=request.key
-      const receipt=await onSend(value,request.key,request.scope,materials.map(item=>item.id),request.delivery,request.strategy)
-      if(onAssistantReceipt && isAssistantItem(receipt)) {
-        if(mounted.current){onAssistantReceipt(receipt,value);finishDraftRequest(draftKey,request.key)}
-        else releaseDraftRequest(draftKey,request.key)
-        return
+      revisionRequest=Boolean(request.delivery.benchmark_revision_target)
+      if(onOptimisticStart) {
+        optimisticKey=request.key
+        onOptimisticStart({
+          key:request.key,
+          text:snapshot.outgoingText,
+          createdAt:Date.now(),
+          materials:snapshot.materials,
+          taskRef:snapshot.taskReference?{taskID:snapshot.taskReference.taskID,title:snapshot.taskReference.title}:undefined,
+        })
+        changeComposerDraft(draftKey,()=>({text:'',materials:[],taskReference:undefined,benchmarkPlan:undefined}))
       }
-      const path=receiptPath(receipt,assign)
-      if(!path && receipt.model_pending) {
-        awaitDraftAdmission(draftKey,request.key)
-        return
-      }
-      if(!path)throw new Error('未收到有效回执。草稿已保留，可以重试。')
-      finishDraftRequest(draftKey,request.key)
-      if(mounted.current)await onReceipt(path,receipt)
+      await executeSend(request.key,request.scope,request.delivery,request.strategy)
     }
     catch(e){
-      if(e instanceof APIError&&e.code==='classification_failed'&&requestID)releaseDraftRequest(draftKey,requestID)
-      setUnconfirmed(e instanceof APIError&&e.code==='classification_unconfirmed')
-      setError(draft.taskReference?.passive&&e instanceof APIError&&e.status===404?'此任务引用已不可用。草稿仍在，请移除引用后再发送。':e instanceof TypeError?'未收到提交回执。草稿已保留，可以重试。':errorMessage(e))
+      if(e instanceof APIError&&requestID&&(e.code==='classification_failed'||
+        (plan!==undefined&&delivery.task_ref&&e.code==='task_revision')||(e.status===409&&revisionRequest)))releaseDraftRequest(draftKey,requestID)
+      const isUnconfirmed=e instanceof APIError&&e.code==='classification_unconfirmed'
+      const msg=revisionRequest&&e instanceof APIError&&e.status===409?'任务状态或方案版本已变化，草稿仍在。请重新选择任务后再发送。':snapshot.taskReference?.passive&&e instanceof APIError&&e.status===404?'此任务引用已不可用。草稿仍在，请移除引用后再发送。':e instanceof TypeError?'未收到提交回执。草稿已保留，可以重试。':errorMessage(e)
+      if(optimisticKey && onOptimisticFail) {
+        const currentKey=optimisticKey
+        const reqScope=scope
+        const reqStrategy=selectedStrategy
+        const reqDelivery=delivery
+        const restoreFn=()=>{
+          onOptimisticSettle?.(currentKey)
+          changeComposerDraft(draftKey,()=>({text:snapshot.text,materials:snapshot.materials,taskReference:snapshot.taskReference,benchmarkPlan:snapshot.benchmarkPlan}))
+          textarea.current?.focus()
+        }
+        const retryFn=(unconfirmedRetry:boolean)=>{
+          if(locked.current)return
+          locked.current=true;setPending(true)
+          const retryKey=unconfirmedRetry?crypto.randomUUID():currentKey
+          onOptimisticStart?.({
+            key:currentKey,
+            text:snapshot.outgoingText,
+            createdAt:Date.now(),
+            materials:snapshot.materials,
+            taskRef:snapshot.taskReference?{taskID:snapshot.taskReference.taskID,title:snapshot.taskReference.title}:undefined,
+          })
+          void executeSend(retryKey,reqScope,reqDelivery,reqStrategy,currentKey).catch(err=>{
+            const retryUnconfirmed=err instanceof APIError&&err.code==='classification_unconfirmed'
+            const retryMsg=err instanceof TypeError?'未收到提交回执。草稿已保留，可以重试。':errorMessage(err)
+            onOptimisticFail(currentKey,{message:retryMsg,unconfirmed:retryUnconfirmed,retry:()=>retryFn(retryUnconfirmed),restore:restoreFn})
+          }).finally(()=>{locked.current=false;setPending(false)})
+        }
+        onOptimisticFail(currentKey,{
+          message:msg,
+          unconfirmed:isUnconfirmed,
+          retry:()=>retryFn(isUnconfirmed),
+          restore:restoreFn,
+        })
+      } else {
+        setUnconfirmed(isUnconfirmed)
+        setError(msg)
+      }
     }
     finally{locked.current=false;setPending(false)}
   }
@@ -744,22 +1102,44 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
     for(const file of files.slice(0,room))await uploadMaterial(file)
     if(files.length>room)setError('每次最多选择四份材料')
   }
-  return <form className="composer" hidden={hidden} onSubmit={submit}
+  const commandChip=plan===undefined?undefined:<div className="composer-command">
+    <span>/benchmark</span>
+    <input ref={planInput} aria-label="基准方案和版本" placeholder="方案@版本" style={{width:`${plan?Math.max(7,Math.min(20,plan.length+1)):10}ch`}} maxLength={160} value={plan} readOnly={submitting}
+      onChange={event=>edit({benchmarkPlan:event.currentTarget.value})} onKeyDown={event=>{
+        if(event.key==='Enter'&&!event.nativeEvent.isComposing&&event.nativeEvent.keyCode!==229){event.preventDefault();textarea.current?.focus()}
+      }}/>
+    <button type="button" className="message-content-action" aria-label="移除基准指令" disabled={submitting||disabled}
+      onClick={()=>{edit({benchmarkPlan:undefined});textarea.current?.focus()}}><X size={12} aria-hidden="true"/></button>
+  </div>
+  return <>
+  {!onStatusNotice && error && <FeedbackCallout tone="error" compact role="alert" message={error}
+    actions={unconfirmed ? <button type="button" disabled={disabled||submitting||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button> : undefined}
+    onDismiss={()=>{setError('');setUnconfirmed(false)}}/>}
+  {!onStatusNotice && pendingAdmissions.length>0 && <FeedbackCallout tone="warning" compact role="status" message="消息已接收，配置模型后将自动继续"
+    actions={openModelSettings ? <button type="button" onClick={openModelSettings}>打开模型设置</button> : undefined}/>}
+  <form className="composer" hidden={hidden} onSubmit={submit}
     onDragOver={event=>{if(Array.from(event.dataTransfer.types).includes('Files'))event.preventDefault()}}
     onDrop={event=>{if(event.dataTransfer.files.length){event.preventDefault();void uploadDropped(Array.from(event.dataTransfer.files))}}}
     onPaste={event=>{if(event.clipboardData.files.length){event.preventDefault();void uploadDropped(Array.from(event.clipboardData.files))}}}>
     {suggestions.list}
-    <MessageContent reference={reference} body={<textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={node=>{textarea.current=node;if(typeof inputRef==='function')inputRef(node);else if(inputRef)inputRef.current=node}} rows={2} maxLength={16000}
+    <MessageContent reference={reference} command={commandChip} body={<textarea aria-label={placeholder} placeholder={placeholder} value={value} ref={node=>{textarea.current=node;if(typeof inputRef==='function')inputRef(node);else if(inputRef)inputRef.current=node}} rows={2} maxLength={16000}
+      spellCheck={false} autoCorrect="off" autoCapitalize="off"
       aria-autocomplete="list" aria-controls={suggestions.controls} aria-activedescendant={suggestions.activeDescendant}
-      onChange={e=>{edit({text:e.target.value});suggestions.updateCursor(e.currentTarget,true)}} onClick={e=>suggestions.updateCursor(e.currentTarget,true)} onSelect={e=>suggestions.updateCursor(e.currentTarget)} readOnly={submitting}
+      onChange={event=>{
+        const text=event.currentTarget.value
+        const typed=onAssistantReceipt&&plan===undefined&&!(event.nativeEvent as InputEvent).isComposing?text.match(/^\/benchmark[ \t]+([^\s@\\/:]+@v?[1-9][0-9]*)(?:\r?\n|[ \t]+)([\s\S]*)$/):null
+        if(typed)edit({text:typed[2],benchmarkPlan:typed[1]})
+        else edit({text})
+        suggestions.updateCursor(event.currentTarget,true)
+      }} onClick={e=>suggestions.updateCursor(e.currentTarget,true)} onSelect={e=>suggestions.updateCursor(e.currentTarget)} readOnly={submitting}
       onCompositionEnd={e=>{compositionEnd.current=e.timeStamp}}
       onKeyDown={e=>{
         const composing=e.nativeEvent.isComposing||e.nativeEvent.keyCode===229||(compositionEnd.current!==undefined&&Math.abs(e.timeStamp-compositionEnd.current)<50)
         if(composing)return
         if(suggestions.keyDown(e))return
-        if(e.key==='Enter'&&!e.shiftKey&&((e.ctrlKey||e.metaKey)||document.documentElement.dataset.sendShortcut==='enter')){e.preventDefault();e.currentTarget.form?.requestSubmit()}
+        if(e.key==='Enter'&&!e.shiftKey&&!e.altKey&&((e.ctrlKey||e.metaKey)||document.documentElement.dataset.sendShortcut!=='mod_enter')){e.preventDefault();e.currentTarget.form?.requestSubmit()}
       }}/>}
-      attachments={materials.length>0&&<MessageAttachments items={materials} draft={{
+      attachments={materials.length>0&&<MessageAttachments items={materials} previewItems={previewMaterials} draft={{
         disabled:submitting||capturing||disabled,
         choosePart:(id,part)=>void capture(()=>api<Material>('/attachments/uploads/'+encodeURIComponent(id)+'/part',{part})),
         remove:id=>void removeMaterial(id),
@@ -783,29 +1163,35 @@ function Composer({draftKey,placeholder,label,onSend,onReceipt,onAssistantReceip
           }
         }}><ListChecks size={16}/>{criteriaDraft?'取消编辑':task?.acceptance_criteria||task?.required_filename?'修改验收条件':'添加验收条件'}</button>}
       {(assign || task) && <TaskReadPicker drafts={readDrafts} disabled={submitting||disabled} change={reads=>edit({read:undefined,reads})}/>}
+      {capturing && <span className="composer-capturing-inline" role="status"><LoaderCircle size={13} className="spin" aria-hidden="true"/>正在准备材料…</span>}
     </div>
-    {capturing && <p className="material-progress muted" role="status"><LoaderCircle size={15} className="spin"/>正在准备材料…</p>}
     {criteriaDraft && <div className="criteria-editor">
       <label>验收条件<textarea aria-label="验收条件" autoFocus={focusCriteria} maxLength={1000} rows={2} placeholder="例如：列出每项决策的负责人和截止日期" value={criteriaDraft.text} readOnly={submitting}
         onChange={event=>edit({criteria:{...criteriaDraft,text:event.target.value}})}/></label>
       <label>交付文件（可选）<span className="filename-input"><span>outputs/</span><input aria-label="交付文件名" maxLength={100} placeholder="会议纪要.md" value={criteriaDraft.filename} readOnly={submitting}
         onChange={event=>edit({criteria:{...criteriaDraft,filename:event.target.value}})}/></span></label>
     </div>}
-    <div role="status">{admissionKey&&<p className="material-progress muted">已接收，等待模型可用</p>}</div>
-    {error && <div><p className="error" role="alert">{error}</p>{unconfirmed&&<button type="button" className="text-button composer-retry" disabled={disabled||submitting||capturing} onClick={()=>void submit(undefined,true)}>重新判断并发送</button>}</div>}
     <div className="composer-bar">
       {assign ? <label className="scope-input"><FolderOpen size={16}/><input maxLength={40} aria-label="工作范围" placeholder="工作范围（可选）" value={scope} readOnly={submitting} onChange={e=>edit({scope:e.target.value})}/></label> : <div className="composer-secondary"><span className="muted">{disabled?(disabledReason??'暂时无法发送'):''}</span>
         {openIsolated&&isolatedRecovery&&<button type="button" className="text-button" disabled={submitting||capturing} onClick={()=>openIsolated()}>
           {isolatedRecovery?'核对单条回复请求':'单独问一个模型'}</button>}</div>}
-      {onAssistantReceipt&&openIsolated&&<ReplyStrategy options={options} error={optionsError} strategy={selectedStrategy} onStrategy={setStrategy} onModel={model=>openIsolated(model,value)} disabled={disabled||submitting||capturing||Boolean(draft.request)}/>}
-      <button className={assign?'primary':'send'} aria-label={label} disabled={disabled||submitting||capturing||!value.trim()}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>
+      {busyAction??(onAssistantReceipt&&openIsolated&&<ReplyStrategy options={options} error={optionsError} strategy={selectedStrategy} onStrategy={setStrategy} onModel={model=>openIsolated(model,value)} openSettings={openModelSettings} disabled={disabled||submitting||capturing||Boolean(draft.request)} benchmarkCommand={plan!==undefined} benchmarkAdvisory={plan!==undefined&&hasBody}/>)}
+      {!busyAction&&<button type="submit" className={assign?'primary':'send'} aria-label={label} title={sendShortcut==='mod_enter'?'Ctrl/⌘+Enter 发送 · Shift+Enter 换行':'Enter 发送 · Shift+Enter 换行'} disabled={disabled||submitting||capturing||(!outgoingText.trim()&&plan===undefined)}>{pending ? <LoaderCircle size={16} className="spin"/> : assign ? <>{label}<ArrowUp size={16}/></> : <ArrowUp size={18}/>}</button>}
     </div>
   </form>
+  </>
+}
+
+function resolveLiveText(live: string, fallback: string | undefined, reset: boolean): string {
+  if (!reset && fallback && fallback.length > live.length) return fallback
+  return live || (reset ? '' : fallback || '')
 }
 
 function useDetail(path: string | undefined, onChange?: () => void) {
   const [data,setData]=useState<Detail>()
   const [live,setLive]=useState('')
+  const [reasoning,setReasoning]=useState('')
+  const [liveReset,setLiveReset]=useState(false)
   const [error,setError]=useState('')
   const [reconnecting,setReconnecting]=useState(false)
   const requested=useRef(0)
@@ -828,24 +1214,63 @@ function useDetail(path: string | undefined, onChange?: () => void) {
   notify.current=onChange
   useEffect(()=>{
     if (!active || !runID) return
-    setLive('');setReconnecting(false)
+    setLive('');setReasoning('');setLiveReset(false);setReconnecting(false)
     const signal={cancelled:false}
+    let pendingLive='', pendingReasoning='', resetPending=false, rafID:number|null=null
+    const flush=()=>{
+      rafID=null
+      if(resetPending){
+        resetPending=false
+        setLive(pendingLive)
+        setReasoning(pendingReasoning)
+        pendingLive=''
+        pendingReasoning=''
+        return
+      }
+      if(pendingLive){
+        const chunk=pendingLive
+        pendingLive=''
+        setLive(previous=>previous+chunk)
+      }
+      if(pendingReasoning){
+        const chunk=pendingReasoning
+        pendingReasoning=''
+        setReasoning(previous=>previous+chunk)
+      }
+    }
+    const scheduleFlush=()=>{if(rafID===null)rafID=window.requestAnimationFrame(flush)}
     const stream=new EventSource('/api/v1/runs/'+runID+'/events')
     stream.addEventListener('message.delta', event => {
       const chunk=JSON.parse((event as MessageEvent).data) as {delta:string;execution_generation?:number}
-      if((chunk.execution_generation??0)===(generation??0))setLive(previous=>previous+chunk.delta)
+      if((chunk.execution_generation??0)===(generation??0)){pendingLive+=chunk.delta;scheduleFlush()}
+    })
+    stream.addEventListener('reasoning.delta', event => {
+      const chunk=JSON.parse((event as MessageEvent).data) as {delta:string;execution_generation?:number}
+      if((chunk.execution_generation??0)===(generation??0)){pendingReasoning+=chunk.delta;scheduleFlush()}
     })
     stream.addEventListener('message.reset',event=>{
       const reset=JSON.parse((event as MessageEvent).data) as {execution_generation?:number}
-      if((reset.execution_generation??0)===(generation??0))setLive('')
+      if((reset.execution_generation??0)===(generation??0)){
+        pendingLive='';pendingReasoning='';resetPending=true
+        if(rafID!==null){window.cancelAnimationFrame(rafID);rafID=null}
+        setLiveReset(true);setLive('');setReasoning('')
+        void reload(signal)
+      }
     })
     stream.addEventListener('run.state_changed',()=>void reload(signal))
     stream.addEventListener('tool.read_changed',()=>void reload(signal))
-    stream.addEventListener('done',()=>{stream.close();void reload(signal);notify.current?.()})
+    stream.addEventListener('done',()=>{
+      if(rafID!==null){window.cancelAnimationFrame(rafID);flush()}
+      stream.close();void reload(signal);notify.current?.()
+    })
     stream.onopen=()=>setReconnecting(false)
     stream.onerror=()=>{setReconnecting(true);void reload(signal)}
     const poll=window.setInterval(()=>void reload(signal),2500)
-    return ()=>{signal.cancelled=true;stream.close();clearInterval(poll)}
+    return ()=>{
+      signal.cancelled=true
+      if(rafID!==null)window.cancelAnimationFrame(rafID)
+      stream.close();clearInterval(poll)
+    }
   },[runID,generation,active,reload])
   useEffect(()=>{
     if (!waitingForOperation) return
@@ -853,11 +1278,12 @@ function useDetail(path: string | undefined, onChange?: () => void) {
     const poll=window.setInterval(()=>void reload(signal),2000)
     return ()=>{signal.cancelled=true;clearInterval(poll)}
   },[waitingForOperation,reload])
-  return {data,live,error,reload,reconnecting:active&&reconnecting}
+  return {data,live,reasoning,liveReset,error,reload,reconnecting:active&&reconnecting}
 }
 
 function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversationBusy,onReference,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;fromChat?:boolean;sourceConversationID?:string;sourceConversationBusy?:boolean;onReference?:(task:TaskReference)=>void;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
-  const {data,live,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
+  const {data,live,liveReset,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
+  const rememberMessage=useCallback((id:number)=>navigate('/memory/new/'+id),[navigate])
   const {progress:benchmark,unavailable:nonBenchmark,checking:checkingBenchmark,error:benchmarkError,refresh:refreshBenchmark}=useBenchmarkProgress(taskID)
   const sourceMessage=useMessageAnchor()
   const [actionError,setActionError]=useState('')
@@ -946,6 +1372,9 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
     {onReference&&(task.conversation_id===sourceConversationID||Boolean(benchmark&&!benchmarkError))&&<button type="button" className="text-button" onClick={()=>onReference({
       taskID:task.id,title:task.title,passive:task.conversation_id===sourceConversationID,planRevision:benchmarkError?undefined:benchmark?.plan_revision,
     })}>{task.conversation_id===sourceConversationID?'在对话中引用':'选择基准控制目标'}</button>}
+    {onReference&&benchmark&&!benchmarkError&&<button type="button" className="text-button" onClick={()=>onReference({
+      taskID:task.id,title:task.title,passive:false,purpose:'revision',planRevision:benchmark.plan_revision,
+    })}>修订方案</button>}
     {nonBenchmark&&(!compact||fromChat)&&!editBlocked&&<button type="button" className="text-button" onClick={()=>setEditing(!editing)}>编辑事项</button>}
     {nonBenchmark&&task.status==='active' && <button type="button" className="text-button" disabled={pending||controlling} onClick={()=>void control('pause')}>暂停</button>}
     {(canStopBenchmark||canStopOrdinary) && <button type="button" className="text-button" disabled={pending||controlling||writing||readUnconfirmed} onClick={()=>void control('cancel')}>请求停止</button>}
@@ -968,7 +1397,8 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
     </button>)}
     <button type="button" className="text-button" onClick={()=>navigate(artifactRoute(undefined,task.scope_label,task.id))}>查看该事项全部成果</button>
   </details>
-  const output=<>{reconnecting && <p className="muted">正在重新连接…</p>}{busy && (live || data.run?.response) && <div className="response-text" aria-live="polite">{live || data.run?.response}</div>}{artifactActions}{preview && artifact && !busy && <FormattedText text={artifact.content || ''} framed/>}</>
+  const liveText=busy?resolveLiveText(live,data.run?.response,liveReset):''
+  const output=<>{reconnecting && <p className="muted">正在重新连接…</p>}{busy && liveText && <FormattedText text={liveText} framed streaming/>}{artifactActions}{preview && artifact && !busy && <FormattedText text={artifact.content || ''} framed/>}</>
   const action=artifact && !busy && !requestedInput && <>{(task.status==='waiting_user' || data.publication?.status==='succeeded') &&
     <PublicationPanel key={artifact.id} task={task} artifact={artifact} publication={data.publication} reload={async()=>{await reload();onChange()}}/>}
     {task.status==='waiting_user' && !writing && !needsFile && !readUnconfirmed &&
@@ -1017,7 +1447,7 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
         </button></header>
         {archived&&!sourceMessage?<p className="muted">交流已归档，可恢复原有消息。</p>:<MessageHistory conversationID={task.conversation_id} messages={discussion}
           omitRunID={question?data.run?.id:undefined}
-          live={busy?(live||data.run?.response):undefined} liveRunID={busy?data.run?.id:undefined} remember={id=>navigate('/memory/new/'+id)}/>}
+          live={busy?liveText:undefined} liveRunID={busy?data.run?.id:undefined} remember={rememberMessage}/>}
       </section>
       <div className="mobile-outcome">{artifactActions}{preview&&artifact&&!busy&&<FormattedText text={artifact.content || ''} framed/>}{action}{history}</div>
       {(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
@@ -1030,45 +1460,84 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
   </>
 }
 
-function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(path:string)=>void;introduction?:React.ReactNode;assistantManage:boolean}) {
-  const {data,live,error,reload}=useDetail(id?'/conversations/'+id:undefined)
-  const [items,setItems]=useState<Conversation[]>([])
-  const [archivedItems,setArchivedItems]=useState<Conversation[]>([])
-  const [next,setNext]=useState<string>()
-  const [archiveNext,setArchiveNext]=useState<string>()
-  const [listPending,setListPending]=useState(false)
-  const [archiveView,setShowArchived]=useState<boolean>()
-  const [listError,setListError]=useState('')
-  const [promote,setPromote]=useState(false)
-  const [name,setName]=useState<string>()
+type ModelNoticeInfo = {
+  kind: 'no_models' | 'unselected' | 'broken' | 'unknown' | 'resolved'
+  title: string
+  message: string
+  primaryAction?: { label: string; onClick: () => void }
+  secondaryAction?: { label: string; onClick: () => void }
+  onDismiss?: () => void
+}
+
+function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,activity,sidebarTask,onSidebarTaskOpened,toolbarActions,onToolbarView}:{
+  id?:string;navigate:(path:string)=>void;modelNotice?:ModelNoticeInfo;assistantManage:boolean;modelConcurrency?:number;account?:Account;activity?:React.ReactNode;
+  sidebarTask?:{id:string;trigger:HTMLButtonElement};onSidebarTaskOpened:()=>void;toolbarActions:HTMLDivElement|null;onToolbarView:(view?:ChatToolbarView)=>void
+}) {
+  const {data,live,reasoning,liveReset,error,reload}=useDetail(id?'/conversations/'+id:undefined)
+  const rememberMessage=useCallback((messageID:number)=>navigate('/memory/new/'+messageID),[navigate])
   const [saving,setSaving]=useState(false)
   const [actionError,setActionError]=useState('')
+  const [composerNotice,setComposerNotice]=useState<{message:string;unconfirmed?:boolean;retry?:()=>void;dismiss:()=>void}|null>(null)
+  const [composerAdmitting,setComposerAdmitting]=useState(false)
+  const [optimisticMessages,setOptimisticMessages]=useState<(OptimisticStartItem & {status:'sending'|'routing'|'failed';error?:string;unconfirmed?:boolean;retry?:()=>void;restore?:()=>void})[]>([])
+  useEffect(()=>{
+    const pending=optimisticMessages.filter(item=>item.status==='sending')
+    if(!pending.length)return
+    const timer=window.setTimeout(()=>{
+      setOptimisticMessages(prev=>prev.map(item=>item.status==='sending'?{...item,status:'routing'}:item))
+    },400)
+    return()=>clearTimeout(timer)
+  },[optimisticMessages])
   const [stopping,setStopping]=useState<string>()
   const [isolatedOpen,setIsolatedOpen]=useState(false)
   const [isolatedModel,setIsolatedModel]=useState<ReplyModel>()
   const [isolatedText,setIsolatedText]=useState<string>()
   const {isolatedRequest}=useComposerDraft(isolatedDraftKey(id||'new'))
   const returnToComposer=useRef(false)
-  const [configOpen,setConfigOpen]=useState(false)
-  const configTrigger=useRef<HTMLButtonElement>(null)
-  const configID='conversation-configuration'
-  const closeConfig=()=>{setConfigOpen(false);configTrigger.current?.focus()}
+  const [configEntry,setConfigEntry]=useState<string>()
+  const closeConfig=()=>{setConfigEntry(undefined);chatInput.current?.focus()}
   const [selectedTask,setSelectedTask]=useState<string>()
   const ordinaryDraftKey='chat:'+(id||'new')
-  const {taskReference}=useComposerDraft(ordinaryDraftKey)
+  const {taskReference,materials:draftMaterials}=useComposerDraft(ordinaryDraftKey)
+  const pendingAdmissions=usePendingAdmissions(ordinaryDraftKey)
   const chatInput=useRef<HTMLTextAreaElement>(null)
   const [latestReceipt,setLatestReceipt]=useState<TaskLink>()
-  const [assistantItems,setAssistantItems]=useState<{id:string;item:AssistantItem;text:string}[]>([])
+  const [reopenedRevision,setReopenedRevision]=useState<{anchorRunID:string;source:Run;preview?:RevisionPreview;stale?:boolean;applied?:number}>()
+  const [assistantItems,setAssistantItems]=useState<{id:string;cards:ReturnType<typeof assistantReplyCards>;text:string;createdAt:number;afterMessageID:number}[]>([])
+  const latestUploads=data?.messages.slice().reverse().find(message=>message.role==='user')?.materials??[]
+  const latestExchange=assistantItems.at(-1)
+  const latestCards=latestExchange?.cards??[]
+  const latestTools=latestCards.flatMap(card=>!Array.isArray(card)&&card.state==='completed'?[card.tool]:[])
+  const toolbarView=latestTools.some(tool=>['get_cluster_trends','get_token_usage_stats','get_incident_workflow','get_incident_step_logs'].includes(tool))?'trends':
+    latestTools.includes('get_cluster_inventory')?'operations':latestUploads.length?'materials':undefined
+  useLayoutEffect(()=>{
+    onToolbarView(toolbarView)
+    return()=>onToolbarView(undefined)
+  },[onToolbarView,toolbarView])
   const eventTasks=useConversationTasks(id)
   const detailDialog=useRef<HTMLDialogElement>(null)
   const taskTrigger=useRef<HTMLButtonElement|null>(null)
   const detailClose=useRef<HTMLButtonElement>(null)
   useLayoutEffect(()=>{
+    if(!sidebarTask)return
+    taskTrigger.current=sidebarTask.trigger
+    setSelectedTask(sidebarTask.id)
+    onSidebarTaskOpened()
+  },[sidebarTask,onSidebarTaskOpened])
+  useLayoutEffect(()=>{
     const element=detailDialog.current
-    if(selectedTask && element && !element.open) {
-      element.showModal()
+    if(!selectedTask||!element)return
+    const narrow=matchMedia('(max-width: 820px)')
+    function openDrawer(){
+      if(!element)return
+      if(element.open)element.close()
+      if(narrow.matches)element.showModal()
+      else element.show()
       detailClose.current?.focus({preventScroll:true})
     }
+    openDrawer()
+    narrow.addEventListener('change',openDrawer)
+    return()=>narrow.removeEventListener('change',openDrawer)
   },[selectedTask])
   useLayoutEffect(()=>{
     if(!isolatedOpen&&returnToComposer.current){returnToComposer.current=false;chatInput.current?.focus()}
@@ -1078,47 +1547,156 @@ function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(p
     detailDialog.current?.close()
     setSelectedTask(undefined)
     if(input)chatInput.current?.focus()
-    else taskTrigger.current?.focus({preventScroll:true})
+    else (taskTrigger.current?.getClientRects().length?taskTrigger.current:chatInput.current)?.focus({preventScroll:true})
   }
   function referenceTask(reference:TaskReference) {
-    if(taskReference?.taskID!==reference.taskID)changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}))
-    setPromote(false)
+    if(JSON.stringify(taskReference)!==JSON.stringify(reference))changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}))
     closeTaskDetail(true)
   }
   const resumeKey=useRef<{runID:string;key:string}|undefined>(undefined)
-  const refreshList=useCallback(async()=>{
-    try {
-      const [recent,archive]=await Promise.all([api<ConversationPage>('/conversations/history'),api<ConversationPage>('/conversations/history?archived=1')])
-      setItems(recent.items);setNext(recent.next_cursor)
-      setArchivedItems(archive.items);setArchiveNext(archive.next_cursor);setListError('')
-    }catch(e){setListError(errorMessage(e))}
-  },[])
-  useEffect(()=>{void refreshList()},[refreshList])
   const busy=activeRun(data?.run)
   const conversation=data?.conversation
   const run=data?.run
+  const messageAnchor=useMessageAnchor()
+  const chatLogRef=useRef<HTMLDivElement>(null)
+  const chatContentRef=useRef<HTMLDivElement>(null)
+  const pinnedToBottom=useRef(true)
+  const [awayFromBottom,setAwayFromBottom]=useState(false)
+  const [unseenCount,setUnseenCount]=useState(0)
+  const [hasNewActivity,setHasNewActivity]=useState(false)
+  const scrollSnapshot=useRef<{
+    conversationID?:string
+    messageCount:number
+    lastMessageID:number
+    liveLength:number
+    reasoningLength:number
+    pendingCount:number
+    optimisticCount:number
+    localCount:number
+    noticeKey:string
+  }>({conversationID:id,messageCount:0,lastMessageID:0,liveLength:0,reasoningLength:0,pendingCount:0,optimisticCount:0,localCount:0,noticeKey:''})
+
+  const isNearBottom=(el:HTMLDivElement)=>el.scrollHeight-el.scrollTop-el.clientHeight<=48
+
+  const scrollChatToBottom=useCallback((behavior:ScrollBehavior='auto')=>{
+    const el=chatLogRef.current
+    if(!el)return
+    pinnedToBottom.current=true
+    setAwayFromBottom(false)
+    setUnseenCount(0)
+    setHasNewActivity(false)
+    if(behavior==='auto')el.scrollTop=el.scrollHeight
+    else el.scrollTo({top:el.scrollHeight,behavior})
+  },[])
+
+  const handleChatScroll=useCallback(()=>{
+    const el=chatLogRef.current
+    if(!el)return
+    if(isNearBottom(el)){
+      pinnedToBottom.current=true
+      setAwayFromBottom(false)
+      setUnseenCount(0)
+      setHasNewActivity(false)
+    }else if(el.scrollHeight>el.clientHeight+24){
+      pinnedToBottom.current=false
+      setAwayFromBottom(true)
+    }
+  },[])
+
+  useEffect(()=>{
+    pinnedToBottom.current=true
+    setAwayFromBottom(false)
+    setUnseenCount(0)
+    setHasNewActivity(false)
+    scrollSnapshot.current={conversationID:id,messageCount:0,lastMessageID:0,liveLength:0,reasoningLength:0,pendingCount:0,optimisticCount:0,localCount:0,noticeKey:''}
+  },[id])
+
+  useEffect(()=>{
+    const content=chatContentRef.current
+    if(!content || typeof ResizeObserver==='undefined')return
+    const observer=new ResizeObserver(()=>{
+      if(pinnedToBottom.current && !messageAnchor && chatLogRef.current){
+        chatLogRef.current.scrollTop=chatLogRef.current.scrollHeight
+      }
+    })
+    observer.observe(content)
+    return()=>observer.disconnect()
+  },[messageAnchor])
+  useEffect(()=>{
+    setReopenedRevision(undefined)
+    if(!id||!run||!run.response.startsWith('已生成基准任务 '))return
+    let active=true
+    const base='/conversations/'+encodeURIComponent(id)+'/benchmark-revision-preview/'+encodeURIComponent(run.id)
+    void (async()=>{
+      try {
+        const meta=await api<{task_id:string;source_run_id?:string;expected_revision:number;applied_revision?:number}>(base+'?metadata=1')
+        if(!active||!meta.task_id||meta.expected_revision<1)return
+        const source:Run={...run,id:meta.source_run_id||run.id,benchmark_revision_suggestion:{task_id:meta.task_id,expected_revision:meta.expected_revision}}
+        if(meta.applied_revision){setReopenedRevision({anchorRunID:run.id,source,applied:meta.applied_revision});return}
+        try {
+          const preview=await api<RevisionPreview>(base)
+          if(active&&preview.task_id===meta.task_id&&preview.proposal.expected_revision===meta.expected_revision)
+            setReopenedRevision({anchorRunID:run.id,source,preview})
+        } catch(e) {
+          if(active&&e instanceof APIError&&e.status===409)setReopenedRevision({anchorRunID:run.id,source,stale:true})
+          else if(active)setActionError(errorMessage(e))
+        }
+      } catch(e) {if(active)setActionError(errorMessage(e))}
+    })()
+    return()=>{active=false}
+  },[id,run?.id])
   const executionSuggestion=run?.benchmark_execution_suggestion
   const executionTarget=taskReference?.planRevision!==undefined ? taskReference :
     executionSuggestion ? {taskID:executionSuggestion.task_id,title:'任务 '+executionSuggestion.task_id,planRevision:executionSuggestion.plan_revision} : undefined
   const taskLinks=new Map(eventTasks.map(link=>[link.taskID,link]))
   if(run?.task_id && !taskLinks.has(run.task_id))taskLinks.set(run.task_id,{taskID:run.task_id,benchmark:false})
   if(latestReceipt&&!taskLinks.has(latestReceipt.taskID))taskLinks.set(latestReceipt.taskID,latestReceipt)
-  const canResume=Boolean(conversation && !conversation.archived && run && !run.task_id && data?.read_checkpoint==='ready')
-  const chatError=actionError||error||listError||(run?.error_code==='stop'?'':run?.error)
-  const showArchived=archiveView??conversation?.archived??false
-  useEffect(()=>{if(!busy||run?.id!==stopping)setStopping(undefined)},[busy,run?.id,stopping])
-  async function loadConversations(archived:boolean) {
-    const cursor=archived?archiveNext:next
-    if(!cursor||listPending)return
-    setListPending(true);setListError('')
-    try {
-      const page=await api<ConversationPage>('/conversations/history?archived='+(archived?'1':'0')+'&after='+encodeURIComponent(cursor))
-      const merge=(previous:Conversation[])=>[...previous,...page.items.filter(item=>!previous.some(old=>old.id===item.id))]
-      if(archived){setArchivedItems(merge);setArchiveNext(page.next_cursor)}
-      else {setItems(merge);setNext(page.next_cursor)}
-    }catch(e){setListError(errorMessage(e))}
-    finally{setListPending(false)}
+  async function prepareChatDelivery(text:string,attachments:string[],delivery:DeliveryUpdate,strategy:'role_routing'|'deterministic_only') {
+    // An @ reference is explicitly read-only and must not become an action.
+    if(!id||taskReference?.passive||!isBenchmarkRevisionInstruction(text))return delivery
+    const selected=taskReference&&!taskReference.passive&&taskReference.planRevision!==undefined?taskReference:undefined
+    const tokens=benchmarkTaskTokens(text)
+    const lists=await Promise.all(tokens.map(token=>api<Task[]>('/tasks?q='+encodeURIComponent(token)+'&limit=200')))
+    if(lists.some((items,index)=>items.length>=200&&tokens[index].length<32))
+      throw new Error('任务候选过多，请使用完整任务 ID 或选择任务。草稿已保留。')
+    const named=namedBenchmarkTasks(text,[...taskLinks.keys(),...lists.flatMap(items=>items.map(item=>item.id))])
+    if(named.length>1||selected&&named.length===1&&named[0]!==selected.taskID)
+      throw new Error('消息涉及多个任务，请先明确选择要修订的任务。草稿已保留。')
+    if(!selected&&named.length===0){
+      if(taskLinks.size||tokens.length)throw new Error('请在消息中写明可读取的任务 ID，或打开任务后选择“修订方案”。草稿已保留。')
+      return delivery
+    }
+    if(attachments.length)throw new Error('修订预览暂不支持附带材料，请移除材料后重试。草稿已保留。')
+    if(strategy==='deterministic_only')throw new Error('请切换到按角色路由后再请求修订预览。草稿已保留。')
+    const taskID=selected?.taskID??named[0]
+    const progress=await api<BenchmarkProgress>('/domain/benchmarks/'+encodeURIComponent(taskID))
+    if(progress.task_id!==taskID||!Number.isInteger(progress.plan_revision)||progress.plan_revision<1)
+      throw new Error('无法核对基准任务和方案版本。草稿已保留。')
+    if(selected&&selected.planRevision!==progress.plan_revision)
+      throw new Error('任务方案版本已变化，请重新选择“修订方案”。草稿已保留。')
+    return {...delivery,benchmark_revision_target:{task_id:taskID,expected_revision:progress.plan_revision}}
   }
+  const canResume=Boolean(conversation && !conversation.archived && run && !run.task_id && data?.read_checkpoint==='ready')
+  const chatError=actionError||error||(run?.error_code==='stop'?'':run?.error)
+  const cardRun=run?.benchmark_suggestion||run?.benchmark_revision_suggestion?run:reopenedRevision?.source
+  const benchmarkReply=id&&cardRun&&!busy?{
+    runID:reopenedRevision?.source===cardRun?reopenedRevision.anchorRunID:cardRun.id,
+    content:<BenchmarkConversation key={cardRun.id} conversationID={id} run={cardRun} archived={Boolean(conversation?.archived)}
+      initialRevision={reopenedRevision?.source===cardRun?reopenedRevision.preview:undefined} initialStale={reopenedRevision?.source===cardRun?reopenedRevision.stale:undefined}
+      initialAppliedRevision={reopenedRevision?.source===cardRun?reopenedRevision.applied:undefined}
+      alreadyAccepted={[...taskLinks.values()].some(link=>link.benchmark&&link.sourceRunID===cardRun.id)}
+      onAccepted={taskID=>{setLatestReceipt({taskID,benchmark:true,sourceRunID:cardRun.id});void reload()}} onApplied={()=>{if(!cardRun.benchmark_revision_suggestion)void reload()}}
+      onRestore={async(taskID,title)=>{
+        const text=data?.messages.find(message=>message.run_id===cardRun.id&&message.role==='user')?.text
+        if(!text)throw new Error('无法读取原修订要求，请从对话中复制后重新选择任务。')
+        const latest=await api<BenchmarkProgress>('/domain/benchmarks/'+encodeURIComponent(taskID))
+        if(latest.task_id!==taskID||latest.plan_revision<1)throw new Error('无法核对最新方案版本。')
+        if(!restoreRevisionDraft(ordinaryDraftKey,text,{taskID,title,passive:false,purpose:'revision',planRevision:latest.plan_revision}))
+          throw new Error('输入框已有其他草稿，请先处理该草稿，再恢复修订要求。')
+        chatInput.current?.focus()
+      }}/>,
+  }:undefined
+  useEffect(()=>{if(!busy||run?.id!==stopping)setStopping(undefined)},[busy,run?.id,stopping])
   async function stopConversation() {
     if(!conversation||!run||run.task_id||!busy||stopping)return
     setStopping(run.id);setActionError('')
@@ -1138,70 +1716,232 @@ function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(p
     }catch(e){setActionError(errorMessage(e));await reload()}
     finally{setSaving(false)}
   }
-  async function changeConversation(patch:{title?:string;archived?:boolean}) {
-    if(!conversation || saving)return
-    setSaving(true);setActionError('')
-    try {
-      await api('/conversations/'+conversation.id,{revision:conversation.revision,...patch},'PATCH')
-      if(patch.archived!==undefined){setPromote(false);setShowArchived(patch.archived)}
-      setName(undefined)
-      await Promise.all([reload(),refreshList()])
-    }catch(e){setActionError(errorMessage(e));await reload()}
-    finally{setSaving(false)}
-  }
-  async function removeConversation() {
-    if(!conversation || busy || saving || !window.confirm('删除这段对话及其消息？已保存的个人记忆会保留。'))return
-    setSaving(true);setActionError('')
-    try {
-      await api('/conversations/'+conversation.id,{revision:conversation.revision},'DELETE')
-      discardComposerDraft('chat:'+conversation.id)
-      discardComposerDraft('promotion:'+conversation.id)
-      discardComposerDraft(isolatedDraftKey(conversation.id))
-      navigate('/chat')
-    }catch(e){setActionError(errorMessage(e));await reload()}
-    finally{setSaving(false)}
-  }
-  return <>
-    <main className="main work-detail"><header className="page-heading"><h1>{conversation?.title||'对话'}</h1>
-      <div className="chat-actions">
-        {conversation&&<button type="button" className="text-button" ref={configTrigger} aria-expanded={configOpen} aria-controls={configID}
-          onClick={()=>configOpen?closeConfig():setConfigOpen(true)}>本会话配置</button>}
-        {conversation && <details className="chat-menu"><summary className="icon-button" aria-label="对话操作"><Ellipsis size={19}/></summary><div className="chat-menu-panel">
-          <button type="button" disabled={saving} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');setName(conversation.title)}}><Pencil size={16}/>重命名</button>
-          <button type="button" disabled={saving||(!conversation.archived&&busy)} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');void changeConversation({archived:!conversation.archived})}}>
-            {conversation.archived?<ArchiveRestore size={16}/>:<Archive size={16}/>} {conversation.archived?'恢复对话':'归档对话'}
-          </button>
-          <button type="button" className="danger" disabled={saving||busy} onClick={event=>{event.currentTarget.closest('details')?.removeAttribute('open');void removeConversation()}}><Trash2 size={16}/>删除对话</button>
-        </div></details>}
-        <button className="outline" onClick={()=>navigate('/chat')}><Plus size={16}/>新对话</button>
-      </div></header>
-      {conversation&&<ConversationConfiguration key={conversation.id} id={conversation.id} panelID={configID}
-        open={configOpen} disabled={busy||saving||Boolean(conversation.archived)} archived={Boolean(conversation.archived)} onClose={closeConfig}/>}
-      {name!==undefined && <form className="chat-rename" onSubmit={event=>{event.preventDefault();void changeConversation({title:name})}}>
-        <input aria-label="对话名称" autoFocus maxLength={60} value={name} readOnly={saving} onChange={event=>setName(event.target.value)}/>
-        <button type="button" className="text-button" disabled={saving} onClick={()=>setName(undefined)}>取消</button>
-        <button className="primary" disabled={saving||!name.trim()}>保存名称</button>
-      </form>}
-      {(id||items.length>0||archivedItems.length>0)&&<select className="mobile-chat-select" aria-label="选择历史对话" value={id??''} onChange={e=>navigate(e.target.value?'/chat/'+e.target.value:'/chat')}>
-        <option value="">新对话</option>
-        {conversation&&!items.some(item=>item.id===conversation.id)&&!archivedItems.some(item=>item.id===conversation.id)&&<option value={conversation.id}>{conversation.title}</option>}
-        {items.length>0 && <optgroup label="最近对话">{items.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</optgroup>}
-        {archivedItems.length>0 && <optgroup label="已归档">{archivedItems.map(item=><option value={item.id} key={item.id}>{item.title}</option>)}</optgroup>}
-      </select>}
-      {(next||archiveNext)&&<div className="mobile-chat-pages">
-        {next&&<button type="button" className="text-button" disabled={listPending} onClick={()=>void loadConversations(false)}>加载更多对话</button>}
-        {archiveNext&&<button type="button" className="text-button" disabled={listPending} onClick={()=>void loadConversations(true)}>加载更多归档</button>}
+  const localExchanges=assistantItems.map(entry=>{
+    const configIndex=entry.cards.findIndex(isConversationConfiguration)
+    const showConfig=Boolean(conversation&&configEntry===entry.id)
+    return {id:entry.id,afterMessageID:entry.afterMessageID,content:<div className="assistant-exchange">
+      <div className="message message-user"><span><time dateTime={new Date(entry.createdAt).toISOString()}>{displayDate(entry.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}
+        {account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message">{entry.text}</div></div>
+      {(entry.cards.some(card=>!isConversationConfiguration(card))||showConfig)&&<div className="message message-assistant"><span><img src={clusbotIcon} alt=""/><strong>ClusBot</strong><time dateTime={new Date(entry.createdAt).toISOString()}>{displayDate(entry.createdAt,{hour:'2-digit',minute:'2-digit'})}</time></span>
+        <div className="assistant-reply-cards" data-multiple={entry.cards.length>1||undefined}>{entry.cards.map((card,index)=>{
+          if(isConversationConfiguration(card))return showConfig&&conversation&&index===configIndex?
+            <ConversationConfiguration key={index} id={conversation.id} panelID="conversation-configuration" open disabled={busy||saving||Boolean(conversation.archived)}
+              archived={Boolean(conversation.archived)} onClose={closeConfig}/>:null
+          if(!Array.isArray(card)&&card.state==='failed')return <p key={index} className="error" role="status">{card.message}</p>
+          return <AssistantCard key={index} item={card} navigate={navigate} canManageModels={assistantManage} modelConcurrency={modelConcurrency}
+            openTask={(taskID,trigger)=>{taskTrigger.current=trigger;setSelectedTask(taskID)}}/>
+        })}</div>
       </div>}
-      {introduction}
-      <div className="discussion chat-log">{data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?(live||data.run?.response):undefined} liveRunID={busy?data.run?.id:undefined} remember={id=>navigate('/memory/new/'+id)}/>:!id&&!assistantItems.length&&<div className="empty"><MessageCircle size={26}/><h2>聊聊你的问题</h2></div>}
-        {assistantItems.length>0&&<div className="messages">{assistantItems.map(entry=><div key={entry.id} className="assistant-exchange">
-          <div className="message"><span>你</span><div className="user-message">{entry.text}</div></div>
-          <div className="message"><span>助手</span><AssistantCard item={entry.item} navigate={navigate} canManageModels={assistantManage}/></div>
-        </div>)}</div>}
+    </div>}
+  })
+  const assistantModelNotice = (() => {
+    if (composerAdmitting && modelNotice && modelNotice.kind !== 'resolved') {
+      return (
+        <AssistantNoticeMessage
+          iconSrc={clusbotIcon}
+          tone="warning"
+          role="status"
+          badge="等待模型就绪"
+          title="消息已接收，配置模型后将自动继续"
+          message={modelNotice.message}
+          actions={
+            <>
+              {modelNotice.primaryAction && (
+                <button type="button" className="primary" onClick={modelNotice.primaryAction.onClick}>
+                  <Settings2 size={13} aria-hidden="true" />
+                  {modelNotice.primaryAction.label}
+                </button>
+              )}
+              {modelNotice.secondaryAction && (
+                <button type="button" onClick={modelNotice.secondaryAction.onClick}>
+                  {modelNotice.secondaryAction.label}
+                </button>
+              )}
+            </>
+          }
+        />
+      )
+    }
+    if (composerAdmitting) {
+      return (
+        <AssistantNoticeMessage
+          iconSrc={clusbotIcon}
+          tone="info"
+          role="status"
+          badge="已接收"
+          title="消息已接收，正在等待处理"
+          message="消息已进入受理队列，模型完成响应后将自动在此处显示回复。"
+        />
+      )
+    }
+    if (!modelNotice) return null
+    const tone =
+      modelNotice.kind === 'resolved'
+        ? 'resolved'
+        : modelNotice.kind === 'broken'
+          ? 'error'
+          : 'warning'
+    const badge =
+      modelNotice.kind === 'resolved'
+        ? '已配置 · 原提示已过时'
+        : modelNotice.kind === 'broken'
+          ? '模型不可用'
+          : modelNotice.kind === 'unknown'
+            ? '状态未知'
+            : '待配置'
+    return (
+      <AssistantNoticeMessage
+        iconSrc={clusbotIcon}
+        tone={tone}
+        role={tone === 'error' ? 'alert' : 'status'}
+        badge={badge}
+        title={modelNotice.title}
+        message={modelNotice.message}
+        onDismiss={modelNotice.onDismiss}
+        actions={
+          (modelNotice.primaryAction || modelNotice.secondaryAction) && (
+            <>
+              {modelNotice.primaryAction && (
+                <button type="button" className="primary" onClick={modelNotice.primaryAction.onClick}>
+                  {modelNotice.kind !== 'unknown' && <Settings2 size={13} aria-hidden="true" />}
+                  {modelNotice.primaryAction.label}
+                </button>
+              )}
+              {modelNotice.secondaryAction && (
+                <button type="button" onClick={modelNotice.secondaryAction.onClick}>
+                  {modelNotice.secondaryAction.label}
+                </button>
+              )}
+            </>
+          )
+        }
+      />
+    )
+  })()
+  const chatNoticeKey=[
+    composerAdmitting?'admitting':'',
+    modelNotice?.kind??'',
+    composerNotice?.message??'',
+    chatError??'',
+    busy&&!run?.task_id?'streaming':'',
+  ].join('|')
+  const liveOutputText=busy?resolveLiveText(live,run?.response,liveReset):''
+
+  useEffect(()=>{
+    const messages=data?.messages??[]
+    const prev=scrollSnapshot.current
+    const last=messages.at(-1)
+    const lastID=last?.id??0
+    const nextSnapshot={
+      conversationID:id,
+      messageCount:messages.length,
+      lastMessageID:lastID,
+      liveLength:liveOutputText.length,
+      reasoningLength:reasoning.length,
+      pendingCount:pendingAdmissions.length,
+      optimisticCount:optimisticMessages.length,
+      localCount:localExchanges.length,
+      noticeKey:chatNoticeKey,
+    }
+
+    if(prev.conversationID!==id){
+      scrollSnapshot.current=nextSnapshot
+      if(!messageAnchor)scrollChatToBottom('auto')
+      return
+    }
+
+    const addedMessages=messages.length>prev.messageCount
+      ? (prev.lastMessageID>0 ? messages.filter(m=>(m.id??0)>prev.lastMessageID).length : messages.length-prev.messageCount)
+      : 0
+    const userSent=optimisticMessages.length>prev.optimisticCount
+      || pendingAdmissions.length>prev.pendingCount
+      || localExchanges.length>prev.localCount
+      || (addedMessages>0 && last?.role==='user')
+    const hasStreamDelta=liveOutputText.length>prev.liveLength || reasoning.length>prev.reasoningLength
+    const hasNoticeDelta=chatNoticeKey!==prev.noticeKey && Boolean(composerNotice || chatError || composerAdmitting || (modelNotice && modelNotice.kind!=='resolved'))
+
+    scrollSnapshot.current=nextSnapshot
+
+    if(userSent){
+      scrollChatToBottom('auto')
+      return
+    }
+    if(addedMessages>0 || hasStreamDelta || hasNoticeDelta){
+      if(pinnedToBottom.current && !messageAnchor){
+        scrollChatToBottom('auto')
+      }else if(chatLogRef.current && chatLogRef.current.scrollHeight>chatLogRef.current.clientHeight+24){
+        if(addedMessages>0)setUnseenCount(c=>c+addedMessages)
+        setHasNewActivity(true)
+      }
+    }
+  },[id,data?.messages,liveOutputText,reasoning.length,pendingAdmissions.length,optimisticMessages.length,localExchanges.length,chatNoticeKey,composerNotice,chatError,composerAdmitting,modelNotice,messageAnchor,scrollChatToBottom])
+
+  const hasUnread=unseenCount>0 || hasNewActivity
+
+  return <>
+    {toolbarActions&&toolbarView==='materials'&&createPortal(<details className="chat-uploaded-materials">
+      <summary className="outline"><Paperclip size={13} aria-hidden="true"/>已上传 {latestUploads.length} 份材料</summary>
+      <div className="workspace-notices"><MessageAttachments items={latestUploads} previewItems={draftMaterials}/></div>
+    </details>,toolbarActions)}
+    {toolbarActions&&toolbarView==='operations'&&taskReference&&createPortal(
+      <button type="button" className="outline" onClick={event=>{taskTrigger.current=event.currentTarget;setSelectedTask(taskReference.taskID)}} aria-haspopup="dialog">
+        <PanelRight size={13} aria-hidden="true"/>当前任务 <span>{taskReference.title}</span>
+      </button>,toolbarActions)}
+    <main className="main work-detail"><h1 className="v31-screen-reader">{conversation?.title||'对话'}</h1>
+      <div className="chat-log-wrap">
+        <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
+          <div className="chat-log-content" ref={chatContentRef}>
+            {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
+            {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message"><MessageContent
+              reference={item.taskRef?<MessageReference label={'@'+item.taskRef.title+' 只读引用'}/>:undefined}
+              body={item.text||undefined}
+              attachments={Boolean(item.materials.length)&&<MessageAttachments items={item.materials} previewItems={draftMaterials}/>}/></div><div className={'message-user-status'+(item.status==='failed'?' is-error':'')} role="status">
+              {item.status==='sending'&&<><LoaderCircle size={12} className="spin" aria-hidden="true"/><span>发送中…</span></>}
+              {item.status==='routing'&&<><LoaderCircle size={12} className="spin" aria-hidden="true"/><span>正在理解意图…</span></>}
+              {item.status==='failed'&&<><CircleAlert size={12} aria-hidden="true"/><span>{item.error}</span>{item.retry&&<button type="button" className="text-button" onClick={item.retry}>{item.unconfirmed?'重新判断并发送':'重试'}</button>}{item.restore&&<button type="button" className="text-button" onClick={item.restore}>放回输入框</button>}<button type="button" className="text-button" onClick={()=>setOptimisticMessages(prev=>prev.filter(x=>x.key!==item.key))}>移除</button></>}
+            </div></div></div>)}
+            {pendingAdmissions.map(item=><div className="messages" key={'pending:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message">{item.text}</div></div></div>)}
+            {assistantModelNotice}
+            {composerNotice && (
+              <AssistantNoticeMessage
+                iconSrc={clusbotIcon}
+                tone="error"
+                role="alert"
+                badge="发送受阻"
+                title="消息未能发送（草稿已保留）"
+                message={composerNotice.message}
+                onDismiss={composerNotice.dismiss}
+                actions={composerNotice.unconfirmed && composerNotice.retry ? <button type="button" className="primary" onClick={composerNotice.retry}>重新判断并发送</button> : undefined}
+              />
+            )}
+            {chatError && (
+              <AssistantNoticeMessage
+                iconSrc={clusbotIcon}
+                tone="error"
+                role="alert"
+                badge="执行异常"
+                title="本轮处理出现异常"
+                message={chatError}
+                onDismiss={actionError ? () => setActionError('') : undefined}
+                actions={canResume ? <button type="button" className="primary" disabled={saving} onClick={() => void resumeConversation()}><Play size={13} />继续回复</button> : undefined}
+              />
+            )}
+            {activity&&<div className="chat-team-activity">{activity}</div>}
+          </div>
+        </div>
+        {(hasUnread || awayFromBottom) && (
+          <button
+            type="button"
+            className="chat-scroll-pill"
+            data-unread={hasUnread ? 'true' : undefined}
+            onClick={() => scrollChatToBottom('smooth')}
+            aria-label={hasUnread ? (unseenCount > 1 ? `查看 ${unseenCount} 条新消息` : '查看新消息') : '回到底部'}
+          >
+            <ArrowDown size={14} aria-hidden="true" />
+            <span>{hasUnread ? (unseenCount > 1 ? `${unseenCount} 条新消息` : '新消息') : '回到底部'}</span>
+          </button>
+        )}
       </div>
-      {id&&run&&!busy&&<BenchmarkConversation key={run.id} conversationID={id} run={run} archived={Boolean(conversation?.archived)}
-        alreadyAccepted={[...taskLinks.values()].some(link=>link.benchmark&&link.sourceRunID===run.id)}
-        onAccepted={taskID=>{setLatestReceipt({taskID,benchmark:true,sourceRunID:run.id});void reload()}} onApplied={()=>void reload()}/>}
       {taskLinks.size>0&&<section className="conversation-tasks" aria-label="会话已受理工作">
         <h2>这段对话关联的工作</h2>
         {[...taskLinks.values()].reverse().slice(0,8).map(link=><div key={link.taskID} className="conversation-task-link">
@@ -1211,30 +1951,46 @@ function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(p
           }}>查看任务 <ChevronRight size={16} aria-hidden="true"/></button>
         </div>)}
       </section>}
-      {busy&&!run?.task_id&&<div className="chat-actions"><button type="button" className="outline chat-stop" disabled={stopping===run?.id} onClick={()=>void stopConversation()}>
-        {stopping===run?.id?<LoaderCircle size={16} className="spin"/>:<Square size={16}/>} {stopping===run?.id?'正在停止…':'停止回复'}
-      </button></div>}
       {run?.status==='cancelled'&&!run.response&&<p className="muted" role="status">已停止</p>}
-      {(chatError||canResume) && <div className="chat-actions">
-        {chatError && <p className="error" role="alert">{chatError}</p>}
-        {canResume && <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>}
+      {!chatError && canResume && <div className="chat-actions">
+        <button type="button" className="outline" disabled={saving} onClick={()=>void resumeConversation()}><Play size={16}/>继续回复</button>
       </div>}
-      {!isolatedOpen && id && data && !busy && !conversation?.archived && <button className="text-button" onClick={()=>setPromote(!promote)}>{promote?'继续普通对话':'把这段对话交给助手继续处理'}</button>}
       {id&&executionTarget&&<BenchmarkExecutionConversation key={executionTarget.taskID+':'+executionTarget.planRevision} conversationID={id}
         target={executionTarget} run={run} disabled={Boolean(busy||conversation?.archived)}
         canSuggest={taskReference?.taskID===executionTarget.taskID&&taskReference?.planRevision!==undefined} onChange={()=>void reload()}/>}
-      <Composer inputRef={chatInput} hidden={isolatedOpen} isolatedRecovery={Boolean(isolatedRequest)}
-        onAssistantReceipt={promote?undefined:(item,text)=>setAssistantItems(previous=>[...previous,{id:crypto.randomUUID(),item,text:/(?:密码|密钥|凭据|password|passwd|secret|credential|token|api[_ -]?key|authorization)/i.test(text)?'助手工具请求（内容已隐藏）':text}])}
-        openIsolated={!promote&&(!conversation?.archived||isolatedRequest)?(model,text)=>{setIsolatedModel(model);setIsolatedText(text);setIsolatedOpen(true)}:undefined}
-        referenceConversationID={!promote?id:undefined} onReferenceTask={id&&!promote?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={!promote&&taskReference&&<MessageReference
-        label={(taskReference.passive?'引用任务 · ':'基准控制目标 · ')+taskReference.title+' · '+taskReference.taskID+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
+      <Composer inputRef={chatInput} previewMaterials={latestUploads} busyAction={busy&&!run?.task_id?<button type="button" className="composer-stop" disabled={stopping===run?.id} onClick={()=>void stopConversation()}>
+        {stopping===run?.id?<LoaderCircle size={13} className="spin"/>:<Square size={10} fill="currentColor"/>}{stopping===run?.id?'正在停止…':'停止回复'}
+      </button>:undefined} openModelSettings={assistantManage?()=>navigate('/settings?tab=model'):undefined} hidden={isolatedOpen} isolatedRecovery={Boolean(isolatedRequest)}
+        onStatusNotice={setComposerNotice} onAdmissionChange={setComposerAdmitting}
+        onOptimisticStart={item=>{
+          setOptimisticMessages(prev=>[...prev.filter(x=>x.key!==item.key),{...item,status:'sending'}])
+          scrollChatToBottom('auto')
+        }}
+        onOptimisticSettle={key=>setOptimisticMessages(prev=>prev.filter(x=>x.key!==key))}
+        onOptimisticFail={(key,info)=>setOptimisticMessages(prev=>prev.map(x=>x.key===key?{...x,status:'failed',error:info.message,unconfirmed:info.unconfirmed,retry:info.retry,restore:info.restore}:x))}
+        onAssistantReceipt={(item,text)=>{
+          const entryID=crypto.randomUUID()
+          const cards=assistantReplyCards(item)
+          if(cards.some(isConversationConfiguration)){
+            if(conversation)setConfigEntry(entryID)
+            else setActionError('请先发送一条消息，再为这段对话绑定能力。')
+          }
+          const afterMessageID=Math.max(0,...(data?.messages.map(message=>message.id??0)??[]))
+          setAssistantItems(previous=>[...previous,{id:entryID,cards,createdAt:Date.now(),afterMessageID,text:/(?:密码|密钥|凭据|password|passwd|secret|credential|token|api[_ -]?key|authorization)/i.test(text)?'助手工具请求（内容已隐藏）':text}])
+        }}
+        openIsolated={!conversation?.archived||isolatedRequest?(model,text)=>{setIsolatedModel(model);setIsolatedText(text);setIsolatedOpen(true)}:undefined}
+        referenceConversationID={id} onReferenceTask={id?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={taskReference&&<MessageReference
+        label={(taskReference.passive?'引用任务 · ':taskReference.purpose==='revision'?'修订目标 · ':'基准控制目标 · ')+taskReference.title+' · '+taskReference.taskID+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
         onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
-        onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} key={promote?'promotion':'chat'} draftKey={(promote?'promotion:':'chat:')+(id||'new')} placeholder={promote?'描述需要继续完成的工作…':'输入消息，输入 / 调用指令，输入 @ 引用任务或成员…'} label={promote?'交给助手':'发送消息'} assign={promote} disabled={busy||saving||conversation?.archived||Boolean(id&&!data)} disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} onSend={(text,key,scopeLabel,attachments,delivery,strategy)=>{
-        if (promote && id) {
-          return api('/conversations/'+id+'/task',{text,client_request_id:key,scope_label:scopeLabel,attachment_ids:attachments,...delivery})
-        }
+        onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} draftKey={ordinaryDraftKey}
+        placeholder="输入消息，输入 / 调用指令，输入 @ 引用任务或成员…" label="发送消息" disabled={busy||saving||conversation?.archived||Boolean(id&&!data)}
+        disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} prepareDelivery={prepareChatDelivery} onSend={async(text,key,_scope,attachments,delivery,strategy)=>{
         if(/^\/(?:助手|assistant)(?: |$)/.test(text.trimStart()) && (attachments.length>0||delivery.task_ref))throw new Error('助手工具指令不能同时携带附件或任务引用，请移除后发送。')
-        return api(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments,...(id&&delivery.task_ref?{task_ref:delivery.task_ref}:{})},'POST',{'X-ClusBot-Assistant-Cards':'1',...(strategy==='deterministic_only'?{'X-ClusBot-Reply-Strategy':'deterministic_only'}:{})})
+        const receipt=await api<Receipt>(id?'/conversations/'+id+'/messages':'/conversations',{text,client_message_id:key,attachment_ids:attachments,...(id&&delivery.task_ref?{task_ref:delivery.task_ref}:{}),...(id&&delivery.benchmark_revision_target?{benchmark_revision_target:delivery.benchmark_revision_target}:{})},'POST',{'X-ClusBot-Assistant-Cards':'1',...(strategy==='deterministic_only'?{'X-ClusBot-Reply-Strategy':'deterministic_only'}:{})})
+        if(delivery.benchmark_revision_target&&(!receipt.run_id||receipt.conversation_id!==id||receipt.task_id||
+          receipt.benchmark_revision_suggestion?.task_id!==delivery.benchmark_revision_target.task_id||
+          receipt.benchmark_revision_suggestion?.expected_revision!==delivery.benchmark_revision_target.expected_revision))throw new Error('修订请求回执无法核对，草稿已保留。')
+        return receipt
       }} onReceipt={async(path,receipt)=>{
         if (receipt?.task_id && path.startsWith('/tasks/')) {
           if (id) {
@@ -1257,17 +2013,20 @@ function Chat({id,navigate,introduction,assistantManage}:{id?:string;navigate:(p
         }}/>}
     </main>
     {selectedTask&&<dialog className="chat-task-dialog" aria-label="任务详情" ref={detailDialog}
-      onCancel={event=>{event.preventDefault();closeTaskDetail()}}>
-      <div className="chat-task-dialog-bar"><button type="button" className="text-button" ref={detailClose} onClick={()=>closeTaskDetail(true)}>回到输入框 <X size={16} aria-hidden="true"/></button></div>
-      <TaskDetail key={selectedTask} taskID={selectedTask} compact fromChat onReference={conversation?.archived?undefined:referenceTask} sourceConversationID={conversation?.archived?undefined:id} sourceConversationBusy={Boolean(!conversation?.archived&&busy)} onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}/>
+      onCancel={event=>{event.preventDefault();closeTaskDetail()}} onKeyDown={event=>{if(event.key==='Escape'){event.preventDefault();closeTaskDetail()}}}>
+      <ChatTaskDrawer key={selectedTask} taskID={selectedTask} onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}
+        sourceConversationID={conversation?.archived?undefined:id} onReference={conversation?.archived?undefined:referenceTask}
+        closeAction={<button type="button" className="icon-button" aria-label="关闭任务详情" ref={detailClose} onClick={()=>closeTaskDetail()}><X size={16} aria-hidden="true"/></button>}>
+        <TaskDetail taskID={selectedTask} compact fromChat onReference={conversation?.archived?undefined:referenceTask}
+          sourceConversationID={conversation?.archived?undefined:id} sourceConversationBusy={Boolean(!conversation?.archived&&busy)}
+          onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}/>
+      </ChatTaskDrawer>
     </dialog>}
-    <aside className="detail-pane chat-history"><div className="detail-content">
-      <header className="discussion-heading"><h2>{showArchived?'已归档':'最近对话'}</h2><button type="button" className="text-button" onClick={()=>setShowArchived(!showArchived)}>{showArchived?'最近对话':'查看归档'}</button></header>
-      {(showArchived?archivedItems:items).map(item=><button key={item.id} className={'history-row '+(id===item.id?'selected':'')} onClick={()=>navigate('/chat/'+item.id)}>{item.archived?<Archive size={17}/>:<MessageCircle size={17}/>} {item.title}</button>)}
-      {(showArchived?archiveNext:next)&&<button type="button" className="text-button history-more" disabled={listPending} onClick={()=>void loadConversations(showArchived)}>{listPending?'正在加载…':showArchived?'加载更多归档':'加载更多对话'}</button>}
-      {showArchived && archivedItems.length===0 && <p className="muted">暂无归档对话</p>}
-    </div></aside>
   </>
+}
+
+function isConversationConfiguration(item:ReturnType<typeof assistantReplyCards>[number]) {
+  return !Array.isArray(item)&&item.state==='form_required'&&item.tool==='configure_conversation'&&item.form==='conversation_configuration'
 }
 
 const artifactPageSize=100

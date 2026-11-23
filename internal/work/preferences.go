@@ -44,7 +44,7 @@ func DefaultGeneralPreferences() GeneralPreferences {
 		Language:     "system",
 		Timezone:     "system",
 		Appearance:   "system",
-		SendShortcut: "mod_enter",
+		SendShortcut: "enter",
 	}
 }
 

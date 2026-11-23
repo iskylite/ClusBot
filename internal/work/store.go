@@ -146,7 +146,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 132
+const databaseSchemaVersion = 133
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -221,6 +221,9 @@ type Store struct {
 	modelActive       int
 	modelAvailable    chan struct{}
 	admissionLimits   RunLimits
+	runEventMu        sync.Mutex
+	runEventSubs      map[string]map[chan struct{}]struct{}
+	queueWake         chan struct{}
 }
 
 type Task struct {
@@ -264,7 +267,7 @@ type Run struct {
 }
 
 type Message struct {
-	TaskRef            *MessageTaskRef `json:"task_ref,omitempty"`
+	TaskRef            *MessageTaskRefView `json:"task_ref,omitempty"`
 	ID                 int64           `json:"id,omitempty"`
 	RunID              string          `json:"run_id,omitempty"`
 	AssetQueryTaskID   string          `json:"asset_query_task_id,omitempty"`
@@ -354,7 +357,58 @@ func storeForWriter(path string, writer *writerDB) *Store {
 	if poolErr != nil {
 		readPool = nil
 	}
-	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes(), connectionGrantMu: &sync.Mutex{}}
+	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes(), connectionGrantMu: &sync.Mutex{}, queueWake: make(chan struct{}, 1)}
+}
+
+// SubscribeRunEvents registers a wake-up channel for run events on runID and returns an idempotent unsubscribe function.
+func (s *Store) SubscribeRunEvents(runID string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	s.runEventMu.Lock()
+	if s.runEventSubs == nil {
+		s.runEventSubs = make(map[string]map[chan struct{}]struct{})
+	}
+	subs := s.runEventSubs[runID]
+	if subs == nil {
+		subs = make(map[chan struct{}]struct{})
+		s.runEventSubs[runID] = subs
+	}
+	subs[ch] = struct{}{}
+	s.runEventMu.Unlock()
+
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			s.runEventMu.Lock()
+			if subs := s.runEventSubs[runID]; subs != nil {
+				delete(subs, ch)
+				if len(subs) == 0 {
+					delete(s.runEventSubs, runID)
+				}
+			}
+			s.runEventMu.Unlock()
+		})
+	}
+}
+
+func (s *Store) notifyRunEvent(runID string) {
+	s.runEventMu.Lock()
+	for ch := range s.runEventSubs[runID] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+	s.runEventMu.Unlock()
+}
+
+func (s *Store) notifyQueue() {
+	if s.queueWake == nil {
+		return
+	}
+	select {
+	case s.queueWake <- struct{}{}:
+	default:
+	}
 }
 
 // initializeDatabase 校验并按需迁移数据库到当前 schema 版本。
@@ -663,6 +717,10 @@ func initializeDatabase(db *sql.DB) error {
 		{129, migratePreferences},
 		{130, migrateModelRoutingPolicies},
 		{131, migrateClusterTrendIndex},
+		{132, func(tx *sql.Tx) error {
+			_, err := tx.Exec(runtimeIncidentsSchema)
+			return err
+		}},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -1236,7 +1294,13 @@ func (s *Store) submitWithDelivery(ctx context.Context, requestKey, text, scope,
 	if err := linkAdmissionToRun(tx, requestKey, run.ID, run.TaskID, now()); err != nil {
 		return Run{}, err
 	}
-	return run, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	if run.Status == "queued" {
+		s.notifyQueue()
+	}
+	return run, nil
 }
 
 func submitWorkTx(ctx context.Context, tx *sql.Tx, requestKey, fingerprint, text, scope, conversationID string, task bool, delivery Delivery, classification *submissionClassification, materialIDs []string) (Run, error) {

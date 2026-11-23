@@ -96,6 +96,18 @@ func TestRoutingPolicyPrecedencePersistenceAndValidation(t *testing.T) {
 	if err != nil || len(policies) != 2 || len(policies[0].Candidates) != 0 || len(policies[1].Candidates) != 2 {
 		t.Fatalf("policy store: %+v %v", policies, err)
 	}
+	// Saving an unchanged empty policy or identical policy must not bump revision.
+	noopEmpty, err := s.SaveModelRoutingPolicy(ctx, "task", work.TaskWorkerModelRole, RoutingPolicyInput{Revision: 0})
+	if err != nil || noopEmpty.Revision != 0 {
+		t.Fatalf("noop empty save bumped revision: %+v %v", noopEmpty, err)
+	}
+	noopSame, err := s.SaveModelRoutingPolicy(ctx, "default", work.ConversationReplyModelRole, RoutingPolicyInput{
+		Revision: global.Revision, AllowCrossProvider: true, ConfirmEgress: true,
+		Candidates: []RoutingCandidateInput{{ProfileID: first.ID, ProfileRevision: first.Revision}, {ProfileID: second.ID, ProfileRevision: second.Revision}},
+	})
+	if err != nil || noopSame.Revision != global.Revision {
+		t.Fatalf("noop identical save bumped revision: %+v %v", noopSame, err)
+	}
 	body, _ := json.Marshal(preview)
 	if strings.Contains(string(body), "credential_binding") || strings.Contains(string(body), "ROUTING_UNUSED") {
 		t.Fatalf("secret metadata leaked: %s", body)

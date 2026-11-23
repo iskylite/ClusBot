@@ -29,7 +29,8 @@ import (
 )
 
 type config struct {
-	Server struct {
+	desktop bool
+	Server  struct {
 		Listen string `yaml:"listen"`
 		Mode   string `yaml:"mode"`
 		Origin string `yaml:"origin"`
@@ -100,7 +101,7 @@ func run() error {
 	flags := flag.NewFlagSet("clusbot serve", flag.ContinueOnError)
 	configPath := flags.String("config", "", "YAML 配置文件")
 	listen := flags.String("listen", "", "覆盖监听地址")
-	mode := flags.String("mode", "", "运行模式：local 或 server")
+	mode := flags.String("mode", "", "运行模式：local、server 或 desktop")
 	origin := flags.String("origin", "", "服务器模式对外 HTTPS Origin")
 	dataDir := flags.String("data-dir", "", "覆盖数据目录")
 	workspaceRoot := flags.String("workspace-root", "", "工作区目录")
@@ -152,9 +153,11 @@ func run() error {
 	if *origin != "" {
 		cfg.Server.Origin = *origin
 	}
-	if cfg.Server.Mode != "local" && cfg.Server.Mode != "server" {
-		return errors.New("server.mode 必须为 local 或 server")
+	if cfg.Server.Mode != "local" && cfg.Server.Mode != "server" && cfg.Server.Mode != "desktop" {
+		return errors.New("server.mode 必须为 local、server 或 desktop")
 	}
+	desktop := cfg.Server.Mode == "desktop"
+	cfg.desktop = desktop
 	if cfg.Server.Mode == "server" {
 		parsed, err := url.Parse(cfg.Server.Origin)
 		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
@@ -181,6 +184,9 @@ func run() error {
 	if host != "localhost" && (net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback()) {
 		return errors.New("首期服务仅监听本机地址")
 	}
+	if desktop && host != "127.0.0.1" {
+		return errors.New("桌面模式必须监听 127.0.0.1")
+	}
 	if cfg.Runtime.MaxActiveRuns < 1 || cfg.Runtime.MaxActiveRuns > 2 {
 		return errors.New("max_active_runs 必须为 1 或 2")
 	}
@@ -206,7 +212,7 @@ func run() error {
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err
 	}
-	if cfg.Server.Mode == "server" {
+	if cfg.Server.Mode == "server" || desktop {
 		cfg.DataDir, err = filepath.EvalSymlinks(cfg.DataDir)
 		if err != nil {
 			return err
@@ -217,15 +223,40 @@ func run() error {
 		return err
 	}
 	defer lock.Close()
-	db, err := work.Open(filepath.Join(cfg.DataDir, "clusbot.db"))
+	databasePath := filepath.Join(cfg.DataDir, "clusbot.db")
+	var desktopExisting bool
+	if desktop {
+		desktopExisting, err = desktopPrepareData(cfg.DataDir)
+		if err != nil {
+			return err
+		}
+	}
+	db, err := work.Open(databasePath)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	if desktop {
+		cfg.Server.Mode, err = desktopDataMode(context.Background(), db, desktopExisting, cfg.DataDir)
+		if err != nil {
+			return err
+		}
+	}
 	if err = db.EnsureAccountMode(context.Background(), cfg.Server.Mode == "server"); err != nil {
 		return err
 	}
+	if desktop && cfg.Server.Mode == "server" {
+		if err = desktopFinishInitialization(cfg.DataDir); err != nil {
+			return err
+		}
+	}
 	if cfg.Server.Mode == "server" {
+		if desktop {
+			return serveDesktopAccounts(db, cfg.Server.Listen, *printURL,
+				func(ctx context.Context, api *httpapi.Server) (func(), error) {
+					return startAccountRuntime(ctx, api, cfg)
+				})
+		}
 		return serveAccounts(db, cfg.Server.Listen, cfg.Server.Origin, *printURL,
 			func(ctx context.Context, api *httpapi.Server) (func(), error) {
 				return startAccountRuntime(ctx, api, cfg)
@@ -342,8 +373,8 @@ func run() error {
 	}
 
 	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
-		MaxPendingExplicitTasks: cfg.Runtime.MaxPendingExplicitTasks,
+		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, TicketEffectChecker: ticketChecker, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
+		MaxPendingExplicitTasks: cfg.Runtime.MaxPendingExplicitTasks, ModelConcurrency: cfg.Runtime.MaxActiveRuns,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

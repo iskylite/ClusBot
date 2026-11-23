@@ -23,6 +23,9 @@ type ModelAttributes struct {
 	StructuredOutput *bool    `json:"structured_output,omitempty"`
 	Reasoning        *bool    `json:"reasoning,omitempty"`
 	ReasoningLevels  []string `json:"reasoning_levels,omitempty"`
+	// Sources records where a value was last set. Older records have no
+	// provenance; a reply probe does not establish capability support.
+	Sources map[string]string `json:"sources,omitempty"`
 }
 
 type ModelSettings struct {

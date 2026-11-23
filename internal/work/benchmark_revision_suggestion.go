@@ -125,3 +125,23 @@ ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&text)
 	}
 	return *target, text, nil
 }
+
+// ReadBenchmarkRevisionSuggestionForActor restores a conversation card only
+// for the principal that submitted it and still owns the benchmark target.
+func (s *Store) ReadBenchmarkRevisionSuggestionForActor(ctx context.Context, actor, conversation, run string) (*BenchmarkRevisionTarget, error) {
+	target, _, err := s.resolveBenchmarkRevisionSuggestion(ctx, actor, conversation, run)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM benchmark_runs WHERE task_id=? AND actor=?)`, target.TaskID, actor).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	return &target, nil
+}

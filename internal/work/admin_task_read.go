@@ -6,6 +6,55 @@ func (s *Store) ReadTaskSummary(ctx context.Context, id string) (Task, error) {
 	return scanTask(s.db.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE id=?", id))
 }
 
+func (s *Store) AdminTaskStatusCounts(ctx context.Context, filter TaskFilter) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT status, count(*) FROM tasks WHERE "+taskSearch+" GROUP BY status",
+		taskSearchArgs(filter.Scope, filter.Query, filter.MatchID)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, err
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
+}
+
+type AdminTaskExecutionSummary struct {
+	RunCount      int    `json:"run_count"`
+	ArtifactCount int    `json:"artifact_count"`
+	LatestRunID   string `json:"latest_run_id,omitempty"`
+}
+
+// AdminTaskExecutionSummaries reads list metadata without reading private run
+// inputs, responses or artifact content.
+func (s *Store) AdminTaskExecutionSummaries(ctx context.Context, ids []string) (map[string]AdminTaskExecutionSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id,
+ (SELECT count(*) FROM runs r WHERE r.task_id=t.id),
+ (SELECT count(*) FROM artifacts a WHERE a.task_id=t.id),
+ coalesce((SELECT r.id FROM runs r WHERE r.task_id=t.id ORDER BY r.rowid DESC LIMIT 1),'')
+ FROM tasks t WHERE t.id IN (SELECT value FROM json_each(?))`, toJSON(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make(map[string]AdminTaskExecutionSummary, len(ids))
+	for rows.Next() {
+		var id string
+		var summary AdminTaskExecutionSummary
+		if err := rows.Scan(&id, &summary.RunCount, &summary.ArtifactCount, &summary.LatestRunID); err != nil {
+			return nil, err
+		}
+		items[id] = summary
+	}
+	return items, rows.Err()
+}
+
 // TaskExecutionState contains operational fields only. Private input, model
 // context, tool evidence and free-form error text stay in the personal API.
 type TaskExecutionState struct {

@@ -94,14 +94,15 @@ type BenchmarkRunRequest struct {
 	Version    int    `json:"version"`
 }
 type BenchmarkRunProgress struct {
-	TaskID        string                  `json:"task_id"`
-	Profile       string                  `json:"profile"`
-	Version       int                     `json:"version"`
-	PlanRevision  int                     `json:"plan_revision"`
-	State         string                  `json:"state"`
-	StopRequested bool                    `json:"stop_requested"`
-	AssetScope    BenchmarkAssetScope     `json:"asset_scope"`
-	Cases         []BenchmarkCaseProgress `json:"cases"`
+	TaskID          string                      `json:"task_id"`
+	Profile         string                      `json:"profile"`
+	Version         int                         `json:"version"`
+	PlanRevision    int                         `json:"plan_revision"`
+	State           string                      `json:"state"`
+	StopRequested   bool                        `json:"stop_requested"`
+	DispatchControl BenchmarkTaskDispatchStatus `json:"dispatch_control"`
+	AssetScope      BenchmarkAssetScope         `json:"asset_scope"`
+	Cases           []BenchmarkCaseProgress     `json:"cases"`
 }
 type BenchmarkCaseProgress struct {
 	Key                   string                                 `json:"key"`
@@ -293,13 +294,15 @@ func (s *Store) benchmarkProgress(ctx context.Context, actor, taskID string, pro
 	p.TaskID = taskID
 	p.AssetScope = BenchmarkAssetScope{Source: "frozen_targets", TargetRefs: []string{}}
 	seenTargets := map[string]bool{}
-	var ownerCancelled bool
-	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision,r.stop_requested,owner.status='cancelled'
+	var ownerStatus string
+	err = tx.QueryRowContext(ctx, `SELECT r.profile_key,r.profile_version,t.state,r.plan_revision,r.stop_requested,owner.status,t.control_revision
 FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id JOIN tasks owner ON owner.id=r.task_id
-WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision, &p.StopRequested, &ownerCancelled)
+WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p.State, &p.PlanRevision, &p.StopRequested, &ownerStatus, &p.DispatchControl.ControlVersion)
 	if err != nil {
 		return p, err
 	}
+	p.DispatchControl.Paused = p.State == string(V3TaskPaused)
+	p.DispatchControl.Available = !p.StopRequested && ownerStatus == "active" && (p.State == string(V3TaskPending) || p.State == string(V3TaskRunning) || p.DispatchControl.Paused)
 	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
 o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
 ec.action,ec.state,ec.plan_revision,g.control_version,g.held,b.operation_id,b.case_spec,b.authorization_refs,`+benchmarkHasBoundWorkSQL+`,
@@ -374,7 +377,7 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 			}
 		}
 		p.Cases = append(p.Cases, c)
-		facts.block = benchmarkActionStateBlock(p.StopRequested || ownerCancelled, p.State, c.Phase, operation, hasBoundWork)
+		facts.block = benchmarkActionStateBlock(p.StopRequested || ownerStatus == "cancelled", p.State, c.Phase, operation, hasBoundWork)
 		facts.version, facts.held = int(gateVersion.Int64), gateHeld.Bool
 		actionInputs = append(actionInputs, facts)
 	}

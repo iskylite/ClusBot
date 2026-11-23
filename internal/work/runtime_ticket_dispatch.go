@@ -177,10 +177,15 @@ func (p *TicketProvider) lookupTicket(ctx context.Context, path string) (ticketP
 
 // TicketCreateRequest 是创建工单的受控请求。
 type TicketCreateRequest struct {
-	RequestKey    string // 幂等键
-	ObjectRef     string
-	FaultEvidence string
-	Subject       string // 可信主体
+	RequestKey        string // 幂等键
+	ObjectRef         string
+	FaultEvidence     string
+	Subject           string // 可信主体
+	IncidentID        string
+	IncidentUpdatedAt int64
+	AssetIdentity     string
+	AssetRevision     int
+	OwnershipEpoch    int
 }
 
 // TicketCreateResult 是创建工单的结果。
@@ -248,6 +253,22 @@ func (s *Store) submitTicketCreate(ctx context.Context, req TicketCreateRequest,
 	if authDecision.Outcome != "allowed" {
 		return TicketCreateResult{}, fmt.Errorf("%w：主体 %s 无权对 %s 创建工单", ErrAuthorizationDenied, req.Subject, req.ObjectRef)
 	}
+	if req.IncidentID != "" {
+		read, err := decideAuthorization(tx, req.Subject, "read", req.ObjectRef, "", nowV, false)
+		if err != nil {
+			return TicketCreateResult{}, err
+		}
+		if read.Outcome != "allowed" {
+			return TicketCreateResult{}, ErrAuthorizationDenied
+		}
+		dispatch, err := decideAuthorization(tx, req.Subject, "dispatch", "ticket.create", "", nowV, false)
+		if err != nil {
+			return TicketCreateResult{}, err
+		}
+		if dispatch.Outcome != "allowed" {
+			return TicketCreateResult{}, fmt.Errorf("%w：缺少工单派发授权", ErrAuthorizationDenied)
+		}
+	}
 	// 借出期间核对专项授权（P4-18.5）。
 	if err := ensureLentAssetRepairAuthorized(tx, req.ObjectRef, req.Subject, nowV); err != nil {
 		return TicketCreateResult{}, err
@@ -255,12 +276,6 @@ func (s *Store) submitTicketCreate(ctx context.Context, req TicketCreateRequest,
 	asset, err := readAsset(tx, req.ObjectRef)
 	if err != nil {
 		return TicketCreateResult{}, err
-	}
-	if asset.State != AssetStateMaintenance && asset.State != AssetStateLent {
-		return TicketCreateResult{}, fmt.Errorf("%w：资产须已进入维护接管或借出专项维修", ErrState)
-	}
-	if asset.FrozenAt > 0 {
-		return TicketCreateResult{}, fmt.Errorf("%w：资产已冻结", ErrState)
 	}
 	paramsDigest := ticketParamsDigest(req.ObjectRef, req.FaultEvidence)
 	var existingID string
@@ -281,10 +296,47 @@ func (s *Store) submitTicketCreate(ctx context.Context, req TicketCreateRequest,
 			existing.ParamsDigest != paramsDigest || boundProvider != providerID {
 			return TicketCreateResult{}, ErrConflict
 		}
+		var boundIncident string
+		err = tx.QueryRow(`SELECT incident_id FROM incident_ticket_operations WHERE operation_id=?`, existingID).Scan(&boundIncident)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return TicketCreateResult{}, err
+		}
+		if boundIncident != req.IncidentID {
+			return TicketCreateResult{}, ErrConflict
+		}
 		return TicketCreateResult{OperationID: existingID, State: string(existing.State), Duplicate: true}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return TicketCreateResult{}, err
+	}
+	if asset.State != AssetStateMaintenance && asset.State != AssetStateLent {
+		return TicketCreateResult{}, fmt.Errorf("%w：资产须已进入维护接管或借出专项维修", ErrState)
+	}
+	if asset.FrozenAt > 0 {
+		return TicketCreateResult{}, fmt.Errorf("%w：资产已冻结", ErrState)
+	}
+	if req.IncidentID != "" {
+		var updated int64
+		var state string
+		var recovered int
+		if err := tx.QueryRow(`SELECT updated_at,state,recovery_verified FROM incidents WHERE incident_id=?`, req.IncidentID).Scan(&updated, &state, &recovered); err != nil {
+			return TicketCreateResult{}, err
+		}
+		if updated != req.IncidentUpdatedAt || asset.Identity != req.AssetIdentity || asset.Revision != req.AssetRevision || asset.OwnershipEpoch != req.OwnershipEpoch {
+			return TicketCreateResult{}, fmt.Errorf("%w：事件或资产状态已变化，请重新预览", ErrConflict)
+		}
+		if state == "resolved" || state == "closed" || recovered != 0 {
+			return TicketCreateResult{}, fmt.Errorf("%w：事件已恢复或关闭", ErrState)
+		}
+		var exists int
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tickets WHERE incident_id=? AND object_ref=?) OR EXISTS(
+SELECT 1 FROM incident_ticket_operations i JOIN operations o ON o.operation_id=i.operation_id
+WHERE i.incident_id=? AND i.object_ref=? AND o.state NOT IN ('failed','cancelled'))`, req.IncidentID, req.ObjectRef, req.IncidentID, req.ObjectRef).Scan(&exists); err != nil {
+			return TicketCreateResult{}, err
+		}
+		if exists != 0 {
+			return TicketCreateResult{}, fmt.Errorf("%w：事件已有该资产的工单或待核对请求", ErrConflict)
+		}
 	}
 	taskID, err := s.ensureMaintenanceTask(tx, req, nowV)
 	if err != nil {
@@ -301,6 +353,11 @@ func (s *Store) submitTicketCreate(ctx context.Context, req TicketCreateRequest,
 	if _, err := tx.Exec(`INSERT INTO ticket_dispatch_inputs(operation_id,evidence,asset_revision,ownership_epoch,provider_id)
 VALUES(?,?,?,?,?)`, op.OperationID, req.FaultEvidence, asset.Revision, asset.OwnershipEpoch, providerID); err != nil {
 		return TicketCreateResult{}, err
+	}
+	if req.IncidentID != "" {
+		if _, err := tx.Exec(`INSERT INTO incident_ticket_operations(operation_id,incident_id,object_ref,subject,created_at) VALUES(?,?,?,?,?)`, op.OperationID, req.IncidentID, req.ObjectRef, req.Subject, nowV); err != nil {
+			return TicketCreateResult{}, err
+		}
 	}
 	if err := recordAudit(tx, AuditEvent{
 		TaskID: op.TaskID, Event: "ticket_create_submitted", Actor: req.Subject,
@@ -363,6 +420,28 @@ func (s *Store) DispatchTicketCreate(ctx context.Context, operationID, subject, 
 	if repair.Outcome != "allowed" || asset.Revision != target.Revision || asset.OwnershipEpoch != target.Epoch ||
 		(asset.State != AssetStateMaintenance && asset.State != AssetStateLent) {
 		return s.cancelUnsentTicket(tx, op, "维修授权或资产版本已变更", nowV)
+	}
+	var incidentID string
+	err = tx.QueryRow(`SELECT incident_id FROM incident_ticket_operations WHERE operation_id=?`, operationID).Scan(&incidentID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return TicketCreateResult{}, err
+	}
+	if incidentID != "" {
+		read, err := decideAuthorization(tx, subject, "read", target.Ref, "", nowV, false)
+		if err != nil {
+			return TicketCreateResult{}, err
+		}
+		if read.Outcome != "allowed" {
+			return s.cancelUnsentTicket(tx, op, "资产读取授权已撤销", nowV)
+		}
+		var state string
+		var recovered int
+		if err := tx.QueryRow(`SELECT state,recovery_verified FROM incidents WHERE incident_id=?`, incidentID).Scan(&state, &recovered); err != nil {
+			return TicketCreateResult{}, err
+		}
+		if state == "resolved" || state == "closed" || recovered != 0 {
+			return s.cancelUnsentTicket(tx, op, "事件已恢复或关闭", nowV)
+		}
 	}
 	dispatch, err := dispatchOperationCommitted(tx, operationID, subject, nowV)
 	if err != nil {
@@ -459,13 +538,21 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 	if err != nil {
 		return result, err
 	}
+	var incidentID string
+	err = tx.QueryRow(`SELECT incident_id FROM incident_ticket_operations WHERE operation_id=?`, op.OperationID).Scan(&incidentID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return result, err
+	}
 	ticket, err := createTicket(tx, Ticket{
 		ExternalSystem: "ticket-system", ExternalTicketID: res.ExternalTicketID,
-		ObjectRef: target.Ref, FaultEvidence: faultEvidence,
+		ObjectRef: target.Ref, FaultEvidence: faultEvidence, IncidentID: incidentID,
 		ExternalStateVersion: res.StateVersion, ExternalState: res.ExternalState,
 	}, nowV)
 	if err != nil {
 		return result, err
+	}
+	if ticket.ObjectRef != target.Ref || ticket.IncidentID != incidentID {
+		return result, ErrConflict
 	}
 	result.TicketID = ticket.TicketID
 	result.ExternalTicketID = res.ExternalTicketID
@@ -647,6 +734,20 @@ func (s *Store) VerifyTicketClosed(ctx context.Context, ticketID, subject string
 	if ticket.State != "closed" {
 		return fmt.Errorf("%w：工单尚未关闭", ErrState)
 	}
+	if ticket.IncidentID != "" {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		err = incidentAssetPermission(tx, subject, ticket.ObjectRef, nowV)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
 	expected, err := readAsset(s.db, ticket.ObjectRef)
 	if err != nil {
 		return err
@@ -655,6 +756,9 @@ func (s *Store) VerifyTicketClosed(ctx context.Context, ticketID, subject string
 	verified, evidence, err := checker(ctx, ticket.ObjectRef)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(evidence) == "" || len(evidence) > 8000 {
+		return errors.New("独立健康服务未返回可用验证证据")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -667,6 +771,11 @@ func (s *Store) VerifyTicketClosed(ctx context.Context, ticketID, subject string
 	}
 	if current.State != "closed" || current.ExternalStateVersion != ticket.ExternalStateVersion {
 		return ErrConflict
+	}
+	if ticket.IncidentID != "" {
+		if err := incidentAssetPermission(tx, subject, ticket.ObjectRef, now()); err != nil {
+			return err
+		}
 	}
 	asset, err := readAsset(tx, ticket.ObjectRef)
 	if err != nil {
@@ -695,6 +804,17 @@ func (s *Store) VerifyTicketClosed(ctx context.Context, ticketID, subject string
 		}, nowV); err != nil && !errors.Is(err, ErrAuthorizationDenied) {
 			return err
 		}
+	}
+	postAsset, err := readAsset(tx, ticket.ObjectRef)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO ticket_health_verifications(ticket_id,object_ref,asset_identity,checked_asset_revision,asset_revision,ownership_epoch,external_state_version,evidence,verified_at)
+VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(ticket_id) DO UPDATE SET object_ref=excluded.object_ref,asset_identity=excluded.asset_identity,
+checked_asset_revision=excluded.checked_asset_revision,asset_revision=excluded.asset_revision,ownership_epoch=excluded.ownership_epoch,
+external_state_version=excluded.external_state_version,evidence=excluded.evidence,verified_at=excluded.verified_at`,
+		ticketID, ticket.ObjectRef, postAsset.Identity, expected.Revision, postAsset.Revision, postAsset.OwnershipEpoch, ticket.ExternalStateVersion, evidence, nowV); err != nil {
+		return err
 	}
 	if err := recordAudit(tx, AuditEvent{
 		TaskID: ticket.ObjectRef, Event: "ticket_repair_verified", Actor: subject,

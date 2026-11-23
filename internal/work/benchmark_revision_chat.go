@@ -33,6 +33,40 @@ type BenchmarkRevisionChatReceipt struct {
 	Proposal       BenchmarkRevisionProposal `json:"proposal"`
 }
 
+type BenchmarkRevisionChatMetadata struct {
+	TaskID           string `json:"task_id"`
+	SourceRunID      string `json:"source_run_id,omitempty"`
+	ExpectedRevision int    `json:"expected_revision"`
+	AppliedRevision  int    `json:"applied_revision,omitempty"`
+}
+
+// Metadata does not reopen an expired preview. It only restores the source
+// identity and any already-recorded confirmation for its authorized owner.
+func (s *Store) ReadBenchmarkRevisionChatMetadata(ctx context.Context, actor, conversation, run string) (BenchmarkRevisionChatMetadata, error) {
+	recorded, err := checkedRecordedBenchmarkPreview(s.db, actor, conversation, run)
+	if err != nil {
+		return BenchmarkRevisionChatMetadata{}, err
+	}
+	out := BenchmarkRevisionChatMetadata{TaskID: recorded.TaskID, SourceRunID: recorded.SourceRunID, ExpectedRevision: recorded.Proposal.ExpectedRevision}
+	var raw string
+	err = s.db.QueryRowContext(ctx, `SELECT data FROM run_events WHERE run_id=? AND kind=?`, run, benchmarkRevisionAppliedEvent).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, nil
+	}
+	if err != nil {
+		return BenchmarkRevisionChatMetadata{}, err
+	}
+	var applied benchmarkRevisionAppliedReceipt
+	if err := json.Unmarshal([]byte(raw), &applied); err != nil {
+		return BenchmarkRevisionChatMetadata{}, err
+	}
+	if applied.TaskID != recorded.TaskID || applied.Revision != out.ExpectedRevision+1 {
+		return BenchmarkRevisionChatMetadata{}, ErrState
+	}
+	out.AppliedRevision = applied.Revision
+	return out, nil
+}
+
 func readBenchmarkRevisionChat(q recordsQuerier, actor, conversation, run string) (BenchmarkRevisionChatReceipt, error) {
 	var raw string
 	err := q.QueryRow(`SELECT e.data FROM run_events e JOIN runs r ON r.id=e.run_id
@@ -121,7 +155,18 @@ func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversa
 			s.interruptBenchmarkRevisionRequestOnExit(ctx, key)
 		}
 	}()
-	proposal, err := s.ProposeBenchmarkRevisionAI(ctx, actor, input.TaskID, input.BenchmarkRevisionAIInput, provider, interpret)
+	shortcut, deterministic, err := benchmarkRevisionChatShortcut(input.Text, input.AllowExpectedActualChange)
+	if err != nil {
+		return BenchmarkRevisionChatReceipt{}, err
+	}
+	var proposal BenchmarkRevisionProposal
+	if deterministic {
+		proposal, err = s.ProposeBenchmarkRevision(ctx, actor, input.TaskID, BenchmarkRevisionProposalInput{
+			ExpectedRevision: input.ExpectedRevision, Text: shortcut,
+		}, provider)
+	} else {
+		proposal, err = s.ProposeBenchmarkRevisionAI(ctx, actor, input.TaskID, input.BenchmarkRevisionAIInput, provider, interpret)
+	}
 	if err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
 	}
@@ -259,7 +304,7 @@ func checkedRecordedBenchmarkPreview(q recordsQuerier, actor, conversation, run 
 	}
 	p := recorded.Proposal
 	if recorded.RunID != run || recorded.ConversationID != conversation || p.State != "preview_only" ||
-		p.Method != "model_interpreted" || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
+		(p.Method != "model_interpreted" && p.Method != "explicit_shortcut") || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
 		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
 	}

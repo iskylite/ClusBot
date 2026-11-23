@@ -221,7 +221,13 @@ func (s *Store) modelMessagesForRun(ctx context.Context, conversationID, runID s
 		return nil, err
 	}
 	defer tx.Rollback()
-	items, err := queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages
+	boundary, err := readRerunInputBoundary(tx, runID)
+	if err != nil {
+		return nil, err
+	}
+	var items []Message
+	if boundary == nil {
+		items, err = queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages
 WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=messages.run_id) AND (
   seq IN (SELECT seq FROM messages recent WHERE recent.conversation_id=? AND recent.run_id NOT IN
     (SELECT id FROM runs WHERE memory_command=1)
@@ -229,12 +235,34 @@ WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE
   OR seq IN (SELECT message_seq FROM input_deliveries WHERE run_id=? AND generation=?
     EXCEPT SELECT message_seq FROM input_dispositions)
 )`, conversationID, conversationID, runID, executionGeneration(ctx))
+	} else {
+		// A completed-task rerun has a fixed source boundary. Where available,
+		// use the source Run's actual model manifest; legacy Runs reconstruct
+		// their preceding history. Its final answer is never a new instruction.
+		items, err = queryMessages(tx, false, `SELECT seq,role,text,replace_materials,run_id FROM messages
+WHERE conversation_id=? AND NOT EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=messages.run_id)
+AND ((run_id IN (SELECT id FROM runs WHERE conversation_id=? AND memory_command=0
+                 AND rowid<=(SELECT rowid FROM runs WHERE id=?))
+      AND NOT (run_id=? AND role='assistant')
+      AND (coalesce(json_type((SELECT manifest FROM context_manifests WHERE run_id=?
+           AND generation=(SELECT execution_generation FROM runs WHERE id=?) ORDER BY id DESC LIMIT 1), '$.messages'),'null')<>'array'
+        OR seq IN (SELECT value FROM json_each((SELECT manifest FROM context_manifests WHERE run_id=?
+           AND generation=(SELECT execution_generation FROM runs WHERE id=?) ORDER BY id DESC LIMIT 1), '$.messages'))))
+     OR run_id IN (?,?)) ORDER BY seq DESC LIMIT 50`, conversationID, conversationID,
+			boundary.SourceRunID, boundary.SourceRunID, boundary.SourceRunID, boundary.SourceRunID,
+			boundary.SourceRunID, boundary.SourceRunID, boundary.RootRunID, runID)
+	}
 	if err != nil {
 		return nil, err
 	}
 	// Material selection is persisted in message_materials. Resolve it from the
 	// entire conversation before applying either of the history display limits.
-	materials, err := activeMaterials(ctx, tx, conversationID)
+	var materials []Material
+	if boundary == nil {
+		materials, err = activeMaterials(ctx, tx, conversationID)
+	} else {
+		materials, err = completedRunMaterials(ctx, tx, conversationID, boundary.RootRunID, true)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -364,36 +392,39 @@ type MaterialPreview struct {
 	ImageDataURL string     `json:"image_data_url,omitempty"`
 }
 
-// PreviewMaterial 返回指定材料的结构化预览（CSV 按行列截取，日志/Markdown/文本按行截取，图片返回安全 Data URL）。
+// MaterialContent reads the original contents and metadata from the caller’s store.
+func (s *Store) MaterialContent(ctx context.Context, materialID string) (preview MaterialPreview, content string, err error) {
+	var boundCount int
+	err = s.db.QueryRowContext(ctx, `
+		SELECT m.path, m.sha256, m.content,
+		       (SELECT COUNT(*) FROM message_materials mm WHERE mm.material_id=m.id)
+		FROM materials m WHERE m.id=?`, materialID).Scan(&preview.Path, &preview.Digest, &content, &boundCount)
+	if err != nil {
+		return MaterialPreview{}, "", err
+	}
+	preview.ID = materialID
+	preview.Name = filepath.Base(preview.Path)
+	if strings.HasPrefix(preview.Path, "uploads/") {
+		if idx := strings.LastIndex(preview.Name, "#"); idx > 0 {
+			preview.Name = preview.Name[:idx]
+		}
+	}
+	preview.Size = len(content)
+	preview.Bound = boundCount > 0
+	return preview, content, nil
+}
+
+// PreviewMaterial returns a bounded structural preview of a captured material.
 func (s *Store) PreviewMaterial(ctx context.Context, materialID string, limit int) (MaterialPreview, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	var path, digestVal, content string
-	var boundCount int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT m.path, m.sha256, m.content,
-		       (SELECT COUNT(*) FROM message_materials mm WHERE mm.material_id=m.id)
-		FROM materials m WHERE m.id=?`, materialID).Scan(&path, &digestVal, &content, &boundCount)
+	out, content, err := s.MaterialContent(ctx, materialID)
 	if err != nil {
 		return MaterialPreview{}, err
 	}
-	name := filepath.Base(path)
-	if strings.HasPrefix(path, "uploads/") {
-		if idx := strings.LastIndex(name, "#"); idx > 0 {
-			name = name[:idx]
-		}
-	}
-	lower := strings.ToLower(name)
-	out := MaterialPreview{
-		ID:     materialID,
-		Path:   path,
-		Name:   name,
-		Size:   len(content),
-		Digest: digestVal,
-		Bound:  boundCount > 0,
-	}
-	if strings.HasPrefix(path, "images/") || strings.HasPrefix(content, "data:image/") {
+	lower := strings.ToLower(out.Name)
+	if strings.HasPrefix(out.Path, "images/") || strings.HasPrefix(content, "data:image/") {
 		out.PreviewKind = "image"
 		out.ImageDataURL = content
 		return out, nil

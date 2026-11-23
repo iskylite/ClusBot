@@ -86,7 +86,7 @@ func TestMessageTaskRefSurvivesRecoveryWithoutRoutingOrModelContext(t *testing.T
 	for _, m := range page.Items {
 		if m.TaskRef != nil {
 			count++
-			if m.TaskRef.TaskID != target.TaskID || m.Text != text {
+			if m.TaskRef.TaskID != target.TaskID || m.TaskRef.Title != before.Task.Title || m.Text != text {
 				t.Fatalf("text retargeted explicit tag: %+v", m)
 			}
 		}

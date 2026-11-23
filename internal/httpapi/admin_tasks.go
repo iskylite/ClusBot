@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"cmp"
+	"errors"
 	"mime"
 	"net/http"
 	"slices"
@@ -12,20 +13,25 @@ import (
 )
 
 type adminTask struct {
-	Owner          string `json:"owner_id"`
-	ID             string `json:"id"`
-	Title          string `json:"title"`
-	Goal           string `json:"goal"`
-	Scope          string `json:"scope_label"`
-	Criteria       string `json:"acceptance_criteria,omitempty"`
-	RequiredFile   string `json:"required_filename,omitempty"`
-	Revision       int    `json:"revision"`
-	Status         string `json:"status"`
-	StatusReason   string `json:"status_reason"`
-	Priority       string `json:"priority"`
-	StateChangedAt int64  `json:"state_changed_at"`
-	UpdatedAt      int64  `json:"updated_at"`
-	CompletedAt    *int64 `json:"completed_at,omitempty"`
+	Owner          string                          `json:"owner_id"`
+	ID             string                          `json:"id"`
+	Title          string                          `json:"title"`
+	Goal           string                          `json:"goal"`
+	Scope          string                          `json:"scope_label"`
+	Criteria       string                          `json:"acceptance_criteria,omitempty"`
+	RequiredFile   string                          `json:"required_filename,omitempty"`
+	Revision       int                             `json:"revision"`
+	Status         string                          `json:"status"`
+	StatusReason   string                          `json:"status_reason"`
+	Priority       string                          `json:"priority"`
+	StateChangedAt int64                           `json:"state_changed_at"`
+	UpdatedAt      int64                           `json:"updated_at"`
+	CompletedAt    *int64                          `json:"completed_at,omitempty"`
+	Execution      *work.AdminTaskExecutionSummary `json:"execution_summary,omitempty"`
+	CanRerun       bool                            `json:"can_rerun,omitempty"`
+	CanRename      bool                            `json:"can_rename"`
+	CanCancel      bool                            `json:"can_cancel"`
+	StatusAction   string                          `json:"status_action,omitempty"`
 }
 
 func (s Server) registerAdminTasks(api *http.ServeMux) {
@@ -47,6 +53,7 @@ func (s Server) registerAdminTasks(api *http.ServeMux) {
 	api.HandleFunc("POST "+path+"/pause", s.adminTaskMutation(func(scoped Server) http.HandlerFunc { return scoped.control("pause") }))
 	api.HandleFunc("POST "+path+"/cancel", s.adminTaskMutation(func(scoped Server) http.HandlerFunc { return scoped.control("stop") }))
 	api.HandleFunc("POST "+path+"/resume", s.adminTaskMutation(func(scoped Server) http.HandlerFunc { return scoped.resume }))
+	api.HandleFunc("POST "+path+"/rerun", s.adminTaskMutation(func(scoped Server) http.HandlerFunc { return scoped.adminRerunCompletedTask }))
 	api.HandleFunc("POST "+path+"/acceptance", s.adminTaskMutation(func(scoped Server) http.HandlerFunc { return scoped.accept }))
 }
 
@@ -81,6 +88,7 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	filter.MatchID = true
 	scope := r.URL.Query().Get("scope")
 	if scope == "" {
 		scope = "all"
@@ -104,8 +112,6 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 	if limit == 0 {
 		limit = 50
 	}
-	// Fetch at most the requested page per owner. A full page with no extra
-	// rows may offer one final cursor that returns an empty page.
 	filter.Limit = limit
 	var cursorOwner string
 	if after := r.URL.Query().Get("after"); after != "" {
@@ -123,7 +129,23 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 		filter.AfterUpdatedAt, filter.AfterID = cursor.Timestamp, cursor.ID
 	}
 	page := make([]adminTask, 0, limit)
-	for owner, store := range s.AdminTaskStores() {
+	scopeCounts := map[string]int{"all": 0, "mine": 0, "others": 0}
+	statusCounts := make(map[string]int)
+	stores := s.AdminTaskStores()
+	for owner, store := range stores {
+		unfiltered, err := store.AdminTaskStatusCounts(r.Context(), work.TaskFilter{})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		for _, count := range unfiltered {
+			scopeCounts["all"] += count
+			if owner == account.PrincipalID {
+				scopeCounts["mine"] += count
+			} else {
+				scopeCounts["others"] += count
+			}
+		}
 		// 按认证主体与显式 owner 筛选跨账号存储：避免超管自身视角被他人任务干扰，也禁止客户端伪造 mine 身份。
 		if ownerFilter != "" && owner != ownerFilter {
 			continue
@@ -133,6 +155,17 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		if scope == "others" && owner == account.PrincipalID {
 			continue
+		}
+		counts := unfiltered
+		if filter.Scope != "" || filter.Query != "" {
+			counts, err = store.AdminTaskStatusCounts(r.Context(), filter)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+		}
+		for status, count := range counts {
+			statusCounts[status] += count
 		}
 		local := filter
 		if cursorOwner != "" {
@@ -145,7 +178,7 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 				local.AfterID = "!"
 			}
 		}
-		tasks, err := store.ListTasks(r.Context(), local)
+		tasks, err := store.ListAdminTasks(r.Context(), local)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -156,13 +189,56 @@ func (s Server) adminTasks(w http.ResponseWriter, r *http.Request) {
 		slices.SortFunc(page, func(a, b adminTask) int {
 			return cmp.Or(cmp.Compare(b.UpdatedAt, a.UpdatedAt), cmp.Compare(a.Owner, b.Owner), cmp.Compare(a.ID, b.ID))
 		})
-		page = page[:min(limit, len(page))]
+		page = page[:min(limit+1, len(page))]
+	}
+	hasMore := len(page) > limit
+	page = page[:min(limit, len(page))]
+	byOwner := make(map[string][]int)
+	for i, item := range page {
+		byOwner[item.Owner] = append(byOwner[item.Owner], i)
+	}
+	for owner, entries := range byOwner {
+		ids := make([]string, 0, len(entries))
+		for _, i := range entries {
+			ids = append(ids, page[i].ID)
+		}
+		summaries, err := stores[owner].AdminTaskExecutionSummaries(r.Context(), ids)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		for _, i := range entries {
+			if summary, ok := summaries[page[i].ID]; ok {
+				page[i].Execution = &summary
+			}
+			task, err := stores[owner].ReadTaskSummary(r.Context(), page[i].ID)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			actions, err := stores[owner].TaskListActions(r.Context(), task)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			page[i].CanRename, page[i].CanCancel, page[i].StatusAction = actions.CanRename, actions.CanCancel, actions.StatusAction
+			page[i].CanRerun = actions.StatusAction == "rerun"
+		}
+	}
+	total := statusCounts[filter.Status]
+	if filter.Status == "" {
+		for _, count := range statusCounts {
+			total += count
+		}
 	}
 	out := struct {
-		Items []adminTask `json:"items"`
-		Next  string      `json:"next_cursor,omitempty"`
-	}{Items: page}
-	if len(page) == limit {
+		Items        []adminTask    `json:"items"`
+		Next         string         `json:"next_cursor,omitempty"`
+		ScopeCounts  map[string]int `json:"scope_counts"`
+		StatusCounts map[string]int `json:"status_counts"`
+		Total        int            `json:"total"`
+	}{Items: page, ScopeCounts: scopeCounts, StatusCounts: statusCounts, Total: total}
+	if hasMore {
 		last := page[len(page)-1]
 		out.Next = last.Owner + "/" + strconv.FormatInt(last.UpdatedAt, 10) + ":" + last.ID
 	}
@@ -255,7 +331,15 @@ func (s Server) adminTaskRead(view string) http.HandlerFunc {
 		}
 		switch view {
 		case "detail":
-			jsonResponse(w, 200, adminTaskView(owner, task))
+			out := adminTaskView(owner, task)
+			actions, err := store.TaskListActions(r.Context(), task)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			out.CanRename, out.CanCancel, out.StatusAction = actions.CanRename, actions.CanCancel, actions.StatusAction
+			out.CanRerun = actions.StatusAction == "rerun"
+			jsonResponse(w, 200, out)
 		case "runs":
 			items, err := store.ListTaskExecutionStates(r.Context(), id, after)
 			if err != nil {
@@ -285,6 +369,46 @@ func (s Server) adminTaskRead(view string) http.HandlerFunc {
 			w.Write([]byte(artifact.Content))
 		}
 	}
+}
+
+func (s Server) adminRerunCompletedTask(w http.ResponseWriter, r *http.Request) {
+	s.rerunCompletedTask(w, r, "admin-task-rerun:")
+}
+
+func (s Server) personalRerunCompletedTask(w http.ResponseWriter, r *http.Request) {
+	s.rerunCompletedTask(w, r, "task-rerun:")
+}
+
+func (s Server) rerunCompletedTask(w http.ResponseWriter, r *http.Request, keyPrefix string) {
+	var in struct {
+		Revision  int    `json:"revision"`
+		RequestID string `json:"client_request_id"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.Revision < 1 || len(in.RequestID) < 8 || len(in.RequestID) > 128 || strings.TrimSpace(in.RequestID) != in.RequestID {
+		fail(w, http.StatusBadRequest, "invalid_submission", "需要有效的任务版本和请求标识")
+		return
+	}
+	key := keyPrefix + s.principal(r) + ":" + in.RequestID
+	run, err := s.Store.ReadCompletedTaskRerun(r.Context(), r.PathValue("id"), key, in.Revision)
+	if err == nil && run.ID == "" {
+		if !s.ModelAvailable(r.Context()) {
+			fail(w, http.StatusServiceUnavailable, "model_not_configured", "请先配置可用模型")
+			return
+		}
+		run, err = s.Store.RerunCompletedTask(r.Context(), r.PathValue("id"), key, in.Revision)
+	}
+	if err != nil {
+		if errors.Is(err, work.ErrCompletedTaskRerunUnsupported) {
+			fail(w, http.StatusConflict, "task_rerun_unavailable", err.Error())
+			return
+		}
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusAccepted, map[string]string{"task_id": run.TaskID, "run_id": run.ID, "status": run.Status})
 }
 
 func (s Server) adminTaskMutation(action func(Server) http.HandlerFunc) http.HandlerFunc {

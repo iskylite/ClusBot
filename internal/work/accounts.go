@@ -28,7 +28,32 @@ func migrateAccountPasswordState(tx *sql.Tx) error {
 		INSERT OR IGNORE INTO account_bootstrap(singleton) SELECT 1 WHERE EXISTS(SELECT 1 FROM accounts)`); err != nil {
 		return err
 	}
+	if err := migrateAccountLoginTime(tx); err != nil {
+		return err
+	}
 	return migrateAccountConnectionCalls(tx)
+}
+
+func migrateAccountLoginTime(tx *sql.Tx) error {
+	exists, err := columnExists(tx, "accounts", "last_login_at")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err = tx.Exec(`ALTER TABLE accounts ADD COLUMN last_login_at INTEGER NOT NULL DEFAULT 0;
+			UPDATE accounts SET last_login_at = COALESCE((
+				SELECT MAX(s.created_at) FROM account_sessions s WHERE s.principal_id = accounts.principal_id
+			), 0)`); err != nil {
+			return err
+		}
+	}
+	// Record successfully created sessions even if they are later revoked or deleted.
+	_, err = tx.Exec(`CREATE TRIGGER IF NOT EXISTS account_last_login_after_insert
+		AFTER INSERT ON account_sessions BEGIN
+			UPDATE accounts SET last_login_at = MAX(last_login_at, NEW.created_at)
+			WHERE principal_id = NEW.principal_id;
+		END`)
+	return err
 }
 
 var (
@@ -77,6 +102,8 @@ type Account struct {
 	Status             string `json:"status"`
 	IsSuperadmin       bool   `json:"is_superadmin"`
 	MustChangePassword bool   `json:"must_change_password"`
+	CreatedAt          int64  `json:"created_at,omitempty"`
+	LastLoginAt        int64  `json:"last_login_at,omitempty"`
 }
 type OperationGroup struct {
 	ID   string `json:"id"`
@@ -89,11 +116,11 @@ type AccountPatch struct {
 	IsSuperadmin *bool
 }
 
-const accountFields = `a.principal_id,a.username,a.display_name,a.avatar,a.status,a.is_superadmin,a.must_change_password`
+const accountFields = `a.principal_id,a.username,a.display_name,a.avatar,a.status,a.is_superadmin,a.must_change_password,a.created_at,a.last_login_at`
 
 func scanAccount(row interface{ Scan(...any) error }) (Account, error) {
 	var a Account
-	err := row.Scan(&a.PrincipalID, &a.Username, &a.DisplayName, &a.Avatar, &a.Status, &a.IsSuperadmin, &a.MustChangePassword)
+	err := row.Scan(&a.PrincipalID, &a.Username, &a.DisplayName, &a.Avatar, &a.Status, &a.IsSuperadmin, &a.MustChangePassword, &a.CreatedAt, &a.LastLoginAt)
 	return a, err
 }
 
@@ -150,7 +177,7 @@ func (s *Store) BootstrapAccount(ctx context.Context, username, displayName, pas
 	if err = tx.Commit(); err != nil {
 		return Account{}, err
 	}
-	return Account{PrincipalID: principal, Username: username, DisplayName: displayName, Status: "active", IsSuperadmin: true}, nil
+	return Account{PrincipalID: principal, Username: username, DisplayName: displayName, Status: "active", IsSuperadmin: true, CreatedAt: created}, nil
 }
 
 // AccountPassword 只返回密码验证所需数据，不用于 JSON 输出。
@@ -322,7 +349,7 @@ func (s *Store) CreateAccountWithPasswordPolicy(ctx context.Context, tokenDigest
 	if err = tx.Commit(); err != nil {
 		return Account{}, err
 	}
-	return Account{PrincipalID: principal, Username: username, DisplayName: displayName, Status: "active", IsSuperadmin: superadmin, MustChangePassword: mustChangePassword}, nil
+	return Account{PrincipalID: principal, Username: username, DisplayName: displayName, Status: "active", IsSuperadmin: superadmin, MustChangePassword: mustChangePassword, CreatedAt: created}, nil
 }
 
 // UpdateMyProfile 允许当前已登录用户修改本人显示姓名与头像标识（不涉及角色或权限变更）。

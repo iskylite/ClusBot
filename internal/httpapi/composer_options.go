@@ -32,6 +32,8 @@ type composerReplyModel struct {
 	IsDefault bool   `json:"is_default"`
 	Revision  int    `json:"revision"`
 	Available bool   `json:"available"`
+	Vision    bool   `json:"vision,omitempty"`
+	Reasoning bool   `json:"reasoning,omitempty"`
 }
 
 type composerReplyStrategy struct {
@@ -90,9 +92,20 @@ func inferModelBrand(modelID, name string) string {
 	return "generic"
 }
 
+func composerModelCapabilities(attributes *work.ModelAttributes) (vision, reasoning bool) {
+	if attributes == nil {
+		return false, false
+	}
+	vision = attributes.Vision != nil && *attributes.Vision
+	if attributes.Reasoning == nil || *attributes.Reasoning {
+		reasoning = len(attributes.ReasoningLevels) > 0 || attributes.Reasoning != nil && *attributes.Reasoning
+	}
+	return vision, reasoning
+}
+
 func defaultComposerSlashCommands() []composerSlashCommand {
 	return []composerSlashCommand{
-		{Command: "/benchmark", Usage: "/benchmark <方案>@<版本>", Description: "按已发布基准方案发起或受理基准压测任务", Mode: "task"},
+		{Command: "/benchmark", Usage: "/benchmark <方案>@<版本> [本次要求]", Description: "使用已发布的基准方案，附加要求时先给出规划建议", Mode: "task"},
 		{Command: "/benchmark-status", Usage: "/benchmark-status <任务ID>", Description: "只读查询指定基准任务的当前阶段与实时进度", Mode: "read"},
 		{Command: "/assistant", Usage: "/assistant <指令>", Description: "调用对话助手工具（也可使用别名 /助手）", Mode: "assistant"},
 		{Command: "记住", Usage: "记住：<偏好或事实>", Description: "在本地对话中记录个人偏好或事实记忆（不派发任务）", Mode: "memory"},
@@ -168,7 +181,7 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		conversation := r.URL.Query().Get("conversation_id")
-		if conversation != "" && !validID(conversation) {
+		if conversation != "" && !validConversationID(conversation) {
 			fail(w, http.StatusBadRequest, "invalid_conversation", "会话标识无效")
 			return
 		}
@@ -213,6 +226,7 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				_, credentialErr := s.Settings.IsolatedReplyCredential(r.Context(), p.ID, p.Revision)
+				vision, reasoning := composerModelCapabilities(p.Attributes)
 				resp.ReplyModels = append(resp.ReplyModels, composerReplyModel{
 					ProfileID: p.ID,
 					Name:      p.Name,
@@ -220,6 +234,7 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 					Brand:     inferModelBrand(p.ModelID, p.Name),
 					IsDefault: p.ID == defaultProfileID,
 					Revision:  p.Revision, Available: credentialErr == nil,
+					Vision: vision, Reasoning: reasoning,
 				})
 			}
 		}

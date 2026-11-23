@@ -1,7 +1,9 @@
 import {useCallback,useEffect,useRef,useState,type FormEvent} from 'react'
 import {api,APIError} from './api'
+import {BookOpen,ChevronRight,Copy,Pause,Plus,Upload} from 'lucide-react'
 
 import {SkillDocumentImport,type DirectorySkill as Skill} from './SkillDocumentImport'
+import './ConnectionSkillSettings.css'
 
 type Proposal={skill:Pick<Skill,'skill_id'|'version'>}
 type Draft={scope:string;instructions:string;revision:number}
@@ -35,10 +37,11 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
   },[])
   useEffect(()=>{void refresh();return()=>{generation.current++}},[refresh])
 
-  const picked=list?.find(v=>versionKey(v)===review)
+  const picked=list?.find(v=>versionKey(v)===review)??list?.[0]
   const knownProposal=Boolean(picked&&proposalKeys?.has(versionKey(picked)))
   const current=list?.find(v=>v.active&&v.skill_id===picked?.skill_id)
-  const canEnable=Boolean(picked&&picked.instructions&&!picked.active&&(picked.approved_at||(!knownProposal&&picked.base_revision===picked.revision)))
+  const canActivate=(skill:Skill)=>Boolean(skill.instructions&&!skill.active&&(skill.approved_at||(!proposalKeys?.has(versionKey(skill))&&skill.base_revision===skill.revision)))
+  const canEnable=Boolean(picked&&canActivate(picked))
   const scopeDraft=draft&&list?.find(v=>v.scope_label===draft.scope.trim())
   const staleDraft=Boolean(draft&&scopeDraft&&draft.revision!==scopeDraft.revision)
   async function action(go:()=>Promise<void>,done:string){
@@ -64,49 +67,59 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
       setDraft(undefined);setReview(versionKey(version))
     },'文字草稿已保存，未启用或执行。')
   }
-  function enable(){
-    if(!picked||!canEnable)return
-    void action(()=>api('/skills/'+encodeURIComponent(picked.skill_id)+'/activate',{version:picked.version,revision:picked.revision,sha256:picked.sha256}),
+  function enable(skill:Skill){
+    if(!canActivate(skill))return
+    void action(()=>api('/skills/'+encodeURIComponent(skill.skill_id)+'/activate',{version:skill.version,revision:skill.revision,sha256:skill.sha256}),
       '服务器已确认启用该版本。未自动设定会话绑定或执行。')
   }
-  function disable(){
-    if(!picked?.active)return
-    void action(()=>api('/skills/'+encodeURIComponent(picked.skill_id)+'/disable',{revision:picked.revision}),
+  function disable(skill:Skill){
+    if(!skill.active)return
+    void action(()=>api('/skills/'+encodeURIComponent(skill.skill_id)+'/disable',{revision:skill.revision}),
       '服务器已确认停用。该版本不会再成为新的选用项。')
   }
-  return <section id="skill-directory" className="settings-card" aria-labelledby="skill-directory-title">
-    <header className="settings-section-heading"><h2 id="skill-directory-title">Skill 目录</h2>
-      <div className="settings-actions">
-        <button type="button" className="outline" disabled={!fresh||busy||Boolean(draft)} onClick={()=>setDraft(empty)}>新建文字草稿</button>
-        <button type="button" className="outline" aria-expanded={showImport} onClick={()=>setShowImport(!showImport)}>导入 SKILL.md</button>
-      </div></header>
-    <p className="muted">在这里保存和复核文字方法，也可导入单个 SKILL.md 主文档；不支持安装包。启用不执行 Skill、不授予权限；要为指定会话选择版本，请回到该会话的配置。</p>
-    <SkillDocumentImport visible={showImport} skills={list} ready={fresh&&!busy} onClose={()=>setShowImport(false)}
-      onRefresh={()=>void refresh()} onImported={v=>{setReview(versionKey(v));void refresh()}}/>
-    {!list&&!error&&<p role="status">正在读取 Skill 目录…</p>}
-    {list?.length===0&&<p>暂无 Skill，可新建文字草稿。</p>}
-    {list&&list.length>0&&<ul className="model-settings-list">{list.map(v=><li key={versionKey(v)}>
-      <div><strong>{v.scope_label}</strong><small>v{v.version} · {v.active?'当前启用':v.approved_at?'已批准，未启用':'尚未批准'}{!v.instructions?' · 正文不可用':''}</small></div>
-      <button type="button" className="text-button" onClick={()=>setReview(versionKey(v))}>复核 v{v.version}</button>
-    </li>)}</ul>}
-    {picked&&<section className="settings-fields" aria-labelledby="skill-review-title">
-      <h3 id="skill-review-title">{picked.scope_label} · v{picked.version}</h3>
-      <p className="muted">来源：{picked.source?.kind==='skill_md_main_document'?'SKILL.md 主文档':knownProposal?'受审经验提案':'目录未标明来源'}。{current?'当前启用 v'+current.version+'。':'当前未启用版本。'}</p>
-      {picked.source?.kind==='skill_md_main_document'&&<div className="muted">
-        <p>{picked.source.name} · {picked.source.description}</p>
-        <p>源文件 SHA-256：<code className="skill-digest">{picked.source.source_sha256}</code>。仅主文档，未导入附带资源。</p>
+  return <section id="skill-directory" className="skill-directory" aria-labelledby="skill-directory-title">
+    <div className="skill-list-panel settings-split-panel">
+      <header className="settings-split-heading"><h2 id="skill-directory-title">共享 Skill 目录{list&&` (${list.length})`}</h2>
+        <button type="button" className="primary" aria-expanded={showImport} onClick={()=>setShowImport(!showImport)}><Upload size={14} aria-hidden="true"/>导入 SKILL.md</button></header>
+      {!list&&!error&&<p role="status">正在读取 Skill 目录…</p>}
+      {list?.length===0&&<p className="settings-split-empty">暂无 Skill，可新建文字草稿。</p>}
+      {list&&list.length>0&&<ul className="skill-list">{list.map(v=><li key={versionKey(v)} className={picked&&versionKey(picked)===versionKey(v)?'selected':''}>
+        <button type="button" className="skill-list-select" aria-pressed={Boolean(picked&&versionKey(picked)===versionKey(v))} onClick={()=>setReview(versionKey(v))}>
+          <ChevronRight size={13} aria-hidden="true"/>
+          <strong>{v.scope_label}</strong><span className="settings-tag">v{v.version}</span><span className="settings-tag">sha256:{v.sha256.slice(0,4)}</span>
+        </button>
+        <label className="settings-switch"><input type="checkbox" checked={v.active} aria-label={`${v.active?'停用':'启用'} ${v.scope_label} v${v.version}`}
+          disabled={busy||!fresh||(!v.active&&!canActivate(v))} onChange={()=>{setReview(versionKey(v));v.active?disable(v):enable(v)}}/><span/></label>
+      </li>)}</ul>}
+      {list?.length===0&&<button type="button" className="text-button skill-new-draft" disabled={!fresh||busy||Boolean(draft)} onClick={()=>{setShowImport(false);setDraft(empty)}}><Plus size={14} aria-hidden="true"/>新建文字草稿</button>}
+    </div>
+    <div className="skill-detail-panel settings-split-panel">
+      <SkillDocumentImport visible={showImport} skills={list} ready={fresh&&!busy} onClose={()=>setShowImport(false)}
+        onRefresh={()=>void refresh()} onImported={v=>{setReview(versionKey(v));void refresh()}}/>
+      {showImport&&!draft&&<div className="skill-draft-options">
+        <button type="button" className="text-button" disabled={!fresh||busy} onClick={()=>{setShowImport(false);setDraft(empty)}}>新建文字草稿</button>
+        {picked?.instructions&&<button type="button" className="text-button" disabled={!fresh||busy} onClick={()=>{setShowImport(false);setDraft({scope:picked.scope_label,instructions:picked.instructions,revision:picked.revision})}}>据此新建文字草稿</button>}
       </div>}
-      {picked.approved_at&&<p className="muted">批准时间：{new Date(picked.approved_at).toLocaleString('zh-CN')}</p>}
-      <p className="muted">正文 SHA-256：<code className="skill-digest">{picked.sha256}</code></p>
-      {picked.instructions?<p className="skill-instructions">{picked.instructions}</p>:<p>原始来源不可用，无法复核正文。</p>}
-      {knownProposal&&!picked.approved_at&&<button type="button" className="text-button" onClick={openProposals}>在经验提案中复核并批准</button>}
-      {!picked.approved_at&&picked.base_revision!==picked.revision&&<p>此草稿基于旧版本，不能直接启用。可用正文新建一版后复核。</p>}
-      <div className="settings-actions">
-        {canEnable&&<button type="button" className="outline" disabled={busy||!fresh} onClick={enable}>启用 v{picked.version}</button>}
-        {picked.active&&<button type="button" className="outline" disabled={busy||!fresh} onClick={disable}>停用 v{picked.version}</button>}
-        <button type="button" className="text-button" disabled={busy||!fresh||Boolean(draft)||!picked.instructions} onClick={()=>setDraft({scope:picked.scope_label,instructions:picked.instructions,revision:picked.revision})}>据此新建文字草稿</button>
-      </div>
-    </section>}
+      {picked&&!showImport&&!draft&&<section className="skill-review" aria-labelledby="skill-review-title">
+        <header className="skill-review-title"><BookOpen size={15} aria-hidden="true"/><h3 id="skill-review-title">{picked.scope_label}</h3><span className="settings-tag">v{picked.version}</span></header>
+        <div className="skill-meta">
+          <p>状态：{picked.active?'当前启用 v'+picked.version:picked.approved_at?'已批准，未启用':'尚未批准'}。{!picked.active&&(current?' 当前启用 v'+current.version+'。':' 当前未启用版本。')}</p>
+          <p>来源：{picked.source?.kind==='skill_md_main_document'?'SKILL.md 主文档':knownProposal?'受审经验提案':'目录未标明来源'}。启用不执行 Skill、不授予权限。</p>
+          {picked.source?.kind==='skill_md_main_document'&&<><p>{picked.source.name} · {picked.source.description}</p><p>源文件 SHA-256：<code className="skill-digest">{picked.source.source_sha256}</code>。仅主文档，未导入附带资源。</p></>}
+          {picked.approved_at&&<p>批准时间：{new Date(picked.approved_at).toLocaleString('zh-CN')}</p>}
+          <p>指纹：<code className="skill-digest" title={picked.sha256}>sha256:{picked.sha256.slice(0,4)}…{picked.sha256.slice(-4)}</code></p>
+        </div>
+        <h4>SKILL.md 正文全文</h4>
+        {picked.instructions?<pre className="skill-instructions">{picked.instructions}</pre>:<p>原始来源不可用，无法复核正文。</p>}
+        {knownProposal&&!picked.approved_at&&<button type="button" className="text-button" onClick={openProposals}>在经验提案中复核并批准</button>}
+        {!picked.approved_at&&picked.base_revision!==picked.revision&&<p>此草稿基于旧版本，不能直接启用。可用正文新建一版后复核。</p>}
+        <div className="skill-review-actions">
+          <button type="button" className="outline" disabled={!picked.instructions} onClick={()=>{if(!navigator.clipboard){setError('复制失败，请手动选择正文。');return} void navigator.clipboard.writeText(picked.instructions).then(()=>setNotice('正文已复制。')).catch(()=>setError('复制失败，请手动选择正文。'))}}><Copy size={13} aria-hidden="true"/>复制正文</button>
+          {canEnable&&<button type="button" className="outline" disabled={busy||!fresh} onClick={()=>enable(picked)}>启用 v{picked.version}</button>}
+          {picked.active&&<button type="button" className="outline skill-disable" disabled={busy||!fresh} onClick={()=>disable(picked)}><Pause size={13} aria-hidden="true"/>停用此 Skill</button>}
+        </div>
+      </section>}
+      {!picked&&!showImport&&!draft&&<p className="settings-split-empty">选择一个 Skill 查看正文。</p>}
     {draft&&<form className="settings-fields" aria-labelledby="skill-draft-title" onSubmit={submit}>
       <h3 id="skill-draft-title">文字草稿</h3>
       <label className="settings-field"><span>工作范围</span><input name="scope_label" required value={draft.scope} readOnly={busy}
@@ -123,5 +136,6 @@ export function SkillDirectorySettings({openProposals}:{openProposals:()=>void})
     </form>}
     {busy&&<p role="status">正在处理…</p>}{notice&&<p role="status">{notice}</p>}
     {error&&<p role="alert" className="error">{error} <button type="button" className="text-button" disabled={busy} onClick={()=>{setError('');void refresh()}}>重新读取</button></p>}
+    </div>
   </section>
 }

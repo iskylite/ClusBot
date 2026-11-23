@@ -8,7 +8,7 @@ export type Task = {
   revision: number; updated_at: number
 }
 export type MessageTaskRef = {task_id:string}
-export type DeliveryUpdate = {task_ref?:MessageTaskRef;acceptance_criteria?:string;required_filename?:string;revision?:number;mcp_read?:TaskReadRequest;mcp_reads?:TaskReadRequest[];replace_materials?:boolean}
+export type DeliveryUpdate = {task_ref?:MessageTaskRef;benchmark_revision_target?:{task_id:string;expected_revision:number};acceptance_criteria?:string;required_filename?:string;revision?:number;mcp_read?:TaskReadRequest;mcp_reads?:TaskReadRequest[];replace_materials?:boolean}
 export type Acceptance = {artifact_id:string;sha256:string;criteria:string;accepted_at:number;publication_id?:string;filename?:string}
 export type ExecutionUsage = {
   model_requests:number; unreported_requests:number; active_ms:number; time_partial:boolean; untracked_runs:number
@@ -37,7 +37,7 @@ export const awaitingPublication = (publication?: Publication) =>
   publication !== undefined && ['pending','dispatched','unknown'].includes(publication.status)
 export type UploadPart = {id:string;name:string;sha256:string;bytes:number;part:number;parts:number}
 export type Material = {id:string;path:string;sha256:string;size:number;captured_at:number;upload?:UploadPart}
-export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string; task_ref?:MessageTaskRef; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
+export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string; task_ref?:MessageTaskRef & {title?:string}; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
 export type MaterialFile = {path:string;size:number}
 export type SkillReplayMetrics = {
   cases:number; completed:number; successful:number; success_rate:number
@@ -99,8 +99,8 @@ export type Overview = {
   counts:Record<OverviewGroup,number>; next_cursors:Partial<Record<OverviewGroup,string>>
 }
 export type ModelProtocol = 'chat_completions' | 'responses'
-export type ModelAttributes = { context_tokens?: number; max_output_tokens?: number; vision?: boolean; reasoning?: boolean; reasoning_levels?: string[]; reasoning_effort?: string }
-export type DiscoveredModel = { id: string; attributes: ModelAttributes }
+export type ModelAttributes = { context_tokens?: number; max_output_tokens?: number; vision?: boolean; file_input?:boolean; tool_calling?:boolean; structured_output?:boolean; reasoning?: boolean; reasoning_levels?: string[]; reasoning_effort?: string; sources?:Partial<Record<'context_tokens'|'max_output_tokens'|'vision'|'file_input'|'tool_calling'|'structured_output'|'reasoning'|'reasoning_levels'|'reasoning_effort','provider'|'manual'>> }
+export type DiscoveredModel = { id: string; name?:string; attributes: ModelAttributes }
 export type ModelSettings = { attributes?: ModelAttributes; protocol: ModelProtocol; base_url: string; model_id: string; api_key_ref: string; revision: number }
 export type Settings = ModelSettings & {
   mode: 'demo' | ModelProtocol | 'unconfigured'
@@ -109,10 +109,12 @@ export type Settings = ModelSettings & {
   key_configured: boolean
   local_key_saved: boolean
   effective_context_tokens?: number
+  model_concurrency?: number
   workspace_path: string
 }
 export type Receipt = {
   task_id?: string; conversation_id?: string; run_id?: string
+  benchmark_revision_suggestion?:{task_id:string;expected_revision:number}
   model_pending?: boolean; state?: string; reason?: string
 }
 

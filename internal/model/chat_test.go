@@ -92,3 +92,41 @@ func TestChatCompletionsCapabilityRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected Chat Completions stream: %q, %+v, %v", text.String(), usage, err)
 	}
 }
+
+func TestChatCompletionsReasoningStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"step 1 \"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning\":\"step 2\"}}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"final answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":4}}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider, err := NewProvider(server.URL+"/v1", "fixture", "fixture-key", ProtocolChat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reasoning, content strings.Builder
+	ctx := work.WithReasoningEmitter(t.Context(), func(delta string) error {
+		reasoning.WriteString(delta)
+		return nil
+	})
+	usage, err := provider.Stream(ctx, []work.Message{{Role: "user", Text: "think"}}, false, 128,
+		func(delta string) error {
+			content.WriteString(delta)
+			return nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reasoning.String() != "step 1 step 2" {
+		t.Fatalf("unexpected reasoning: %q", reasoning.String())
+	}
+	if content.String() != "final answer" {
+		t.Fatalf("unexpected content: %q", content.String())
+	}
+	if usage == nil || usage.OutputTokens == nil || *usage.OutputTokens != 4 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}

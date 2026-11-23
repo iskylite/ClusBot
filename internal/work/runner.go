@@ -125,7 +125,56 @@ func (s *Store) claim(ctx context.Context) (Run, error) {
 	if err = addEvent(tx, run.ID, "run.state_changed", map[string]string{"status": "running"}); err != nil {
 		return Run{}, err
 	}
-	return run, tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	s.notifyRunEvent(run.ID)
+	return run, nil
+}
+
+type reasoningEmitterKey struct{}
+
+// WithReasoningEmitter attaches a callback for streaming reasoning tokens on ctx.
+func WithReasoningEmitter(ctx context.Context, emit func(string) error) context.Context {
+	if emit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, reasoningEmitterKey{}, emit)
+}
+
+// EmitReasoning forwards a reasoning token delta to the emitter attached to ctx, if any.
+func EmitReasoning(ctx context.Context, text string) error {
+	if text == "" {
+		return nil
+	}
+	emit, _ := ctx.Value(reasoningEmitterKey{}).(func(string) error)
+	if emit == nil {
+		return nil
+	}
+	return emit(text)
+}
+
+func (s *Store) reasoningDelta(ctx context.Context, id, text string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var matched int
+	if err = tx.QueryRow("SELECT 1 FROM runs WHERE id=? AND status='running' AND control='' AND execution_generation=?", id, executionGeneration(ctx)).Scan(&matched); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrState
+		}
+		return err
+	}
+	if err = addEvent(tx, id, "reasoning.delta", map[string]any{"delta": text, "execution_generation": executionGeneration(ctx)}); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyRunEvent(id)
+	return nil
 }
 
 func (s *Store) delta(ctx context.Context, id, text string) error {
@@ -148,7 +197,11 @@ func (s *Store) delta(ctx context.Context, id, text string) error {
 	if err = addEvent(tx, id, "message.delta", map[string]any{"delta": text, "execution_generation": executionGeneration(ctx)}); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyRunEvent(id)
+	return nil
 }
 
 func (s *Store) finish(run Run, status, failure string, accounting runAccounting) error {
@@ -284,7 +337,11 @@ response=CASE WHEN ?='input_required' THEN ? ELSE response END WHERE id=?`,
 	if _, err = tx.ExecContext(ctx, "DELETE FROM run_finalizations WHERE run_id=? AND execution_generation=?", run.ID, run.Generation); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.notifyRunEvent(run.ID)
+	return nil
 }
 
 func (s *Store) Start(ctx context.Context, provider Provider, concurrency int, limits RunLimits) *sync.WaitGroup {
@@ -315,17 +372,23 @@ func (s *Store) StartWhenModelAvailable(ctx context.Context, provider Provider, 
 				select {
 				case <-ctx.Done():
 					return
+				case <-s.queueWake:
 				case <-ticker.C:
+				}
+				for {
+					if ctx.Err() != nil {
+						return
+					}
 					if modelAvailable != nil && !modelAvailable() {
-						continue
+						break
 					}
 					run, err := s.claim(ctx)
 					if errors.Is(err, sql.ErrNoRows) || errors.Is(err, context.Canceled) {
-						continue
+						break
 					}
 					if err != nil {
 						slog.Error("claim run", "error", err)
-						continue
+						break
 					}
 					s.execute(ctx, provider, run, limits)
 				}
@@ -398,6 +461,11 @@ func (s *Store) execute(ctx context.Context, provider Provider, run Run, limits 
 EXISTS(SELECT 1 FROM goal_tasks WHERE task_id=tasks.id)
 OR EXISTS(SELECT 1 FROM workflow_children WHERE task_id=tasks.id OR parent_id=tasks.id)
 FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictAutoTools)
+		if err == nil {
+			if !restrictAutoTools {
+				restrictAutoTools, err = s.isCompletedTaskRerun(controlled, run.ID)
+			}
+		}
 		if err == nil {
 			if request.Text != goal {
 				request.Text += "\n\n当前事项的原始目标：\n" + goal
@@ -537,6 +605,17 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 	if err == nil {
 		var answer TaskAnswer
 		size := 0
+		reasoningSize := 0
+		controlled = WithReasoningEmitter(controlled, func(text string) error {
+			if reasoningSize >= maxOutputBytes {
+				return nil
+			}
+			reasoningSize += len(text)
+			if reasoningSize > maxOutputBytes {
+				return nil
+			}
+			return s.reasoningDelta(controlled, run.ID, text)
+		})
 		emit := func(modelCtx context.Context, text string) error {
 			size += len(text)
 			if size > maxOutputBytes {
@@ -775,7 +854,7 @@ func (s *Store) runEvents(runID string, after int64, validateCursor bool) ([]Eve
 			rows.Close()
 			return nil, Run{}, err
 		}
-		if privateReply && e.Kind == "message.delta" {
+		if privateReply && (e.Kind == "message.delta" || e.Kind == "reasoning.delta") {
 			e.Kind, e.Data = "message.content_unavailable", `{"reason":"source_unavailable"}`
 		}
 		events = append(events, e)

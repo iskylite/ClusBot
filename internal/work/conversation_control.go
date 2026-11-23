@@ -45,5 +45,9 @@ AND NOT EXISTS(SELECT 1 FROM messages WHERE run_id=? AND role='assistant')`, run
 	if err != nil {
 		return Run{}, err
 	}
-	return run, tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return Run{}, err
+	}
+	s.notifyRunEvent(runID)
+	return run, nil
 }

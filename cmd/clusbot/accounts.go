@@ -20,6 +20,16 @@ import (
 )
 
 func serveAccounts(db *work.Store, listen, origin string, printURL bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
+	return serveAccountsAtOrigin(db, listen, origin, printURL, false, configure)
+}
+
+// The desktop process owns this loopback listener, including its chosen port.
+// Unlike a deployed server it has no HTTPS reverse proxy.
+func serveDesktopAccounts(db *work.Store, listen string, printURL bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
+	return serveAccountsAtOrigin(db, listen, "", printURL, true, configure)
+}
+
+func serveAccountsAtOrigin(db *work.Store, listen, origin string, printURL, desktop bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
 	required, err := db.BootstrapRequired(context.Background())
 	if err != nil {
 		return err
@@ -33,6 +43,13 @@ func serveAccounts(db *work.Store, listen, origin string, printURL bool, configu
 		return err
 	}
 	defer listener.Close()
+	if desktop {
+		addr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok || !addr.IP.Equal(net.ParseIP("127.0.0.1")) {
+			return errors.New("桌面模式必须监听 127.0.0.1")
+		}
+		origin = "http://" + listener.Addr().String()
+	}
 	parsed, err := url.Parse(origin)
 	if err != nil {
 		return err

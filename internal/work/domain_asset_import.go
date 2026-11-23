@@ -13,6 +13,7 @@ type DomainAssetEntry struct {
 	Kind      string                 `yaml:"kind"`
 	Identity  string                 `yaml:"identity"`
 	State     string                 `yaml:"state"`
+	PodRef    string                 `yaml:"pod_ref"`
 	Read      bool                   `yaml:"allow_read"`
 	Repair    bool                   `yaml:"allow_repair"`
 	Benchmark []DomainBenchmarkGrant `yaml:"benchmark_grants"`
@@ -124,6 +125,72 @@ AND revoked_at=0 AND valid_from<=? AND (expires_at=0 OR expires_at>?))`, princip
 			}
 			if _, err := grantAuthorization(tx, Authorization{Subject: principal, Action: access.action, ObjectRef: access.object,
 				Source: "local-domain-asset-import", Owner: principal, ValidFrom: stamp}, stamp); err != nil {
+				return err
+			}
+		}
+	}
+	// Resolve POD references only after every entry has been registered, so a
+	// manifest can place a node before its parent. Omitting pod_ref leaves any
+	// existing relationship untouched; moving a node requires explicit review.
+	for _, entry := range entries {
+		if entry.PodRef == "" {
+			continue
+		}
+		ref, podRef := strings.TrimSpace(entry.ObjectRef), entry.PodRef
+		if strings.TrimSpace(podRef) != podRef || len(podRef) > 256 || podRef == ref {
+			return fmt.Errorf("资产 %s 的 pod_ref 无效", ref)
+		}
+		node, err := readAsset(tx, ref)
+		if err != nil {
+			return err
+		}
+		if node.Kind != "node" && node.Kind != "计算节点" && node.Kind != "GPU 节点" {
+			return fmt.Errorf("资产 %s 不是可归属 POD 的节点", ref)
+		}
+		pod, err := readAsset(tx, podRef)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("资产 %s 引用的 POD 未登记", ref)
+		}
+		if err != nil {
+			return err
+		}
+		if pod.Kind != "pod" {
+			return fmt.Errorf("资产 %s 引用的对象不是 pod 类型", ref)
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT r.source_ref,r.relation_kind,r.valid_from,COALESCE(p.kind,'')
+			FROM relations r LEFT JOIN ops_assets p ON p.object_ref=r.source_ref
+			WHERE r.target_ref=? AND r.relation_kind IN ('physical_parent','physical_component')
+			AND (r.valid_to=0 OR r.valid_to>?)`, ref, stamp)
+		if err != nil {
+			return err
+		}
+		present := false
+		for rows.Next() {
+			var parent, kind, parentKind string
+			var from int64
+			if err := rows.Scan(&parent, &kind, &from, &parentKind); err != nil {
+				rows.Close()
+				return err
+			}
+			if (kind == "physical_parent" || parentKind == "pod") && parent != podRef {
+				rows.Close()
+				return fmt.Errorf("%w：资产 %s 已有冲突的物理父关系", ErrConflict, ref)
+			}
+			if kind == "physical_parent" && parent == podRef {
+				if from > stamp {
+					rows.Close()
+					return fmt.Errorf("%w：资产 %s 的 POD 关系尚未生效", ErrConflict, ref)
+				}
+				present = true
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		if !present {
+			if _, err := assertRelation(tx, Relation{RelationKind: "physical_parent", SourceRef: podRef, TargetRef: ref, ValidFrom: stamp}, stamp); err != nil {
 				return err
 			}
 		}

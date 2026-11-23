@@ -2,8 +2,12 @@ import AppKit
 import UserNotifications
 import WebKit
 
+private struct ServiceSession: Decodable {
+    let mode: String
+}
+
 @MainActor
-final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKDownloadDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, UNUserNotificationCenterDelegate {
+final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, UNUserNotificationCenterDelegate {
     private let service = Process()
     private let output = Pipe()
     private var window: NSWindow!
@@ -16,11 +20,14 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     private var drafts: [String: String] = [:]
     private var draftFile: URL?
     private var downloads: [ObjectIdentifier: (folder: URL, staged: URL, destination: URL)] = [:]
+    private var csvBlobDownloads: Set<ObjectIdentifier> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let menu = NSMenu()
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关于 ClusBot", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 ClusBot", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         menu.addItem(appItem)
@@ -34,6 +41,10 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         menu.addItem(editItem)
         let viewItem = NSMenuItem()
         let viewMenu = NSMenu(title: "显示")
+        let sidebarItem = viewMenu.addItem(withTitle: "显示或隐藏侧边栏", action: #selector(toggleSidebar), keyEquivalent: "s")
+        sidebarItem.keyEquivalentModifierMask = [.control, .command]
+        sidebarItem.target = self
+        viewMenu.addItem(.separator())
         for (title, action, key) in [("放大", #selector(zoomIn), "+"),
                                      ("缩小", #selector(zoomOut), "-"),
                                      ("适应窗口", #selector(fitWindow), "0")] {
@@ -60,6 +71,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         config.websiteDataStore = .nonPersistent()
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
+        webView.uiDelegate = self
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
@@ -81,7 +93,12 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         NSApp.activate(ignoringOtherApps: true)
 
         service.executableURL = Bundle.main.url(forAuxiliaryExecutable: "clusbot-service")
-        service.arguments = ["serve", "--listen", "127.0.0.1:0", "--data-dir", dataDir.path, "--print-url"]
+        var serviceArguments = ["serve", "--mode", "desktop", "--listen", "127.0.0.1:0", "--data-dir", dataDir.path, "--print-url"]
+        let serviceConfig = dataDir.appendingPathComponent("config.yaml")
+        if FileManager.default.fileExists(atPath: serviceConfig.path) {
+            serviceArguments += ["--config", serviceConfig.path]
+        }
+        service.arguments = serviceArguments
         service.standardOutput = output
         service.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
@@ -145,6 +162,18 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         updateZoom()
     }
 
+    @objc private func toggleSidebar() {
+        webView.evaluateJavaScript("""
+            (() => {
+            const sidebarButton = document.querySelector('button.sidebar-collapse');
+            const mobileButton = document.querySelector('button.v31-mobile-nav');
+            const visible = button => button && button.getClientRects().length > 0;
+            if (visible(sidebarButton)) sidebarButton.click();
+            else if (visible(mobileButton)) mobileButton.click();
+            })();
+            """, completionHandler: nil)
+    }
+
     @objc private func zoomOut() {
         manualZoom = max(0.75, webView.pageZoom - 0.1)
         updateZoom()
@@ -169,23 +198,33 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
             return
         }
         do {
-            let token = try String(contentsOf: dataDir.appendingPathComponent("access-token"), encoding: .utf8)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            var request = URLRequest(url: url.appendingPathComponent("api/v1/session"), timeoutInterval: 10)
-            request.httpMethod = "POST"
-            request.setValue(url.absoluteString, forHTTPHeaderField: "Origin")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.httpBody = try JSONEncoder().encode(["token": token])
             let session = URLSession(configuration: .ephemeral)
             defer { session.finishTasksAndInvalidate() }
-            let (_, response) = try await session.data(for: request)
+            let statusURL = url.appendingPathComponent("api/v1/session")
+            let (data, response) = try await session.data(for: URLRequest(url: statusURL, timeoutInterval: 10))
             guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                  let cookie = session.configuration.httpCookieStorage?.cookies(for: url)?
-                    .first(where: { $0.name == "clusbot_session" }) else {
-                fail("无法建立本机会话。")
+                  let status = try? JSONDecoder().decode(ServiceSession.self, from: data),
+                  status.mode == "local" || status.mode == "server" else {
+                fail("无法读取本地服务的会话状态。")
                 return
             }
-            await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+            if status.mode == "local" {
+                let token = try String(contentsOf: dataDir.appendingPathComponent("access-token"), encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                var request = URLRequest(url: statusURL, timeoutInterval: 10)
+                request.httpMethod = "POST"
+                request.setValue(url.absoluteString, forHTTPHeaderField: "Origin")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try JSONEncoder().encode(["token": token])
+                let (_, loginResponse) = try await session.data(for: request)
+                guard let loginResponse = loginResponse as? HTTPURLResponse, loginResponse.statusCode == 200,
+                      let cookie = session.configuration.httpCookieStorage?.cookies(for: url)?
+                        .first(where: { $0.name == "clusbot_session" }) else {
+                    fail("无法建立原有本机会话。")
+                    return
+                }
+                await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+            }
             guard !closing, !failureShown else { return }
             origin = url
             webView.load(URLRequest(url: url))
@@ -194,7 +233,25 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         }
     }
 
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        guard frame.isMainFrame, sameOrigin(frame.request.url), !closing, window.attachedSheet == nil else {
+            completionHandler(false)
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "请确认操作"
+        alert.informativeText = message
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "确认")
+        alert.beginSheetModal(for: window) { response in
+            completionHandler(response == .alertSecondButtonReturn)
+        }
+    }
+
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
+        if isCSVBlobDownload(action) { return .download }
         guard sameOrigin(action.request.url), action.targetFrame != nil else { return .cancel }
         return action.shouldPerformDownload ? .download : .allow
     }
@@ -202,6 +259,17 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     private func sameOrigin(_ url: URL?) -> Bool {
         guard let url, let origin else { return false }
         return url.scheme == origin.scheme && url.host == origin.host && url.port == origin.port
+    }
+
+    private func sameOriginBlob(_ url: URL?) -> Bool {
+        guard let value = url?.absoluteString, value.hasPrefix("blob:"),
+              let inner = URL(string: String(value.dropFirst(5))) else { return false }
+        return sameOrigin(inner)
+    }
+
+    private func isCSVBlobDownload(_ action: WKNavigationAction) -> Bool {
+        action.shouldPerformDownload && action.sourceFrame.isMainFrame &&
+            sameOrigin(action.sourceFrame.request.url) && sameOriginBlob(action.request.url)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse) async -> WKNavigationResponsePolicy {
@@ -215,6 +283,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        if isCSVBlobDownload(navigationAction) { csvBlobDownloads.insert(ObjectIdentifier(download)) }
         download.delegate = self
     }
 
@@ -224,7 +293,10 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
                   suggestedFilename: String) async -> URL? {
-        guard sameOrigin(response.url), (response as? HTTPURLResponse)?.statusCode == 200 else {
+        let isCSVBlob = csvBlobDownloads.remove(ObjectIdentifier(download)) != nil &&
+            sameOriginBlob(response.url) && response.mimeType?.lowercased() == "text/csv"
+        let isHTTPDownload = sameOrigin(response.url) && (response as? HTTPURLResponse)?.statusCode == 200
+        guard isCSVBlob || isHTTPDownload else {
             showDownloadError("服务未能提供下载文件。")
             return nil
         }
@@ -260,6 +332,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        csvBlobDownloads.remove(ObjectIdentifier(download))
         if let item = downloads.removeValue(forKey: ObjectIdentifier(download)) {
             try? FileManager.default.removeItem(at: item.folder)
         }
@@ -270,8 +343,9 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
 
     private func showDownloadError(_ detail: String) {
         let alert = NSAlert()
+        alert.alertStyle = .warning
         alert.messageText = "无法保存下载文件"
-        alert.informativeText = detail
+        alert.informativeText = "\(detail)\n\n请检查目标目录写入权限或磁盘空间后重试。"
         alert.beginSheetModal(for: window)
     }
 
@@ -377,8 +451,9 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         guard !closing, !failureShown else { return }
         failureShown = true
         let alert = NSAlert()
+        alert.alertStyle = .critical
         alert.messageText = "无法打开 ClusBot"
-        alert.informativeText = detail
+        alert.informativeText = "\(detail)\n\n请退出后重新打开 ClusBot；若问题持续，请检查是否已有另一个实例正在运行。"
         alert.addButton(withTitle: "退出")
         alert.beginSheetModal(for: window) { _ in NSApp.terminate(nil) }
     }

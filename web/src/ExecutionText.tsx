@@ -1,8 +1,10 @@
-import {useEffect,useRef} from 'react'
+import {memo,useEffect,useMemo,useRef,useState,type ReactNode} from 'react'
 import {Bookmark,BookmarkPlus,Gauge} from 'lucide-react'
-import Markdown from 'react-markdown'
+import Markdown, {type Components} from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
-import type {ExecutionUsage,MemoryRef,Message} from './api'
+import clusbotIcon from './clusbot-brand.svg'
+import type {ExecutionUsage,Material,MemoryRef,Message} from './api'
 
 const usageNumber = new Intl.NumberFormat('zh-CN', {maximumFractionDigits:1})
 
@@ -51,13 +53,42 @@ function ContextUsageBar({used,window}:{used:number;window:number}) {
   </div>
 }
 
-export function FormattedText({text, framed=false}:{text:string;framed?:boolean}) {
-  return <div className={framed?'response-text formatted':'formatted'}>
-    <Markdown skipHtml disallowedElements={['img']} components={{
-      a: ({children,href}) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
-    }}>{text}</Markdown>
-  </div>
+export const markdownPlugins = [remarkGfm]
+
+export const markdownComponents: Components = {
+  a: ({children,href}) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+  table: ({children}) => <div className="md-table-wrap"><table>{children}</table></div>,
 }
+
+function stabilizeStreamingMarkdown(text: string): string {
+  const lines = text.split('\n')
+  let openFence: {char: string; len: number} | null = null
+  for (const line of lines) {
+    if (!openFence) {
+      const match = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/)
+      if (match) {
+        const fence = match[1]
+        const rest = match[2]
+        if (!(fence[0] === '`' && rest.includes('`'))) {
+          openFence = {char: fence[0], len: fence.length}
+        }
+      }
+    } else {
+      const closeMatch = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
+      if (closeMatch && closeMatch[1][0] === openFence.char && closeMatch[1].length >= openFence.len) {
+        openFence = null
+      }
+    }
+  }
+  return openFence ? `${text}\n${openFence.char.repeat(openFence.len)}` : text
+}
+
+export const FormattedText = memo(function FormattedText({text, framed=false, streaming=false}:{text:string;framed?:boolean;streaming?:boolean}) {
+  const content = streaming ? stabilizeStreamingMarkdown(text) : text
+  return <div className={framed?'response-text formatted':'formatted'}>
+    <Markdown skipHtml disallowedElements={['img']} remarkPlugins={markdownPlugins} components={markdownComponents}>{content}</Markdown>
+  </div>
+})
 
 export function MemoryReferences({items}:{items?:MemoryRef[]}) {
   if (!items?.length) return null
@@ -70,26 +101,125 @@ export function MemoryReferences({items}:{items?:MemoryRef[]}) {
   </details>
 }
 
-export function Messages({messages,live,remember,anchors=true}:{messages:Message[];live?:string;remember?:(id:number)=>void;anchors?:boolean}) {
+function AssistantReasoning({text, hasLive}:{text:string; hasLive:boolean}) {
+  const [open, setOpen] = useState(!hasLive)
+  const userToggled = useRef(false)
+  const prevHasLive = useRef(hasLive)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!prevHasLive.current && hasLive && !userToggled.current) {
+      setOpen(false)
+    }
+    prevHasLive.current = hasLive
+  }, [hasLive])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !open) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 36) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [text, open])
+
+  return <details className="assistant-reasoning" open={open} onToggle={e => {
+    const next = e.currentTarget.open
+    if (next !== open) {
+      userToggled.current = true
+      setOpen(next)
+    }
+  }}>
+    <summary>{hasLive ? '思考过程' : '正在思考…'}</summary>
+    <div className="assistant-reasoning-text" ref={scrollRef}>{text}</div>
+  </details>
+}
+
+export type UserIdentity = {display_name?:string; username?:string; avatar?:string}
+
+const MessageItem = memo(function MessageItem({
+  message,
+  messageID,
+  focused,
+  anchors,
+  assistantLabel,
+  userLabel,
+  remember,
+  matchingReply,
+  replyCardContent,
+  previewMaterials,
+}: {
+  message: Message
+  messageID?: number
+  focused: boolean
+  anchors: boolean
+  assistantLabel: ReactNode
+  userLabel: ReactNode
+  remember?: (id: number) => void
+  matchingReply: boolean
+  replyCardContent?: ReactNode
+  previewMaterials?: Material[]
+}) {
+  return <div className={'message message-'+message.role+(focused?' source-message':'')} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}>
+    <span>{message.role==='user'?userLabel:assistantLabel}</span>
+    {message.role==='assistant'
+      ? <div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs}/>{matchingReply&&replyCardContent}</div>
+      : <div className="user-message"><MessageContent
+          reference={message.task_ref?.task_id?<MessageReference label={'@'+(message.task_ref.title||message.task_ref.task_id)+' 只读引用'}/>:
+            message.asset_query_task_id&&<MessageReference label={'资产查询 · '+message.asset_query_task_id}/>}
+          body={message.text||message.replace_materials ? <>{message.text}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}</> : undefined}
+          attachments={Boolean(message.materials?.length)&&<MessageAttachments items={message.materials!} previewItems={previewMaterials}/>}/>
+          {messageID!==undefined && remember && <button type="button" className="icon-button remember-message" aria-label="从这条消息新增记忆" title="新增记忆" onClick={()=>remember(messageID)}><BookmarkPlus size={16}/></button>}
+        </div>}
+  </div>
+})
+
+export function Messages({messages,live,liveReasoning,liveThinking,remember,anchors=true,replyCard,previewMaterials,assistantName,userAccount}:{
+  messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;remember?:(id:number)=>void;anchors?:boolean;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity
+}) {
   const located=useRef('')
+  const group=useRef<HTMLDivElement>(null)
   const target=anchors&&/^#message-\d+$/.test(location.hash)?location.hash.slice(1):''
   useEffect(()=>{
-    if(!target){located.current='';return}
-    const element=document.getElementById(target)
-    if(element&&located.current!==target) {
+    const element=target?group.current?.querySelector<HTMLElement>('#'+target):undefined
+    if(!element){located.current='';return}
+    if(located.current!==target) {
       located.current=target
       element.scrollIntoView({block:'center'})
       element.focus({preventScroll:true})
     }
   },[target,messages])
-  return <div className="messages">{messages.map((message,index)=>{
+  const matchingReply=replyCard?[...messages].reverse().find(message=>message.role==='assistant'&&message.run_id===replyCard.runID):undefined
+  const assistantLabel=useMemo(()=><ReactLabel assistantName={assistantName}/>,[assistantName])
+  const userLabel=useMemo(()=><UserLabel account={userAccount}/>,[userAccount])
+  return <div className="messages" ref={group}>{messages.map((message,index)=>{
     const messageID=message.id
     const focused=target==='message-'+messageID
-    return <div className={'message'+(focused?' source-message':'')} key={messageID??index} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}><span>{message.role==='user'?'你':'助手'}</span>{message.role==='assistant'?<div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs}/></div>:<div className="user-message"><MessageContent
-      reference={message.task_ref?.task_id?<MessageReference label={'引用任务 · '+message.task_ref.task_id}/>:
-        message.asset_query_task_id&&<MessageReference label={'资产查询 · '+message.asset_query_task_id}/>}
-      body={message.text||message.replace_materials ? <>{message.text}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}</> : undefined}
-      attachments={Boolean(message.materials?.length)&&<MessageAttachments items={message.materials!}/>}/>
-      {messageID!==undefined && remember && <button type="button" className="icon-button remember-message" aria-label="从这条消息新增记忆" title="新增记忆" onClick={()=>remember(messageID)}><BookmarkPlus size={16}/></button>}</div>}</div>
-  })}{live&&<div className="message"><span>助手</span><FormattedText text={live}/></div>}</div>
+    return <MessageItem
+      key={messageID??index}
+      message={message}
+      messageID={messageID}
+      focused={focused}
+      anchors={anchors}
+      assistantLabel={assistantLabel}
+      userLabel={userLabel}
+      remember={remember}
+      matchingReply={message===matchingReply}
+      replyCardContent={message===matchingReply?replyCard?.content:undefined}
+      previewMaterials={previewMaterials}
+    />
+  })}{replyCard&&!matchingReply&&<div className="message message-assistant">
+    <span>{assistantLabel}</span>{replyCard.content}
+  </div>}{(live||liveReasoning||liveThinking)&&<div className="message message-assistant is-streaming"><span>{assistantLabel}</span><div className="assistant-stream-body">
+    {liveReasoning&&<AssistantReasoning text={liveReasoning} hasLive={Boolean(live)}/>}
+    {live?<div className="assistant-live-text"><FormattedText text={live} streaming/></div>:(!liveReasoning&&liveThinking&&<div className="assistant-thinking" role="status"><span className="thinking-dots" aria-hidden="true"><i/><i/><i/></span><span>正在思考…</span></div>)}
+  </div></div>}</div>
+}
+
+function ReactLabel({assistantName}:{assistantName?:string}) {
+  return <><img className="chat-avatar" src={clusbotIcon} alt=""/>{assistantName?<strong>{assistantName}</strong>:'助手'}</>
+}
+
+function UserLabel({account}:{account?:UserIdentity}) {
+  const name=account?.display_name||account?.username||'你'
+  return <>{name}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(name)[0]}</i>}</>
 }

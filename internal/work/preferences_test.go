@@ -19,11 +19,14 @@ func TestGeneralPreferencesPersistAndRejectStaleWrites(t *testing.T) {
 	if err != nil || p != DefaultGeneralPreferences() {
 		t.Fatalf("unexpected defaults: %+v, %v", p, err)
 	}
+	if p.SendShortcut != "enter" {
+		t.Fatalf("new preferences should default to Enter: %+v", p)
+	}
 	p.Language = "en-US"
 	p.Timezone = "Asia/Shanghai"
 	p.Appearance = "dark"
 	p.ReduceMotion = true
-	p.SendShortcut = "enter"
+	p.SendShortcut = "mod_enter"
 	p.DesktopNotifications = true
 	p, err = store.SaveGeneralPreferences(ctx, p)
 	if err != nil || p.Revision != 1 {

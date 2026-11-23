@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   status TEXT NOT NULL CHECK(status IN ('active','disabled','pending')),
   is_superadmin INTEGER NOT NULL DEFAULT 0 CHECK(is_superadmin IN (0,1)),
   status_version INTEGER NOT NULL DEFAULT 1,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  last_login_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS operation_groups (
   group_id TEXT PRIMARY KEY,

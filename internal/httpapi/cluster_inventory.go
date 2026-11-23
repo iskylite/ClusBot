@@ -29,7 +29,12 @@ func (s Server) clusterInventory(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "invalid_cursor", "节点游标无效")
 		return
 	}
-	page, err := s.Store.ClusterInventory(r.Context(), s.principal(r), after, limit, time.Now())
+	podRef := r.URL.Query().Get("pod_ref")
+	if len(podRef) > 1024 {
+		fail(w, http.StatusBadRequest, "invalid_pod", "POD 标识无效")
+		return
+	}
+	page, err := s.Store.ClusterInventoryForPod(r.Context(), s.principal(r), podRef, after, limit, time.Now())
 	if err != nil {
 		writeError(w, err)
 		return

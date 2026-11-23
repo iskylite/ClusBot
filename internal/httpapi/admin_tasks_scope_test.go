@@ -122,7 +122,11 @@ func TestAdminTasksScopeFilterAndReadOnlyNotices(t *testing.T) {
 	}
 
 	type adminListResp struct {
-		Items []adminTask `json:"items"`
+		Items        []adminTask    `json:"items"`
+		ScopeCounts  map[string]int `json:"scope_counts"`
+		StatusCounts map[string]int `json:"status_counts"`
+		Total        int            `json:"total"`
+		Next         string         `json:"next_cursor"`
 	}
 
 	// scope=all returns both tasks
@@ -134,6 +138,56 @@ func TestAdminTasksScopeFilterAndReadOnlyNotices(t *testing.T) {
 	accountJSON(t, w, &allResp)
 	if len(allResp.Items) != 2 {
 		t.Fatalf("scope=all count = %d, want 2", len(allResp.Items))
+	}
+	if allResp.Total != 2 || allResp.ScopeCounts["all"] != 2 || allResp.ScopeCounts["mine"] != 1 ||
+		allResp.ScopeCounts["others"] != 1 || allResp.StatusCounts["active"] != 2 {
+		t.Fatalf("unexpected all-scope totals: %+v", allResp)
+	}
+	for _, task := range allResp.Items {
+		if task.Execution == nil || task.Execution.RunCount != 1 || task.Execution.ArtifactCount != 0 || !validID(task.Execution.LatestRunID) {
+			t.Fatalf("missing execution counts: %+v", task.Execution)
+		}
+	}
+	var adminTaskID, memberTaskID string
+	for _, task := range allResp.Items {
+		if task.Owner == adminID {
+			adminTaskID = task.ID
+		} else if task.Owner == memberID {
+			memberTaskID = task.ID
+		}
+	}
+	if adminTaskID == "" || memberTaskID == "" {
+		t.Fatal("missing task for one of the accounts")
+	}
+	// Personal-list ID searches must remain scoped to the authenticated member.
+	w = f.request("GET", "/api/v1/tasks?q="+memberTaskID[:8], nil, memberCookie)
+	var personalMatches []work.Task
+	accountJSON(t, w, &personalMatches)
+	if w.Code != http.StatusOK || len(personalMatches) != 1 || personalMatches[0].ID != memberTaskID {
+		t.Fatalf("member task ID search: %d %+v", w.Code, personalMatches)
+	}
+	w = f.request("GET", "/api/v1/tasks?q="+adminTaskID[:8], nil, memberCookie)
+	accountJSON(t, w, &personalMatches)
+	if w.Code != http.StatusOK || len(personalMatches) != 0 {
+		t.Fatalf("member saw another account's task: %d %+v", w.Code, personalMatches)
+	}
+	w = f.request("GET", "/api/v1/admin/tasks?scope=all&limit=1", nil, adminCookie)
+	var limited adminListResp
+	accountJSON(t, w, &limited)
+	if w.Code != http.StatusOK || len(limited.Items) != 1 || limited.Total != 2 || limited.StatusCounts["active"] != 2 || limited.Next == "" {
+		t.Fatalf("pagination narrowed the totals: %d %+v", w.Code, limited)
+	}
+	w = f.request("GET", "/api/v1/admin/tasks?scope=all&limit=1&after="+limited.Next, nil, adminCookie)
+	var last adminListResp
+	accountJSON(t, w, &last)
+	if w.Code != http.StatusOK || len(last.Items) != 1 || last.Total != 2 || last.Next != "" || last.Items[0].ID == limited.Items[0].ID {
+		t.Fatalf("final page reported an extra row or incorrect counts: %d %+v", w.Code, last)
+	}
+	w = f.request("GET", "/api/v1/admin/tasks?scope=all&q="+allResp.Items[0].ID[:8], nil, adminCookie)
+	var matching adminListResp
+	accountJSON(t, w, &matching)
+	if w.Code != http.StatusOK || len(matching.Items) != 1 || matching.Total != 1 || matching.Items[0].ID != allResp.Items[0].ID {
+		t.Fatalf("ID prefix lookup disagrees with count: %d %+v", w.Code, matching)
 	}
 
 	// scope=mine returns only admin's task

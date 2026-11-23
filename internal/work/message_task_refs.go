@@ -9,6 +9,11 @@ type MessageTaskRef struct {
 	TaskID string `json:"task_id"`
 }
 
+type MessageTaskRefView struct {
+	TaskID string `json:"task_id"`
+	Title  string `json:"title"`
+}
+
 func migrateMessageTaskRefs(tx *sql.Tx) error {
 	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS message_task_refs (
  message_seq INTEGER PRIMARY KEY REFERENCES messages(seq) ON DELETE CASCADE,
@@ -86,7 +91,7 @@ func enrichMessageTaskRefs(tx *sql.Tx, conversation string, messages []Message) 
 	for _, m := range messages {
 		ids = append(ids, m.ID)
 	}
-	rows, err := tx.Query(`SELECT m.seq,t.id FROM message_task_refs ref
+	rows, err := tx.Query(`SELECT m.seq,t.id,t.title FROM message_task_refs ref
 JOIN messages m ON m.seq=ref.message_seq AND m.role='user'
 JOIN tasks t ON t.id=ref.task_id JOIN conversations c ON c.id=m.conversation_id
 WHERE c.id=? AND (ref.actor='user:session' OR EXISTS(SELECT 1 FROM account_business_owner owner WHERE owner.principal_id=ref.actor)) AND m.seq IN (SELECT value FROM json_each(?))
@@ -95,18 +100,18 @@ AND `+visibleMessageTask, conversation, toJSON(ids))
 		return err
 	}
 	defer rows.Close()
-	refs := map[int64]string{}
+	refs := make(map[int64]*MessageTaskRefView)
 	for rows.Next() {
 		var seq int64
-		var task string
-		if err := rows.Scan(&seq, &task); err != nil {
+		var ref MessageTaskRefView
+		if err := rows.Scan(&seq, &ref.TaskID, &ref.Title); err != nil {
 			return err
 		}
-		refs[seq] = task
+		refs[seq] = &ref
 	}
 	for i := range messages {
-		if task := refs[messages[i].ID]; task != "" {
-			messages[i].TaskRef = &MessageTaskRef{TaskID: task}
+		if ref := refs[messages[i].ID]; ref != nil {
+			messages[i].TaskRef = ref
 		}
 	}
 	return rows.Err()

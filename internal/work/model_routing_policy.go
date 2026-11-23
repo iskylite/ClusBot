@@ -101,6 +101,18 @@ func (s *Store) ModelRoutingPolicies(ctx context.Context) ([]ModelRoutingPolicy,
 	return out, rows.Err()
 }
 
+func sameModelRoutingCandidates(a, b []ModelRoutingCandidate) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ProfileID != b[i].ProfileID || a[i].ProfileRevision != b[i].ProfileRevision || a[i].CredentialBinding != b[i].CredentialBinding {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) SaveModelRoutingPolicy(ctx context.Context, p ModelRoutingPolicy) (ModelRoutingPolicy, error) {
 	if !ValidModelRoutingScope(p.Business, p.Role) || p.Revision < 0 || len(p.Candidates) > MaxModelRoutingCandidates {
 		return ModelRoutingPolicy{}, ErrState
@@ -144,6 +156,9 @@ func (s *Store) SaveModelRoutingPolicy(ctx context.Context, p ModelRoutingPolicy
 	}
 	if len(p.Candidates) == 0 {
 		p.AllowCrossProvider = false
+	}
+	if old.AllowCrossProvider == p.AllowCrossProvider && sameModelRoutingCandidates(old.Candidates, p.Candidates) {
+		return old, nil
 	}
 	raw, err := json.Marshal(p.Candidates)
 	if err != nil {

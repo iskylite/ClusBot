@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -197,6 +198,17 @@ func (s Server) accountSessionDigest(r *http.Request) string {
 	return secretDigest(c.Value)
 }
 
+// Server deployments use HTTPS. The packaged desktop listener is restricted
+// to an explicit 127.0.0.1 port and uses HTTP without a reverse proxy.
+func (s Server) secureAccountCookie() bool {
+	u, err := url.Parse(s.Origin)
+	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" ||
+		u.String() != "http://"+u.Host {
+		return true
+	}
+	return false
+}
+
 type accountContextKey struct{}
 
 // accountFromContext 只读取由授权中间件验证后写入的账号。
@@ -271,7 +283,7 @@ func (s Server) accountLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.authLimiter.success(r, action)
-	http.SetCookie(w, &http.Cookie{Name: accountCookie, Value: secret, Path: "/", HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: accountCookie, Value: secret, Path: "/", HttpOnly: true, Secure: s.secureAccountCookie(), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionLifetime.Seconds())})
 	jsonResponse(w, 200, map[string]bool{"authenticated": true})
 }
 func (s Server) endSession(w http.ResponseWriter, r *http.Request) {
@@ -282,7 +294,7 @@ func (s Server) endSession(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+		http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureAccountCookie(), SameSite: http.SameSiteStrictMode})
 	} else {
 		http.SetCookie(w, &http.Cookie{Name: "clusbot_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	}
@@ -379,7 +391,7 @@ func (s Server) changePassword(w http.ResponseWriter, r *http.Request) {
 		accountError(w, err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: true, SameSite: http.SameSiteStrictMode})
+	http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureAccountCookie(), SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s Server) updateMyProfile(w http.ResponseWriter, r *http.Request) {

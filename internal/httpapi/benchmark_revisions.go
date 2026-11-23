@@ -116,6 +116,15 @@ func (s Server) reopenBenchmarkRevisionChat(w http.ResponseWriter, r *http.Reque
 		benchmarkError(w, work.ErrBenchmarkInput)
 		return
 	}
+	if r.URL.Query().Get("metadata") == "1" {
+		out, err := s.Store.ReadBenchmarkRevisionChatMetadata(r.Context(), s.principal(r), conversation, run)
+		if err != nil {
+			benchmarkError(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, out)
+		return
+	}
 	out, err := s.Store.ReopenBenchmarkRevisionChat(r.Context(), s.principal(r), conversation, run, s.BenchmarkProvider)
 	if errors.Is(err, work.ErrBenchmarkRevisionPreviewStale) {
 		fail(w, http.StatusConflict, "benchmark_revision_preview_stale", err.Error())

@@ -70,8 +70,15 @@ func TestResetLegacyPendingAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, err := store.AccountForSession(ctx, "pending-session")
-	if err != nil || a.Status != "active" || !a.MustChangePassword {
+	if err != nil || a.Status != "active" || !a.MustChangePassword || a.LastLoginAt == 0 {
 		t.Fatalf("legacy pending account after reset: %+v, %v", a, err)
+	}
+	if err := store.DeleteAccountSession(ctx, "pending-session"); err != nil {
+		t.Fatal(err)
+	}
+	members, err := store.ListAccounts(ctx, "admin-session")
+	if err != nil || len(members) != 2 || members[1].PrincipalID != a.PrincipalID || members[1].LastLoginAt != a.LastLoginAt {
+		t.Fatalf("last login missing after logout: %+v, %v", members, err)
 	}
 }
 
@@ -89,7 +96,11 @@ func TestAccountPasswordStateMigrationPreservesLegacyData(t *testing.T) {
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO account_recovery_codes(principal_id,token_digest) VALUES(?,?)`, account.PrincipalID, "legacy-recovery"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.ExecContext(ctx, `DROP TABLE account_bootstrap; ALTER TABLE accounts DROP COLUMN must_change_password; PRAGMA user_version=126`); err != nil {
+	if err := store.CreateAccountSession(ctx, account.PrincipalID, "fixture-hash", "legacy-session", time.Now().Add(time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE account_bootstrap; DROP TRIGGER account_last_login_after_insert;
+		ALTER TABLE accounts DROP COLUMN last_login_at; ALTER TABLE accounts DROP COLUMN must_change_password; PRAGMA user_version=126`); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
@@ -110,6 +121,10 @@ func TestAccountPasswordStateMigrationPreservesLegacyData(t *testing.T) {
 	}
 	if hash != "fixture-hash" || force || recovery != "legacy-recovery" {
 		t.Fatalf("migration changed legacy data: hash=%q force=%v recovery=%q", hash, force, recovery)
+	}
+	migrated, err := store.AccountForSession(ctx, "legacy-session")
+	if err != nil || migrated.CreatedAt != account.CreatedAt || migrated.LastLoginAt < account.CreatedAt {
+		t.Fatalf("account dates missing after migration: %+v, %v", migrated, err)
 	}
 	required, err := store.BootstrapRequired(ctx)
 	if err != nil || required {

@@ -69,8 +69,9 @@ func (s Server) discoverModels(w http.ResponseWriter, r *http.Request) {
 func (s Server) writeModelSettings(w http.ResponseWriter, value model.SettingsView) {
 	jsonResponse(w, http.StatusOK, struct {
 		model.SettingsView
-		WorkspacePath string `json:"workspace_path"`
-	}{value, s.WorkspacePath})
+		WorkspacePath    string `json:"workspace_path"`
+		ModelConcurrency int    `json:"model_concurrency,omitempty"`
+	}{value, s.WorkspacePath, s.ModelConcurrency})
 }
 
 func (s Server) modelReady(w http.ResponseWriter, r *http.Request) bool {
