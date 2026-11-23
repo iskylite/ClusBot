@@ -58,7 +58,7 @@
 body {color:var(--ink);background:var(--workspace-bg)}
 .brand img {display:block;object-fit:contain;flex:none}
 .workspace.v31-workspace {
-  --rail:220px;
+  --rail:192px;
   display:grid;
   grid-template-columns:var(--rail) minmax(0,1fr) auto;
   grid-template-rows:48px minmax(0,1fr);
@@ -73,7 +73,7 @@ body {color:var(--ink);background:var(--workspace-bg)}
   background:var(--workspace-bg);
   font-size:13px;
 }
-.workspace.v31-workspace.rail-collapsed {--rail:90px}
+.workspace.v31-workspace.rail-collapsed {--rail:96px}
 .v31-workspace > .v31-sidebar {
   grid-column:1;
   grid-row:1 / -1;
@@ -127,7 +127,7 @@ body {color:var(--ink);background:var(--workspace-bg)}
   border:1px solid var(--line);border-radius:9px;padding:7px 8px;text-align:left;
 }
 .sidebar-avatar {
-  display:grid;place-items:center;min-width:28px;height:28px;padding:0 4px;border-radius:50%;
+  display:inline-flex;align-items:center;justify-content:center;width:28px;min-width:28px;height:28px;padding:0;flex:none;border-radius:50%;line-height:1;
   background:var(--selected);border:1px solid color-mix(in srgb,var(--accent) 23%,var(--line));color:var(--accent);font-size:12px;font-weight:700
 }
 .sidebar-account-copy {flex:1;min-width:0}
@@ -137,15 +137,16 @@ body {color:var(--ink);background:var(--workspace-bg)}
 .sidebar-account > svg {color:var(--muted)}
 .sidebar-account:is(:hover,:focus-visible,[aria-current="page"]) {background:var(--selected)}
 @media (min-width:821px) {
-  .rail-collapsed .v31-sidebar {padding:56px 8px 12px}
+  .rail-collapsed .v31-sidebar {padding:56px 10px 14px;gap:12px}
   .rail-collapsed .sidebar-masthead {justify-content:center;padding:0}
-  .rail-collapsed .sidebar-masthead .brand img {width:32px;height:32px}
-  .rail-collapsed .v31-sidebar nav {gap:6px;justify-items:center}
-  .rail-collapsed .v31-sidebar .nav-item {justify-content:center;width:38px;min-height:36px;padding:0;gap:4px}
+  .rail-collapsed .sidebar-masthead .brand img {width:36px;height:36px}
+  .rail-collapsed .v31-sidebar nav {gap:8px;justify-items:center}
+  .rail-collapsed .v31-sidebar .nav-item {justify-content:center;width:48px;min-height:42px;padding:0;gap:4px;border-radius:10px}
+  .rail-collapsed .v31-sidebar .nav-item > svg {width:20px;height:20px}
   .rail-collapsed :is(.sidebar-brand small,.sidebar-masthead .brand span,.v31-sidebar .nav-item > span,.sidebar-count,.sidebar-items,.sidebar-account-copy,.sidebar-account > svg) {display:none}
-  .rail-collapsed .sidebar-account {justify-content:center;padding:0;background:transparent;border:0;min-height:30px}
-  .rail-collapsed .sidebar-avatar {min-width:30px;height:30px}
-  .rail-collapsed .v31-sidebar .sidebar-footer {margin-inline:0}
+  .rail-collapsed .sidebar-account {justify-content:center;width:48px;min-height:44px;margin-inline:auto;padding:0;background:transparent;border:0;border-radius:10px}
+  .rail-collapsed .sidebar-avatar {width:36px;min-width:36px;height:36px;font-size:14px}
+  .rail-collapsed .v31-sidebar .sidebar-footer {margin-inline:0;gap:8px}
   .rail-collapsed > .unified-toolbar {padding-left:16px}
   .rail-collapsed .toolbar-view {display:none}
 }
@@ -438,7 +439,7 @@ body {color:var(--ink);background:var(--workspace-bg)}
 .v31-workspace[data-section="chat"] .message-assistant > span img {padding:0;border:0}
 .v31-workspace[data-section="chat"] .message time {font:400 11px/1 var(--font-mono);color:var(--muted)}
 .v31-workspace[data-section="chat"] .message .message-user-avatar {font-size:11px}
-.v31-workspace[data-section="chat"] .message-user-avatar {font-style:normal;border:1px solid var(--line);border-radius:50%;background:var(--selected);color:var(--accent);min-width:22px;height:22px;display:grid;place-items:center}
+.v31-workspace[data-section="chat"] .message-user-avatar {font-style:normal;border:1px solid var(--line);border-radius:50%;background:var(--selected);color:var(--accent);width:22px;min-width:22px;height:22px;padding:0;flex:none;line-height:1;display:inline-flex;align-items:center;justify-content:center}
 .v31-workspace[data-section="chat"] .message-assistant > span strong {font-size:12px;color:var(--ink)}
 @media (min-width:821px) {
   body:has(.material-preview-floating) .workspace.v31-workspace:not(.rail-collapsed)[data-section="chat"] > main {padding-inline:24px}
@@ -600,3 +601,33 @@ body {color:var(--ink);background:var(--workspace-bg)}
 }
 .v31-sidebar .sidebar-items {min-height:0;overflow-y:auto}
 .v31-sidebar .sidebar-footer {flex:none}
+.desktop-app :is(.v31-sidebar, .unified-toolbar) {
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.desktop-app :is(
+  .v31-sidebar button,
+  .v31-sidebar a,
+  .v31-sidebar input,
+  .v31-sidebar select,
+  .v31-sidebar textarea,
+  .v31-sidebar [role="button"],
+  .v31-sidebar .sidebar-items,
+  .unified-toolbar button,
+  .unified-toolbar a,
+  .unified-toolbar input,
+  .unified-toolbar select,
+  .unified-toolbar textarea,
+  .unified-toolbar form,
+  .unified-toolbar details,
+  .unified-toolbar summary,
+  .unified-toolbar [role="button"],
+  .unified-toolbar [role="group"],
+  .unified-toolbar .toolbar-chat-actions,
+  .unified-toolbar .workspace-notices
+) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

@@ -1,5 +1,5 @@
 import { Activity, ChevronRight, Layers, MessageSquare, PanelLeft, Settings2, type LucideIcon } from 'lucide-react'
-import type { Account } from './AccountUI'
+import { avatarText, type Account } from './AccountUI'
 import type { Task } from './api'
 import clusbotIcon from './clusbot-brand.svg'
 
@@ -64,9 +64,9 @@ export function WorkspaceSidebar({
         </button>
       </nav>
       {user&&<button type="button" className="sidebar-account" aria-label={t('账号与安全','Account and security')} aria-current={section==='account'?'page':undefined} title={collapsed?t('账号与安全','Account and security'):undefined} onClick={()=>onNavigate('/account')}>
-        <span className="sidebar-avatar">{user.avatar||Array.from(user.display_name||user.username)[0]}</span>
+        <span className="sidebar-avatar">{avatarText(user)}</span>
         <span className="sidebar-account-copy"><strong>{user.display_name&&user.display_name!==user.username?user.display_name+' · '+user.username:user.username}</strong>
-          <small>{t('账号与安全','Account and security')} · {superadmin?t('超级管理员','Administrator'):t('普通用户','Member')}</small></span><ChevronRight size={14}/>
+          <small>{superadmin?t('超级管理员','Administrator'):t('普通用户','Member')}</small></span><ChevronRight size={14}/>
       </button>}
     </div>
   </aside>

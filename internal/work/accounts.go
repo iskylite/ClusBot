@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -352,6 +353,15 @@ func (s *Store) CreateAccountWithPasswordPolicy(ctx context.Context, tokenDigest
 	return Account{PrincipalID: principal, Username: username, DisplayName: displayName, Status: "active", IsSuperadmin: superadmin, MustChangePassword: mustChangePassword, CreatedAt: created}, nil
 }
 
+func normalizeAvatarBadge(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	runes := []rune(trimmed)
+	return string(runes[:1])
+}
+
 // UpdateMyProfile 允许当前已登录用户修改本人显示姓名与头像标识（不涉及角色或权限变更）。
 func (s *Store) UpdateMyProfile(ctx context.Context, tokenDigest string, displayName, avatar *string) (Account, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -367,7 +377,7 @@ func (s *Store) UpdateMyProfile(ctx context.Context, tokenDigest string, display
 		a.DisplayName = *displayName
 	}
 	if avatar != nil {
-		a.Avatar = *avatar
+		a.Avatar = normalizeAvatarBadge(*avatar)
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE accounts SET display_name=?,avatar=? WHERE principal_id=?`, a.DisplayName, a.Avatar, a.PrincipalID); err != nil {
 		return Account{}, err
@@ -397,7 +407,7 @@ func (s *Store) UpdateAccount(ctx context.Context, tokenDigest, principal string
 		a.DisplayName = *patch.DisplayName
 	}
 	if patch.Avatar != nil {
-		a.Avatar = *patch.Avatar
+		a.Avatar = normalizeAvatarBadge(*patch.Avatar)
 	}
 	if patch.Status != nil {
 		a.Status = *patch.Status

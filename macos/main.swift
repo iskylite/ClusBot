@@ -6,13 +6,22 @@ private struct ServiceSession: Decodable {
     let mode: String
 }
 
+private final class DesktopWebView: WKWebView {
+    var lastMouseDownEvent: NSEvent?
+
+    override func mouseDown(with event: NSEvent) {
+        lastMouseDownEvent = event
+        super.mouseDown(with: event)
+    }
+}
+
 @MainActor
 final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandler, WKScriptMessageHandlerWithReply, UNUserNotificationCenterDelegate {
     private let service = Process()
     private let output = Pipe()
     private var window: NSWindow!
     private let windowControlsToolbar = NSToolbar(identifier: "WindowControls")
-    private var webView: WKWebView!
+    private var webView: DesktopWebView!
     private var origin: URL?
     private var manualZoom: CGFloat?
     private var closing = false
@@ -66,10 +75,11 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         let config = WKWebViewConfiguration()
         installDraftSnapshot(in: config.userContentController)
         config.userContentController.add(self, name: "drafts")
+        config.userContentController.add(self, name: "clusbotWindow")
         config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "clusbotNotifications")
         UNUserNotificationCenter.current().delegate = self
         config.websiteDataStore = .nonPersistent()
-        webView = WKWebView(frame: .zero, configuration: config)
+        webView = DesktopWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
 
@@ -357,11 +367,77 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
             source: "window.clusbotDrafts = Object.assign(Object.create(null), \(json));",
             injectionTime: .atDocumentStart, forMainFrameOnly: true
         ))
+        installWindowDragScript(in: controller)
+    }
+
+    private func installWindowDragScript(in controller: WKUserContentController) {
+        let source = """
+        (() => {
+          if (window.__clusbotWindowDragInstalled) return;
+          window.__clusbotWindowDragInstalled = true;
+          const interactiveSelector = 'button, a, input, textarea, select, option, label, summary, details, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"], [role="checkbox"], [role="group"], [contenteditable="true"], .sidebar-items, .toolbar-search, .toolbar-chat-actions, .workspace-notices, [data-no-drag]';
+          const regionSelector = '.v31-sidebar, .sidebar, .unified-toolbar, [data-window-drag]';
+          const elementFromTarget = (target) => target instanceof Element ? target : target?.parentElement ?? null;
+          const appRegionFor = (el) => {
+            for (let cur = el; cur; cur = cur.parentElement) {
+              const region = getComputedStyle(cur).getPropertyValue('-webkit-app-region').trim()
+                || getComputedStyle(cur).getPropertyValue('app-region').trim();
+              if (region === 'no-drag' || region === 'drag') return region;
+            }
+            return '';
+          };
+          const canDragEvent = (event, allowLoginTopStrip) => {
+            if (event.button !== 0) return false;
+            const el = elementFromTarget(event.target);
+            if (!el) return false;
+            if (el.closest(interactiveSelector)) return false;
+            const region = appRegionFor(el);
+            if (region === 'no-drag') return false;
+            if (region === 'drag') return true;
+            if (el.closest(regionSelector)) return true;
+            if (allowLoginTopStrip && !document.querySelector('.workspace') && event.clientY <= 56 && !el.closest('.login-card, .acct-login-card')) {
+              return true;
+            }
+            return false;
+          };
+          window.addEventListener('mousedown', (event) => {
+            if (event.detail !== 1) return;
+            if (!canDragEvent(event, true)) return;
+            window.webkit?.messageHandlers?.clusbotWindow?.postMessage({ action: 'drag' });
+          }, true);
+          window.addEventListener('dblclick', (event) => {
+            if (!canDragEvent(event, true)) return;
+            const el = elementFromTarget(event.target);
+            if (el?.closest('.unified-toolbar') || event.clientY <= 56) {
+              window.webkit?.messageHandlers?.clusbotWindow?.postMessage({ action: 'zoom' });
+            }
+          }, true);
+        })();
+        """
+        controller.addUserScript(WKUserScript(
+            source: source,
+            injectionTime: .atDocumentStart, forMainFrameOnly: true
+        ))
     }
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, sameOrigin(message.frameInfo.request.url),
-              let body = message.body as? [String: Any], let key = body["key"] as? String,
+        guard message.frameInfo.isMainFrame, sameOrigin(message.frameInfo.request.url) else { return }
+        if message.name == "clusbotWindow" {
+            guard let body = message.body as? [String: Any],
+                  let action = body["action"] as? String else { return }
+            switch action {
+            case "drag":
+                if let event = webView.lastMouseDownEvent ?? NSApp.currentEvent, event.type == .leftMouseDown {
+                    window.performDrag(with: event)
+                }
+            case "zoom":
+                window.performZoom(nil)
+            default:
+                break
+            }
+            return
+        }
+        guard let body = message.body as? [String: Any], let key = body["key"] as? String,
               key.hasPrefix("clusbot.composer.v1.") || key.hasPrefix("clusbot.memory-draft.v1."),
               let draftFile else { return }
         if let value = body["value"] as? String {

@@ -50,7 +50,9 @@ const passwordValid = (value: string) => {
   return bytes >= 12 && bytes <= 1024
 }
 const usernamePattern = '[A-Za-z0-9][A-Za-z0-9._-]{2,63}'
-const avatarText = (account: Account) => Array.from(account.avatar.trim() || account.display_name.trim() || account.username)[0] || '?'
+const singleCharAvatar = (value: string) => Array.from(value.trim())[0] || ''
+export const avatarText = (account?: { avatar?: string; display_name?: string; username?: string }) =>
+  singleCharAvatar(account?.avatar || '') || singleCharAvatar(account?.display_name || '') || singleCharAvatar(account?.username || '') || '?'
 const accountStatus = (account: Account) => account.status === 'disabled' ? '已停用' :
   account.status === 'pending' ? '待激活' : account.must_change_password ? '临时密码待改密' : '正常'
 const temporaryPassword = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
@@ -216,14 +218,14 @@ function Modal({ title, icon, children, onClose, className = '', busy = false }:
 
 function ProfileDialog({ account, onClose, onSaved }: { account: Account; onClose: () => void; onSaved: (account: Account) => void }) {
   const [displayName, setDisplayName] = useState(account.display_name)
-  const [avatar, setAvatar] = useState(account.avatar)
+  const [avatar, setAvatar] = useState(() => singleCharAvatar(account.avatar))
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>, close: () => void) {
     event.preventDefault(); if (busy) return
     setBusy(true); setError('')
     try {
-      const updated = await accountRequest<Account>('/me/profile', { display_name: displayName.trim(), avatar }, 'PATCH')
+      const updated = await accountRequest<Account>('/me/profile', { display_name: displayName.trim(), avatar: singleCharAvatar(avatar) }, 'PATCH')
       onSaved(updated); close()
     } catch (error) { setError(errorMessage(error)) }
     finally { setBusy(false) }
@@ -231,7 +233,7 @@ function ProfileDialog({ account, onClose, onSaved }: { account: Account; onClos
   return <Modal title="编辑头像与姓名" icon={<Pencil size={16}/>} onClose={onClose} busy={busy}>
     {close => <form className="acct-modal-form" onSubmit={event => void submit(event, close)} method="post" action="/api/v1/me/profile">
       <label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={busy} data-acct-autofocus/></label>
-      <label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(event.target.value)} maxLength={1024} disabled={busy}/></label>
+      <label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(singleCharAvatar(event.target.value))} maxLength={16} placeholder="单字标识" disabled={busy}/></label>
       <Feedback error={error}/>
       <div className="acct-modal-actions"><button type="button" className="acct-button" onClick={close} disabled={busy}>取消</button><button className="acct-primary" type="submit" disabled={busy}>{busy ? '正在保存…' : '保存资料'}</button></div>
     </form>}
@@ -303,7 +305,7 @@ function ConfirmDialog({ action, account, onClose, onConfirm, busy, error }: { a
 
 function MemberDrawer({ member, action, onClose, onUpdated }: { member: Account; action: MemberAction; onClose: () => void; onUpdated: (account: Account) => void }) {
   const [displayName, setDisplayName] = useState(member.display_name)
-  const [avatar, setAvatar] = useState(member.avatar)
+  const [avatar, setAvatar] = useState(() => singleCharAvatar(member.avatar))
   const [temporaryPassword, setTemporaryPassword] = useState('')
   const [confirmation, setConfirmation] = useState<Confirmation>()
   const [error, setError] = useState('')
@@ -314,7 +316,7 @@ function MemberDrawer({ member, action, onClose, onUpdated }: { member: Account;
   const passwordRef = useRef<HTMLInputElement>(null)
   const statusButtonRef = useRef<HTMLButtonElement>(null)
   const drawerBusy = busy && !confirmation
-  useEffect(() => { setDisplayName(member.display_name); setAvatar(member.avatar); setTemporaryPassword(''); setError(''); setNotice('') }, [member.principal_id])
+  useEffect(() => { setDisplayName(member.display_name); setAvatar(singleCharAvatar(member.avatar)); setTemporaryPassword(''); setError(''); setNotice('') }, [member.principal_id])
   useEffect(() => {
     if (action === 'reset') passwordRef.current?.focus()
     else if (action === 'disable' || action === 'enable') { statusButtonRef.current?.focus(); setConfirmation(action) }
@@ -324,7 +326,7 @@ function MemberDrawer({ member, action, onClose, onUpdated }: { member: Account;
     event.preventDefault(); if (busy) return
     setBusy(true); setError(''); setNotice('')
     try {
-      const updated = await accountRequest<Account>('/admin/users/' + encodeURIComponent(member.principal_id), { display_name: displayName.trim(), avatar }, 'PATCH')
+      const updated = await accountRequest<Account>('/admin/users/' + encodeURIComponent(member.principal_id), { display_name: displayName.trim(), avatar: singleCharAvatar(avatar) }, 'PATCH')
       onUpdated(updated); setNotice('资料已保存。')
     } catch (error) { setError(errorMessage(error)) }
     finally { setBusy(false) }
@@ -354,7 +356,7 @@ function MemberDrawer({ member, action, onClose, onUpdated }: { member: Account;
     <div className="acct-drawer-sections">
       <form className="acct-drawer-section" onSubmit={saveProfile} method="post" action={'/api/v1/admin/users/' + encodeURIComponent(member.principal_id)}>
         <h3>基本资料与账号角色</h3>
-        <div className="acct-field-row"><label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={drawerBusy}/></label><label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(event.target.value)} maxLength={1024} disabled={drawerBusy}/></label></div>
+        <div className="acct-field-row"><label className="acct-field"><span>显示姓名</span><input name="display_name" value={displayName} onChange={event => setDisplayName(event.target.value)} required maxLength={120} disabled={drawerBusy}/></label><label className="acct-field"><span>头像标识</span><input name="avatar" value={avatar} onChange={event => setAvatar(singleCharAvatar(event.target.value))} maxLength={16} placeholder="单字标识" disabled={drawerBusy}/></label></div>
         <label className="acct-field"><span>账号角色</span><span className="acct-readonly-role"><Lock size={13}/><input value="普通用户" readOnly aria-readonly="true"/><span className="acct-badge">全站唯一超管 · 不可变更</span></span></label>
         <div className="acct-actions"><button type="submit" className="acct-primary" disabled={drawerBusy}><Check size={14}/>保存资料</button></div>
       </form>

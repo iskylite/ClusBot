@@ -90,7 +90,7 @@
 .material-preview-floating {
   position:fixed;
   top:clamp(55px,17.2vh,142px);
-  left:calc(50% + 110px);
+  left:calc(50% + 96px);
   right:auto;
   bottom:auto;
   z-index:12;
@@ -99,7 +99,7 @@
   padding:11px 13px;
   border-radius:12px;
 }
-body:has(.rail-collapsed) .material-preview-floating {left:calc(50% + 45px)}
+body:has(.rail-collapsed) .material-preview-floating {left:calc(50% + 48px)}
 .material-preview header {align-items:center;margin-bottom:7px}
 .material-preview-title,.material-preview-actions {display:flex;align-items:center;gap:7px;min-width:0}
 .material-preview-title {flex-wrap:wrap}

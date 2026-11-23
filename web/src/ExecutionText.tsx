@@ -221,5 +221,6 @@ function ReactLabel({assistantName}:{assistantName?:string}) {
 
 function UserLabel({account}:{account?:UserIdentity}) {
   const name=account?.display_name||account?.username||'你'
-  return <>{name}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(name)[0]}</i>}</>
+  const badge=Array.from((account?.avatar||'').trim()||name.trim()||'?')[0]
+  return <>{name}{account&&<i className="message-user-avatar" aria-hidden="true">{badge}</i>}</>
 }

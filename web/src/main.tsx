@@ -33,7 +33,7 @@ import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import {AssistantCard} from './AssistantCards'
 import {assistantReplyCards,isAssistantItem,type AssistantItem} from './assistantSurface'
 import {ReplyStrategy,useComposerOptions,useComposerSuggestions,type ReplyModel} from './ComposerUI'
-import {AccountPage, ForcedPasswordChange, ServerLogin, type Account, type Session} from './AccountUI'
+import {AccountPage, avatarText, ForcedPasswordChange, ServerLogin, type Account, type Session} from './AccountUI'
 import {applyPreferences, displayDate, GeneralPreferencesPage, uiLanguage, useTaskNotifications, type Preferences} from './GeneralPreferences'
 import {PreferencesController} from './preferencesController'
 import {SettingsDiagnostics} from './SettingsDiagnostics'
@@ -1721,7 +1721,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
     const showConfig=Boolean(conversation&&configEntry===entry.id)
     return {id:entry.id,afterMessageID:entry.afterMessageID,content:<div className="assistant-exchange">
       <div className="message message-user"><span><time dateTime={new Date(entry.createdAt).toISOString()}>{displayDate(entry.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}
-        {account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message">{entry.text}</div></div>
+        {account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message">{entry.text}</div></div>
       {(entry.cards.some(card=>!isConversationConfiguration(card))||showConfig)&&<div className="message message-assistant"><span><img src={clusbotIcon} alt=""/><strong>ClusBot</strong><time dateTime={new Date(entry.createdAt).toISOString()}>{displayDate(entry.createdAt,{hour:'2-digit',minute:'2-digit'})}</time></span>
         <div className="assistant-reply-cards" data-multiple={entry.cards.length>1||undefined}>{entry.cards.map((card,index)=>{
           if(isConversationConfiguration(card))return showConfig&&conversation&&index===configIndex?
@@ -1892,7 +1892,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
         <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
           <div className="chat-log-content" ref={chatContentRef}>
             {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
-            {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message"><MessageContent
+            {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message"><MessageContent
               reference={item.taskRef?<MessageReference label={'@'+item.taskRef.title+' 只读引用'}/>:undefined}
               body={item.text||undefined}
               attachments={Boolean(item.materials.length)&&<MessageAttachments items={item.materials} previewItems={draftMaterials}/>}/></div><div className={'message-user-status'+(item.status==='failed'?' is-error':'')} role="status">
@@ -1900,7 +1900,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
               {item.status==='routing'&&<><LoaderCircle size={12} className="spin" aria-hidden="true"/><span>正在理解意图…</span></>}
               {item.status==='failed'&&<><CircleAlert size={12} aria-hidden="true"/><span>{item.error}</span>{item.retry&&<button type="button" className="text-button" onClick={item.retry}>{item.unconfirmed?'重新判断并发送':'重试'}</button>}{item.restore&&<button type="button" className="text-button" onClick={item.restore}>放回输入框</button>}<button type="button" className="text-button" onClick={()=>setOptimisticMessages(prev=>prev.filter(x=>x.key!==item.key))}>移除</button></>}
             </div></div></div>)}
-            {pendingAdmissions.map(item=><div className="messages" key={'pending:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{account.avatar||Array.from(account.display_name||account.username)[0]}</i>}</span><div className="user-message">{item.text}</div></div></div>)}
+            {pendingAdmissions.map(item=><div className="messages" key={'pending:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message">{item.text}</div></div></div>)}
             {assistantModelNotice}
             {composerNotice && (
               <AssistantNoticeMessage
