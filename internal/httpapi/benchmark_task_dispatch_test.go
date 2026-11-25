@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -14,25 +13,27 @@ import (
 )
 
 func TestBenchmarkTaskDispatchHTTPNoModel(t *testing.T) {
-	store, err := work.Open(filepath.Join(t.TempDir(), "task-pause.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "task-pause.sqlite")
+	store, err := work.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	provider := benchmarkReadProvider{}
-	server := Server{Store: store, Token: "a1-token", Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}, BenchmarkProvider: provider}
-	a := &a1Server{store: store, ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}}))}
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}, BenchmarkProvider: provider}
+	a := &a1Server{store: store, ts: httptest.NewServer(businessFixtureHandler(t, server))}
 	defer a.close()
 	a.cookie = a.login()
 	ctx := t.Context()
 	grant := work.DomainBenchmarkGrant{Revision: 1, Connection: "bench", Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
 	binding := work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"}
-	if err := store.PublishBenchmarkProfile(ctx, "user:session", work.BenchmarkProfile{Key: "pause-api", Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Binding: binding, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}}); err != nil {
+
+	if err := store.PublishBenchmarkProfile(ctx, businessFixturePrincipal(t, store), work.BenchmarkProfile{Key: "pause-api", Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Binding: binding, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	task, err := store.SubmitBenchmarkRun(ctx, "user:session", work.BenchmarkRunRequest{RequestKey: "pause-http-fixture", Profile: "pause-api", Version: 1}, provider)
+	task, err := store.SubmitBenchmarkRun(ctx, businessFixturePrincipal(t, store), work.BenchmarkRunRequest{RequestKey: "pause-http-fixture", Profile: "pause-api", Version: 1}, provider)
 	if err != nil {
 		t.Fatal(err)
 	}

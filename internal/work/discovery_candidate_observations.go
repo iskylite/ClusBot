@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -30,12 +31,14 @@ const visibleCandidateObservationSQL = `
 FROM discovery_observations d
 JOIN discovery_plans p ON p.plan_id=d.plan_id
 JOIN discovery_occurrences o ON o.plan_id=d.plan_id AND o.scheduled_at=d.scheduled_at
+LEFT JOIN discovery_observation_evidence ev ON ev.plan_id=d.plan_id AND ev.scheduled_at=d.scheduled_at AND ev.ordinal=d.ordinal
 WHERE d.candidate_id=? AND p.actor=? AND o.status='done'
 AND EXISTS (
  SELECT 1 FROM authorizations a WHERE a.subject=p.actor AND a.action='discover' AND a.object_ref=p.source
  AND a.scope_label=p.scope AND a.revoked_at=0 AND a.valid_from<=? AND a.expires_at>?
  AND CASE WHEN json_valid(a.param_constraints) THEN json_extract(a.param_constraints,'$.source')=p.source
- AND json_extract(a.param_constraints,'$.scope')=p.scope ELSE 0 END
+ AND json_extract(a.param_constraints,'$.scope')=p.scope
+ AND coalesce(json_extract(a.param_constraints,'$.binding_fingerprint'),'')=coalesce(ev.fingerprint,'') ELSE 0 END
 )`
 
 func (s *Store) ListDiscoveryCandidateObservations(ctx context.Context, actor, candidate, before string, limit int) (DiscoveryCandidateObservationPage, error) {
@@ -77,7 +80,7 @@ func (s *Store) ListDiscoveryCandidateObservations(ctx context.Context, actor, c
 p.plan_id,p.source,p.scope,d.ordinal,
 EXISTS(SELECT 1 FROM discovery_observations sibling
  WHERE sibling.plan_id=d.plan_id AND sibling.scheduled_at=d.scheduled_at
- AND sibling.candidate_id=d.candidate_id AND sibling.address<>d.address)
+ AND sibling.candidate_id=d.candidate_id AND sibling.address<>d.address),coalesce(ev.evidence,'')
 ` + visibleCandidateObservationSQL
 	if before != "" {
 		q += " AND (d.seen_at,d.scheduled_at,d.plan_id,d.ordinal) < (?,?,?,?)"
@@ -97,9 +100,13 @@ EXISTS(SELECT 1 FROM discovery_observations sibling
 			break
 		}
 		var item DiscoveryCandidateObservation
+		var rawEvidence string
 		if err := rows.Scan(&item.CandidateID, &item.Address, &item.SeenAt, &item.ScheduledAt, &item.PlanRevision, &item.ScanTaskID,
-			&item.PlanID, &item.Source, &item.Scope, &ordinal, &item.AddressConflictInScan); err != nil {
+			&item.PlanID, &item.Source, &item.Scope, &ordinal, &item.AddressConflictInScan, &rawEvidence); err != nil {
 			return DiscoveryCandidateObservationPage{}, err
+		}
+		if rawEvidence != "" && json.Unmarshal([]byte(rawEvidence), &item.Evidence) != nil {
+			return DiscoveryCandidateObservationPage{}, ErrDiscoveryInput
 		}
 		last = fmt.Sprintf("%d:%d:%s:%d", item.SeenAt, item.ScheduledAt, item.PlanID, ordinal)
 		page.Items = append(page.Items, item)

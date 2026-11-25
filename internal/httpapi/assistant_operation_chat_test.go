@@ -57,7 +57,7 @@ func TestAssistantOperationAccountIsolation(t *testing.T) {
 	defer instance.Close()
 	stores := map[string]*work.Store{}
 	var srv Server
-	srv = Server{Store: instance, Settings: recommendationSettings(t, instance, provider.URL), ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+	srv = Server{Store: instance, Settings: recommendationSettings(t, instance, provider.URL), Origin: "https://ops.example", Hosts: []string{"ops.example"},
 		PersonalAPI: func(owner string) (http.Handler, error) {
 			if stores[owner] == nil {
 				return nil, fmt.Errorf("missing personal store")
@@ -85,7 +85,10 @@ func TestAssistantOperationAccountIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = store.Close() })
-		if err := store.ImportDomainAssets(t.Context(), []work.DomainAssetEntry{
+		if err := store.BindAccountBusinessStore(t.Context(), actor); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.ImportDomainAssetsForAccount(t.Context(), actor, []work.DomainAssetEntry{
 			{ObjectRef: "pod-7", Kind: "pod", Identity: "POD7", Read: true},
 			{ObjectRef: node, Kind: "node", Identity: node, PodRef: "pod-7", Read: true},
 		}); err != nil {
@@ -93,9 +96,6 @@ func TestAssistantOperationAccountIsolation(t *testing.T) {
 		}
 		db, err := sql.Open("sqlite", path)
 		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(`UPDATE authorizations SET subject=? WHERE subject='user:session'`, actor); err != nil {
 			t.Fatal(err)
 		}
 		if actor == admin {
@@ -174,7 +174,7 @@ func TestAssistantOperationEvidenceAndEgress(t *testing.T) {
 		{ObjectRef: "node-7-private", Kind: "node", Identity: "private-node", PodRef: "pod-7"},
 		{ObjectRef: "node-8", Kind: "node", Identity: "other-scope-node", PodRef: "pod-8", Read: true},
 	}
-	if err := store.ImportDomainAssets(t.Context(), entries); err != nil {
+	if err := store.ImportDomainAssetsForAccount(t.Context(), businessFixturePrincipal(t, store), entries); err != nil {
 		t.Fatal(err)
 	}
 	db, err := sql.Open("sqlite", path)
@@ -189,9 +189,11 @@ func TestAssistantOperationEvidenceAndEgress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	actor := businessFixturePrincipal(t, store)
+
 	settings := recommendationSettings(t, store, provider.URL)
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer a.close()
 	a.cookie = a.login()
 	call := func(text string) (int, map[string]any) {
@@ -213,7 +215,7 @@ func TestAssistantOperationEvidenceAndEgress(t *testing.T) {
 	grant := func(ref string) {
 		t.Helper()
 		if _, err := db.Exec(`INSERT INTO authorizations(auth_id,subject,action,object_ref,valid_from,owner,created_at,updated_at)
-			VALUES(?,'user:session','export_model',?,0,'owner',0,0)`, "export-"+ref, ref); err != nil {
+			VALUES(?,?,'export_model',?,0,'owner',0,0)`, "export-"+ref, actor, ref); err != nil {
 			t.Fatal(err)
 		}
 	}

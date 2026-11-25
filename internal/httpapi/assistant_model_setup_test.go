@@ -40,7 +40,7 @@ func TestAssistantModelSetupResolvesOnlyUniqueLiveNamesWithoutWrites(t *testing.
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/conversations", nil)
 		res := httptest.NewRecorder()
-		return server.assistantModelSetupChat(res, req, text), res
+		return server.assistantModelSetupChat(res, req.WithContext(context.WithValue(req.Context(), accountContextKey{}, work.Account{IsSuperadmin: true})), text), res
 	}
 	const pastedSecret = "sk-pastedsecret123456"
 	handled, response := call("把任务执行切到 Qwen3.5-235B，先预览影响；顺便把 Anthropic 凭据补上，API Key: " + pastedSecret)
@@ -105,8 +105,8 @@ func TestAssistantModelSetupResolvesOnlyUniqueLiveNamesWithoutWrites(t *testing.
 	}
 }
 
-func TestAssistantModelSetupRequiresLocalOrAdminPermission(t *testing.T) {
-	server := Server{ServerMode: true}
+func TestAssistantModelSetupRequiresAdminPermission(t *testing.T) {
+	server := Server{}
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/conversations", nil)
 	for _, account := range []work.Account{{}, {IsSuperadmin: true, MustChangePassword: true}} {
 		req := request.WithContext(context.WithValue(request.Context(), accountContextKey{}, account))

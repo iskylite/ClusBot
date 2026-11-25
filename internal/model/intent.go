@@ -11,7 +11,7 @@ import (
 	"clusbot/internal/work"
 )
 
-var errGeneralRouterBinding = errors.New("常规路由模型档案已不可用，请检查绑定、版本、凭据和默认地址")
+var errGeneralRouterBinding = work.ErrGeneralRouterRoleUnavailable
 
 const delegationInstructions = `判断 ClusBot 当前消息是否明确委托。只输出 TASK 或 CHAT。
 TASK：用户明确要求助手接手并完成具体工作、产出可审阅的成果、执行或核验明确事项。礼貌问句也可能是明确委托。可用历史理解“刚才的内容”等指代。
@@ -86,6 +86,9 @@ func (s *Settings) classify(ctx context.Context, text string, history []work.Mes
 		}
 		if errors.Is(err, errGeneralRouterBinding) {
 			return work.DelegationResult{RouterModel: provenance}, err
+		}
+		if err != nil && view.Source == "legacy_default" {
+			return work.DelegationResult{RouterModel: provenance}, errGeneralRouterBinding
 		}
 	} else {
 		provider, err = s.provider(ctx)

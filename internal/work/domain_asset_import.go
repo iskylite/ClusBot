@@ -30,17 +30,35 @@ type DomainBenchmarkGrant struct {
 	ExpiresAt  int64               `yaml:"expires_at_unix_ms" json:"-"`
 }
 
-// ImportDomainAssets installs an operator-managed inventory into a local data directory.
-func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEntry) error {
-	if len(entries) == 0 {
-		return errors.New("清单须包含资产")
+// ImportDomainAssetsForAccount installs operator-provided inventory into the
+// explicitly selected, already-bound account store, never the instance DB.
+func (s *Store) ImportDomainAssetsForAccount(ctx context.Context, principal string, entries []DomainAssetEntry) error {
+	key, ok := strings.CutPrefix(principal, "user:")
+	if !ok || len(key) != 32 || strings.Trim(key, "0123456789abcdef") != "" {
+		return ErrAuthorizationDenied
 	}
-	const principal = "user:session"
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	owned, err := ownsPersonalBusiness(tx, principal)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		return ErrAuthorizationDenied
+	}
+	if err := importDomainAssets(ctx, tx, principal, entries); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func importDomainAssets(ctx context.Context, tx *sql.Tx, principal string, entries []DomainAssetEntry) error {
+	if len(entries) == 0 {
+		return errors.New("清单须包含资产")
+	}
 	stamp := now()
 	seen := make(map[string]bool, len(entries))
 	for _, entry := range entries {
@@ -195,5 +213,5 @@ AND revoked_at=0 AND valid_from<=? AND (expires_at=0 OR expires_at>?))`, princip
 			}
 		}
 	}
-	return tx.Commit()
+	return nil
 }

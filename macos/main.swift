@@ -2,9 +2,11 @@ import AppKit
 import UserNotifications
 import WebKit
 
-private struct ServiceSession: Decodable {
-    let mode: String
+private struct AccountBootstrapStatus: Decodable {
+    let required: Bool
 }
+
+private let accountDraftPrefix = "clusbot.account-draft."
 
 private final class DesktopWebView: WKWebView {
     var lastMouseDownEvent: NSEvent?
@@ -103,7 +105,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         NSApp.activate(ignoringOtherApps: true)
 
         service.executableURL = Bundle.main.url(forAuxiliaryExecutable: "clusbot-service")
-        var serviceArguments = ["serve", "--mode", "desktop", "--listen", "127.0.0.1:0", "--data-dir", dataDir.path, "--print-url"]
+        var serviceArguments = ["serve", "--mode", "loopback", "--listen", "127.0.0.1:0", "--data-dir", dataDir.path, "--print-url"]
         let serviceConfig = dataDir.appendingPathComponent("config.yaml")
         if FileManager.default.fileExists(atPath: serviceConfig.path) {
             serviceArguments += ["--config", serviceConfig.path]
@@ -138,7 +140,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
                 if byte.first == 10 { break }
                 line.append(byte)
             }
-            await self?.connect(line, dataDir: dataDir)
+            await self?.connect(line)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
             guard let self, self.origin == nil else { return }
@@ -196,7 +198,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         webView.pageZoom = manualZoom ?? 1
     }
 
-    private func connect(_ line: Data, dataDir: URL) async {
+    private func connect(_ line: Data) async {
         guard !closing, !failureShown else { return }
         guard let value = String(data: line, encoding: .utf8),
               let url = URL(string: value), url.scheme == "http",
@@ -208,30 +210,12 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
         do {
             let session = URLSession(configuration: .ephemeral)
             defer { session.finishTasksAndInvalidate() }
-            let statusURL = url.appendingPathComponent("api/v1/session")
+            let statusURL = url.appendingPathComponent("api/v1/bootstrap")
             let (data, response) = try await session.data(for: URLRequest(url: statusURL, timeoutInterval: 10))
             guard let response = response as? HTTPURLResponse, response.statusCode == 200,
-                  let status = try? JSONDecoder().decode(ServiceSession.self, from: data),
-                  status.mode == "local" || status.mode == "server" else {
-                fail("无法读取本地服务的会话状态。")
+                  (try? JSONDecoder().decode(AccountBootstrapStatus.self, from: data)) != nil else {
+                fail("无法读取本地服务的账号状态。")
                 return
-            }
-            if status.mode == "local" {
-                let token = try String(contentsOf: dataDir.appendingPathComponent("access-token"), encoding: .utf8)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                var request = URLRequest(url: statusURL, timeoutInterval: 10)
-                request.httpMethod = "POST"
-                request.setValue(url.absoluteString, forHTTPHeaderField: "Origin")
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.httpBody = try JSONEncoder().encode(["token": token])
-                let (_, loginResponse) = try await session.data(for: request)
-                guard let loginResponse = loginResponse as? HTTPURLResponse, loginResponse.statusCode == 200,
-                      let cookie = session.configuration.httpCookieStorage?.cookies(for: url)?
-                        .first(where: { $0.name == "clusbot_session" }) else {
-                    fail("无法建立原有本机会话。")
-                    return
-                }
-                await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
             }
             guard !closing, !failureShown else { return }
             origin = url
@@ -358,7 +342,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     }
 
     private func installDraftSnapshot(in controller: WKUserContentController) {
-        guard let data = try? JSONEncoder().encode(drafts) else { return }
+        guard let data = try? JSONEncoder().encode(drafts.filter({ $0.key.hasPrefix(accountDraftPrefix) })) else { return }
         let json = String(decoding: data, as: UTF8.self)
         controller.removeAllUserScripts()
         controller.addUserScript(WKUserScript(
@@ -435,8 +419,8 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
             }
             return
         }
-        guard let body = message.body as? [String: Any], let key = body["key"] as? String,
-              key.hasPrefix("clusbot.composer.v1.") || key.hasPrefix("clusbot.memory-draft.v1."),
+        guard message.name == "drafts", let body = message.body as? [String: Any], let key = body["key"] as? String,
+              key.hasPrefix(accountDraftPrefix),
               let draftFile else { return }
         if let value = body["value"] as? String {
             drafts[key] = value

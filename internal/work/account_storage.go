@@ -40,6 +40,10 @@ AND NOT EXISTS(SELECT 1 FROM conversations)
 AND NOT EXISTS(SELECT 1 FROM materials)
 AND NOT EXISTS(SELECT 1 FROM memories)
 AND NOT EXISTS(SELECT 1 FROM general_preferences)
+AND NOT EXISTS(SELECT 1 FROM main.account_rsi_skills)
+AND NOT EXISTS(SELECT 1 FROM main.experience_candidates)
+AND NOT EXISTS(SELECT 1 FROM main.skill_evaluation_runs)
+AND NOT EXISTS(SELECT 1 FROM main.skill_proposals)
 ON CONFLICT(singleton) DO NOTHING`, principal); err != nil {
 		return err
 	}
@@ -78,12 +82,17 @@ func (c accountCatalogConnector) Connect(ctx context.Context) (driver.Conn, erro
 	if _, err = exec.ExecContext(ctx, "ATTACH DATABASE ? AS instance_catalog", []driver.NamedValue{{Ordinal: 1, Value: c.catalogURI}}); err == nil {
 		_, err = exec.ExecContext(ctx, `CREATE TEMP VIEW connections AS SELECT * FROM instance_catalog.connections;
 CREATE TEMP VIEW connection_tools AS SELECT * FROM instance_catalog.connection_tools;
-CREATE TEMP VIEW personal_skill_versions AS SELECT v.* FROM instance_catalog.personal_skill_versions v
- WHERE NOT EXISTS(SELECT 1 FROM instance_catalog.skill_proposals p WHERE p.skill_id=v.skill_id AND p.version=v.version);
+CREATE TEMP VIEW personal_skill_versions AS
+ SELECT v.* FROM main.personal_skill_versions v JOIN main.account_rsi_skills k ON k.skill_id=v.skill_id
+ UNION ALL SELECT v.* FROM instance_catalog.personal_skill_versions v
+ WHERE NOT EXISTS(SELECT 1 FROM instance_catalog.skill_proposals p WHERE p.skill_id=v.skill_id AND p.version=v.version)
+ AND NOT EXISTS(SELECT 1 FROM instance_catalog.account_rsi_skills k WHERE k.skill_id=v.skill_id);
 CREATE TEMP VIEW personal_skills AS
- SELECT s.id,s.scope_label,s.revision,
+ SELECT s.* FROM main.personal_skills s JOIN main.account_rsi_skills k ON k.skill_id=s.id
+ UNION ALL SELECT s.id,s.scope_label,s.revision,
  CASE WHEN EXISTS(SELECT 1 FROM personal_skill_versions v WHERE v.skill_id=s.id AND v.version=s.active_version)
- THEN s.active_version END AS active_version FROM instance_catalog.personal_skills s;
+ THEN s.active_version END AS active_version FROM instance_catalog.personal_skills s
+ WHERE NOT EXISTS(SELECT 1 FROM instance_catalog.account_rsi_skills k WHERE k.skill_id=s.id);
 CREATE TEMP VIEW skill_document_sources AS SELECT d.* FROM instance_catalog.skill_document_sources d
  WHERE EXISTS(SELECT 1 FROM personal_skill_versions v WHERE v.skill_id=d.skill_id AND v.version=d.version);`, nil)
 	}
@@ -106,6 +115,16 @@ func OpenAccountBusinessStore(path string, instance *Store) (*Store, error) {
 	}
 	base, err := sqlite.NewConnector(path)
 	if err != nil {
+		return nil, err
+	}
+	// Migrate the on-disk private schema before attaching catalog views.
+	// SQLite validates all existing views during ALTER TABLE, so a fresh or
+	// pre-RSI database otherwise fails while building the source tables.
+	localWriter, err := configureWriter(sql.OpenDB(base))
+	if err != nil {
+		return nil, err
+	}
+	if err := localWriter.db.Close(); err != nil {
 		return nil, err
 	}
 	connector := accountCatalogConnector{base, sqliteFileURI(instance.storageLocation.path, "mode=ro")}
@@ -134,9 +153,9 @@ ON CONFLICT(id) DO NOTHING`, connection)
 	return err
 }
 
-// Remember only the FK identity locally. Skill instructions and activation
-// are always read from the shared catalog, and personal experience-derived
-// versions are excluded from that catalog.
+// Remember only the FK identity of shared Skills locally. The catalog excludes
+// these empty local placeholders; real account RSI rows are separately marked
+// and stored locally, never visible through another account's instance view.
 func rememberSkillReference(tx *sql.Tx, skill string, version int) error {
 	if _, err := tx.Exec(`INSERT INTO main.personal_skills(id,scope_label,revision)
 SELECT id,id,0 FROM personal_skills WHERE id=? AND EXISTS(SELECT 1 FROM account_business_owner)

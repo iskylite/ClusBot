@@ -22,7 +22,7 @@ func TestGeneralPreferencesAccountIsolationAndValidation(t *testing.T) {
 	stores := make(map[string]*work.Store)
 	var srv Server
 	srv = Server{
-		Store: instance, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+		Store: instance, Origin: "https://ops.example", Hosts: []string{"ops.example"},
 		PersonalAPI: func(owner string) (http.Handler, error) {
 			mu.Lock()
 			defer mu.Unlock()

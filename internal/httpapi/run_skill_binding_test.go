@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"clusbot/internal/work"
 )
@@ -70,74 +71,95 @@ func TestRunMCPBindingsUnboundWithoutModel(t *testing.T) {
 }
 
 func TestConversationSkillSelectionExplicitAPI(t *testing.T) {
-	a := setupA1(t, filepath.Join(t.TempDir(), "conversation-skill-api.sqlite"))
-	defer a.close()
 	ctx := t.Context()
-	const actor = "user:session"
-	chat, handled, err := a.store.SubmitBenchmarkCommand(ctx, "existing-chat", actor, "", "跑 POD7 全套基准", "", nil)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance, err := work.Open(filepath.Join(root, "instance.sqlite"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer instance.Close()
+	const origin = "https://ops.example"
+	assets := fstest.MapFS{"index.html": {Data: []byte("test")}}
+	base := Server{Store: instance, Origin: origin, Hosts: []string{"ops.example"}}
+	f := &accountFixture{t: t, store: instance, handler: base.Handler(assets)}
+	f.setup()
+	admin := f.login("admin", "correct horse battery staple")
+	created := f.request(http.MethodPost, "/api/v1/admin/users", map[string]any{
+		"username": "alice", "display_name": "Alice", "password": "fixture alice password",
+	}, admin)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create Alice: %d %s", created.Code, created.Body)
+	}
+	var user struct{ User work.Account }
+	accountJSON(t, created, &user)
+	alice := f.login("alice", "fixture alice password")
+	actor := user.User.PrincipalID
+	personal, err := work.OpenAccountBusinessStore(filepath.Join(root, "alice.sqlite"), instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer personal.Close()
+	if err := personal.BindAccountBusinessStore(ctx, actor); err != nil {
+		t.Fatal(err)
+	}
+	base.PersonalAPI = func(principal string) (http.Handler, error) {
+		if principal != actor {
+			return nil, work.ErrAccountDenied
+		}
+		return base.PersonalHandler(personal), nil
+	}
+	f.handler = base.Handler(assets)
+
+	chat, handled, err := personal.SubmitBenchmarkCommand(ctx, "existing-chat", actor, "", "跑 POD7 全套基准", "", nil)
 	if err != nil || !handled {
 		t.Fatalf("existing chat: %+v %v", chat, err)
 	}
-	v, err := a.store.DraftSkill(ctx, "reports", "Internal Skill body", 0)
-	if err != nil {
-		t.Fatal(err)
+	draft := map[string]any{"scope_label": "reports", "instructions": "Internal Skill body", "revision": 0}
+	if w := f.request(http.MethodPost, "/api/v1/skills", draft, alice); w.Code != http.StatusForbidden {
+		t.Fatalf("personal account may not write the shared catalog: %d %s", w.Code, w.Body)
 	}
-	if err := a.store.ActivateSkill(ctx, v.SkillID, v.Version, 0, v.Digest); err != nil {
-		t.Fatal(err)
+	w := f.request(http.MethodPost, "/api/v1/skills", draft, admin)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("admin shared draft: %d %s", w.Code, w.Body)
+	}
+	var v work.SkillVersion
+	accountJSON(t, w, &v)
+	w = f.request(http.MethodPost, "/api/v1/skills/"+v.SkillID+"/activate",
+		map[string]any{"version": v.Version, "revision": v.Revision, "sha256": v.Digest}, admin)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("admin shared activation: %d %s", w.Code, w.Body)
 	}
 	path := "/api/v1/conversations/" + chat.ConversationID + "/skill-binding"
-	body, err := json.Marshal(work.ConversationSkillBindingInput{Action: "bind_skill", SkillID: v.SkillID, Version: v.Version})
-	if err != nil {
-		t.Fatal(err)
+	input := work.ConversationSkillBindingInput{Action: "bind_skill", SkillID: v.SkillID, Version: v.Version}
+	if w := f.request(http.MethodPut, path, input, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous can select: %d %s", w.Code, w.Body)
 	}
-	req := a.request(http.MethodPut, path, string(body))
-	req.Header.Del("Cookie")
-	res, err := a.ts.Client().Do(req)
-	if err != nil {
-		t.Fatal(err)
+	if w := f.request(http.MethodPut, path, input, alice); w.Code != http.StatusOK {
+		t.Fatalf("explicit selection failed: %d %s", w.Code, w.Body)
 	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("anonymous can select: %d", res.StatusCode)
-	}
-	res, err = a.ts.Client().Do(a.request(http.MethodPut, path, string(body)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("explicit selection failed: %d", res.StatusCode)
-	}
-	res, err = a.ts.Client().Do(a.request(http.MethodGet, path, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer res.Body.Close()
+	w = f.request(http.MethodGet, path, nil, alice)
 	var out work.ConversationSkillSelection
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != http.StatusOK || res.Header.Get("Cache-Control") != "no-store" ||
+	accountJSON(t, w, &out)
+	if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" ||
 		out.ConversationID != chat.ConversationID || out.Binding == nil || out.Binding.SkillID != v.SkillID || out.Binding.Version != v.Version {
-		t.Fatalf("wrong no-model binding: %+v, %d, %v", out, res.StatusCode, err)
+		t.Fatalf("wrong no-model binding: %+v, %d", out, w.Code)
 	}
 	if out.BindingRevision != 1 {
 		t.Fatalf("GET missing authoritative binding revision: %+v", out)
 	}
-	rejected, err := a.ts.Client().Do(a.request(http.MethodPut, path, `{"action":"clear_skill","expected_binding_revision":0}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rejected.Body.Close()
+	w = f.request(http.MethodPut, path, map[string]any{"action": "clear_skill", "expected_binding_revision": 0}, alice)
 	var conflict map[string]string
-	if err := json.NewDecoder(rejected.Body).Decode(&conflict); err != nil || rejected.StatusCode != http.StatusConflict || conflict["code"] != "conversation_binding_conflict" {
-		t.Fatalf("lost actionable HTTP conflict: %d %+v %v", rejected.StatusCode, conflict, err)
+	accountJSON(t, w, &conflict)
+	if w.Code != http.StatusConflict || conflict["code"] != "conversation_binding_conflict" {
+		t.Fatalf("lost actionable HTTP conflict: %d %+v", w.Code, conflict)
 	}
-	finally, err := a.ts.Client().Do(a.request(http.MethodPut, path, `{"action":"clear_skill","expected_binding_revision":1}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer finally.Body.Close()
+	w = f.request(http.MethodPut, path, map[string]any{"action": "clear_skill", "expected_binding_revision": 1}, alice)
 	var cleared work.ConversationSkillSelection
-	if err := json.NewDecoder(finally.Body).Decode(&cleared); err != nil || finally.StatusCode != http.StatusOK || cleared.Binding != nil || cleared.BindingRevision != 2 {
-		t.Fatalf("wrong HTTP clear transition: %d %+v %v", finally.StatusCode, cleared, err)
+	accountJSON(t, w, &cleared)
+	if w.Code != http.StatusOK || cleared.Binding != nil || cleared.BindingRevision != 2 {
+		t.Fatalf("wrong HTTP clear transition: %d %+v", w.Code, cleared)
 	}
-
 }

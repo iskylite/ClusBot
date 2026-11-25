@@ -27,6 +27,8 @@ func TestImportDomainAssetsBenchmarkWindowYAML(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
+			_, account := openAssetImportInstanceFixture(t, root)
+			prepareAssetImportFixtureStore(t, root, account.PrincipalID)
 			file := filepath.Join(root, "assets.yaml")
 			raw := fmt.Sprintf(`assets:
   - object_ref: node-1
@@ -43,7 +45,7 @@ func TestImportDomainAssetsBenchmarkWindowYAML(t *testing.T) {
 			if err := os.WriteFile(file, []byte(raw), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if err := runImportDomainAssets([]string{"--file", file, "--data-dir", root}); (err == nil) != tc.ok {
+			if err := runImportDomainAssets([]string{"--account", account.Username, "--file", file, "--data-dir", root}); (err == nil) != tc.ok {
 				t.Fatalf("got %v, expected success=%t", err, tc.ok)
 			}
 		})

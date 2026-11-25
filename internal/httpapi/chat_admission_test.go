@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"clusbot/internal/model"
 	"clusbot/internal/work"
@@ -37,8 +36,8 @@ func setupA1(t *testing.T, dbPath string) *a1Server {
 		t.Fatal(err)
 	}
 	settings := &model.Settings{Store: store}
-	server := Server{Store: store, Token: "a1-token", Hosts: []string{"127.0.0.1"}, Settings: settings}
-	ts := httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("a1")}}))
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}, Settings: settings}
+	ts := httptest.NewServer(businessFixtureHandler(t, server))
 	a := &a1Server{ts: ts, store: store}
 	a.cookie = a.login()
 	return a
@@ -67,7 +66,7 @@ func (a *a1Server) request(method, path, body string) *http.Request {
 }
 
 func (a *a1Server) login() string {
-	req, _ := http.NewRequest("POST", a.ts.URL+"/api/v1/session", strings.NewReader(`{"token":"a1-token"}`))
+	req, _ := http.NewRequest("POST", a.ts.URL+"/api/v1/session", strings.NewReader(businessFixtureCredentials))
 	req.Host = "127.0.0.1"
 	req.Header.Set("Origin", "http://127.0.0.1")
 	req.Header.Set("Content-Type", "application/json")

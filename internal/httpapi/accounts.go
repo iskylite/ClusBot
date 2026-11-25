@@ -25,7 +25,7 @@ const accountCookie = "clusbot_account_session"
 const sessionLifetime = 12 * time.Hour
 
 // Only these routes have an account-aware authorization boundary. Every other
-// API remains unavailable in server mode until its data paths are audited.
+// API must pass the instance or account-business authorization routes.
 func serverAccountRoute(pattern string) (allowed, public bool) {
 	switch pattern {
 	case "GET /api/v1/session", "POST /api/v1/session", "DELETE /api/v1/session", "GET /api/v1/bootstrap", "POST /api/v1/bootstrap":
@@ -228,20 +228,16 @@ func (s Server) requestAccount(r *http.Request) (work.Account, error) {
 	return s.Store.AccountForSession(r.Context(), d)
 }
 func (s Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.ServerMode {
-		jsonResponse(w, 200, map[string]any{"authenticated": s.authenticated(r), "mode": "local"})
-		return
-	}
 	a, err := s.requestAccount(r)
 	if errors.Is(err, work.ErrAccountDenied) {
-		jsonResponse(w, 200, map[string]any{"authenticated": false, "mode": "server"})
+		jsonResponse(w, 200, map[string]any{"authenticated": false})
 		return
 	}
 	if err != nil {
 		accountError(w, err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"authenticated": true, "mode": "server", "user": a, "capabilities": map[string]bool{"manage_users": a.IsSuperadmin && !a.MustChangePassword}})
+	jsonResponse(w, 200, map[string]any{"authenticated": true, "user": a, "capabilities": map[string]bool{"manage_users": a.IsSuperadmin && !a.MustChangePassword}})
 }
 func (s Server) accountLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
@@ -287,24 +283,16 @@ func (s Server) accountLogin(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]bool{"authenticated": true})
 }
 func (s Server) endSession(w http.ResponseWriter, r *http.Request) {
-	if s.ServerMode {
-		if d := s.accountSessionDigest(r); d != "" {
-			if err := s.Store.DeleteAccountSession(r.Context(), d); err != nil {
-				accountError(w, err)
-				return
-			}
+	if d := s.accountSessionDigest(r); d != "" {
+		if err := s.Store.DeleteAccountSession(r.Context(), d); err != nil {
+			accountError(w, err)
+			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureAccountCookie(), SameSite: http.SameSiteStrictMode})
-	} else {
-		http.SetCookie(w, &http.Cookie{Name: "clusbot_session", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	}
+	http.SetCookie(w, &http.Cookie{Name: accountCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureAccountCookie(), SameSite: http.SameSiteStrictMode})
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s Server) bootstrapStatus(w http.ResponseWriter, r *http.Request) {
-	if !s.ServerMode {
-		http.NotFound(w, r)
-		return
-	}
 	required, err := s.Store.BootstrapRequired(r.Context())
 	if err != nil {
 		accountError(w, err)
@@ -313,10 +301,6 @@ func (s Server) bootstrapStatus(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, map[string]bool{"required": required})
 }
 func (s Server) bootstrap(w http.ResponseWriter, r *http.Request) {
-	if !s.ServerMode {
-		http.NotFound(w, r)
-		return
-	}
 	if !s.limitAuth(w, r, "bootstrap") {
 		return
 	}

@@ -24,7 +24,7 @@ func (s Server) publishBenchmarkProfile(w http.ResponseWriter, r *http.Request) 
 	if !decode(w, r, &p) {
 		return
 	}
-	if err := s.Store.PublishBenchmarkProfile(r.Context(), "user:session", p); err != nil {
+	if err := s.Store.PublishBenchmarkProfile(r.Context(), s.principal(r), p); err != nil {
 		benchmarkError(w, err)
 		return
 	}
@@ -83,7 +83,7 @@ func (s Server) submitBenchmark(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	id, err := s.Store.SubmitBenchmarkRun(r.Context(), "user:session", req, s.BenchmarkProvider)
+	id, err := s.Store.SubmitBenchmarkRun(r.Context(), s.principal(r), req, s.BenchmarkProvider)
 	if err != nil {
 		benchmarkError(w, err)
 		return
@@ -97,11 +97,11 @@ func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
 		benchmarkError(w, err)
 		return
 	}
-	if s.ServerMode && p.DispatchControl.Available {
+	if s.instanceStore != nil && p.DispatchControl.Available {
 		// Account runtimes have no benchmark dispatcher. Do not offer a pause
 		// that this runtime cannot subsequently resume and execute.
 		p.DispatchControl.Available = false
-		p.DispatchControl.UnavailableReason = "当前账号模式尚未接入基准派发控制"
+		p.DispatchControl.UnavailableReason = "账号运行时尚未接入基准派发控制"
 	}
 	jsonResponse(w, http.StatusOK, p)
 }
@@ -137,7 +137,7 @@ func (s Server) benchmarkEvidenceInventory(w http.ResponseWriter, r *http.Reques
 }
 
 func (s Server) benchmarkEvidence(w http.ResponseWriter, r *http.Request) {
-	body, err := s.Store.ReadBenchmarkEvidence(r.Context(), "user:session", r.PathValue("id"), r.PathValue("artifact"))
+	body, err := s.Store.ReadBenchmarkEvidence(r.Context(), s.principal(r), r.PathValue("id"), r.PathValue("artifact"))
 	if err != nil {
 		benchmarkError(w, err)
 		return
@@ -268,8 +268,8 @@ func (s Server) benchmarkTaskDispatchControl(w http.ResponseWriter, r *http.Requ
 		benchmarkError(w, work.ErrBenchmarkInput)
 		return
 	}
-	if s.ServerMode {
-		fail(w, http.StatusServiceUnavailable, "benchmark_dispatch_unavailable", "当前账号模式尚未接入基准派发控制")
+	if s.instanceStore != nil {
+		fail(w, http.StatusServiceUnavailable, "benchmark_dispatch_unavailable", "账号运行时尚未接入基准派发控制")
 		return
 	}
 	var in work.BenchmarkTaskDispatchInput

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -35,7 +34,6 @@ func TestDesktopAccountBenchmarkRevisionUsesPinnedProvider(t *testing.T) {
 	defer providerServer.Close()
 	t.Setenv("CLUSBOT_DESKTOP_BENCHMARK_TEST_KEY", "fixture-key")
 	var cfg config
-	cfg.desktop = true
 	cfg.DataDir = dir
 	cfg.Model.Provider = model.ProtocolChat
 	cfg.Model.BaseURL = "https://api.openai.com/v1"
@@ -51,7 +49,7 @@ func TestDesktopAccountBenchmarkRevisionUsesPinnedProvider(t *testing.T) {
 	cfg.Benchmark.Tools = []string{"test"}
 	cfg.Benchmark.CredentialEnv = "CLUSBOT_DESKTOP_BENCHMARK_TEST_KEY"
 	const origin = "http://127.0.0.1:52123"
-	api := httpapi.Server{Store: instance, ServerMode: true, Origin: origin, Hosts: []string{"127.0.0.1:52123"}}
+	api := httpapi.Server{Store: instance, Origin: origin, Hosts: []string{"127.0.0.1:52123"}}
 	stop, err := startAccountRuntime(ctx, &api, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -90,19 +88,9 @@ func TestDesktopAccountBenchmarkRevisionUsesPinnedProvider(t *testing.T) {
 	}
 	store := api.AdminTaskStores()[principal]
 	grant := work.DomainBenchmarkGrant{Revision: 1, Connection: "bench", Tool: "test", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := store.ImportDomainAssetsForAccount(ctx, principal, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
-	// The production importer only grants the local user. This isolated fixture
-	// installs an explicit account-owned grant without adding an account API.
-	db, err := sql.Open("sqlite", filepath.Join(dir, "account-data", strings.TrimPrefix(principal, "user:"), "clusbot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, "UPDATE authorizations SET subject=?,owner=? WHERE subject='user:session'", principal, principal); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
 	provider, err := work.NewHTTPBenchmarkProvider(providerServer.URL, "bench", 1, []string{"test"}, "fixture-key")
 	if err != nil {
 		t.Fatal(err)

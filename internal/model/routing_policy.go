@@ -114,17 +114,28 @@ func (s *Settings) ModelRoutingPolicies(ctx context.Context) ([]RoutingPolicyVie
 	return out, nil
 }
 
-// The shared admission gate has no stage argument. When the global default is
-// absent, every core stage must have a usable selection before releasing work.
-// This checks local configuration only; it does not probe a provider.
-func (s *Settings) CoreRoutingAvailable(ctx context.Context) bool {
-	for _, role := range []string{work.GeneralRouterModelRole, work.ConversationReplyModelRole, work.TaskWorkerModelRole} {
-		view, err := s.PreviewModelRouting(ctx, role)
-		if err != nil || (view.Status != "locally_configured" && view.Status != "configured") {
-			return false
-		}
+// RoleAvailable checks the same authorized selection as execution, without
+// sending any request or falling through a configured but stale binding.
+func (s *Settings) RoleAvailable(ctx context.Context, role string) bool {
+	if s == nil || s.Store == nil || ctx.Err() != nil {
+		return false
 	}
-	return true
+	switch role {
+	case work.GeneralRouterModelRole:
+		if s.Demo {
+			return true
+		}
+		_, _, err := s.inheritedModelRoleSelection(ctx, role, work.ErrGeneralRouterRoleUnavailable)
+		return err == nil
+	case work.ConversationReplyModelRole:
+		_, _, err := s.TextRunProvider(ctx, false)
+		return err == nil
+	case work.TaskWorkerModelRole:
+		_, err := s.ResolveTaskRunProvider(ctx)
+		return err == nil
+	default:
+		return false
+	}
 }
 
 func (s *Settings) SaveModelRoutingPolicy(ctx context.Context, business, role string, in RoutingPolicyInput) (RoutingPolicyView, error) {

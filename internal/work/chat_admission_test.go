@@ -5,10 +5,103 @@ package work
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestChatAdmissionUnreadyRouterDoesNotBlockWorkerReceipts(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "roles.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for n := range 70 {
+		if _, err := s.AdmitChat(ctx, fmt.Sprintf("pending-router-%d", n), "user:fixture", "", "等待路由", "", false, Delivery{}, nil, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const workerKey = "pending-ready-worker"
+	if _, err := s.AdmitChat(ctx, workerKey, "user:fixture", "", "明确委托", "", true, Delivery{}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	router := func(context.Context, string, []Message, []RouteCandidate, int) (DelegationResult, error) {
+		t.Fatal("Worker-only admission unexpectedly called Router")
+		return DelegationResult{}, nil
+	}
+	ready := func(_ context.Context, role string) bool { return role == TaskWorkerModelRole }
+	var cursor chatAdmissionCursor
+	for range 2 {
+		if err := s.processChatAdmissions(ctx, router, ready, &cursor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt, err := s.ReadAdmission(ctx, workerKey)
+	if err != nil || receipt.State != "applied" || receipt.TaskID == "" || receipt.RunID == "" {
+		t.Fatalf("older Router receipts blocked Worker: %+v %v", receipt, err)
+	}
+	receipt, err = s.ReadAdmission(ctx, "pending-router-0")
+	if err != nil || receipt.State != "received" || receipt.RunID != "" || receipt.Reason != ChatModelPendingReason(GeneralRouterModelRole) {
+		t.Fatalf("unavailable Router was not preserved: %+v %v", receipt, err)
+	}
+}
+
+func TestChatAdmissionLocalSelectionFailureCanRetryWithoutReplayingModel(t *testing.T) {
+	ctx := t.Context()
+	s, err := Open(filepath.Join(t.TempDir(), "selection-race.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	const key = "router-selection-race"
+	if _, err := s.AdmitChat(ctx, key, "user:fixture", "", "解释请求", "", false, Delivery{}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessChatAdmissions(ctx, func(context.Context, string, []Message, []RouteCandidate, int) (DelegationResult, error) {
+		return DelegationResult{}, ErrGeneralRouterRoleUnavailable
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var reserved int
+	if err := s.db.QueryRow(`SELECT count(*) FROM submission_classifications WHERE request_key=?`, key).Scan(&reserved); err != nil || reserved != 0 {
+		t.Fatalf("pre-egress failure left uncertain reservation: %d %v", reserved, err)
+	}
+	if _, err := s.db.Exec(`UPDATE inbox_events SET next_retry_at=0 WHERE source='chat' AND event_id=?`, key); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	route := func(context.Context, string, []Message, []RouteCandidate, int) (DelegationResult, error) {
+		calls++
+		return DelegationResult{Route: &RouteDecision{Kind: "chat"}, Requests: 1}, nil
+	}
+	for range 2 {
+		if err := s.ProcessChatAdmissions(ctx, route); err != nil {
+			t.Fatal(err)
+		}
+	}
+	receipt, err := s.ReadAdmission(ctx, key)
+	if err != nil || calls != 1 || receipt.State != "applied" || receipt.RunID == "" {
+		t.Fatalf("recovered receipt=%+v calls=%d err=%v", receipt, calls, err)
+	}
+	const dispatched = "router-dispatched-without-outcome"
+	if _, err := s.AdmitChat(ctx, dispatched, "user:fixture", "", "已经计入一次请求", "", false, Delivery{}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessChatAdmissions(ctx, func(context.Context, string, []Message, []RouteCandidate, int) (DelegationResult, error) {
+		return DelegationResult{Requests: 1}, ErrGeneralRouterRoleUnavailable
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ProcessChatAdmissions(ctx, route); err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = s.ReadAdmission(ctx, dispatched)
+	if err != nil || receipt.State != "failed" || calls != 1 {
+		t.Fatalf("a pre-dispatch reason retried an already-issued call: receipt=%+v calls=%d err=%v", receipt, calls, err)
+	}
+}
 
 func TestA1AdmissionLinkedAfterSubmit(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "a1-link.db"))

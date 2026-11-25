@@ -1,6 +1,9 @@
 server:
+  mode: loopback
   listen: 127.0.0.1:8080
-data_dir: ../data/local
+  # 使用公共 HTTPS 反向代理时，改为 mode: server 并填写：
+  # origin: https://clusbot.example.com
+data_dir: ../data/accounts
 model:
   provider: chat_completions
   base_url: https://api.openai.com/v1

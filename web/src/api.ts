@@ -45,9 +45,10 @@ export type SkillReplayMetrics = {
   input_tokens_known_total:number; input_usage_reported:number
   output_tokens_known_total:number; output_usage_reported:number; duration_ms:number
 }
-export type SkillReplayArm = 'base_skill'|'proposed_skill'|'current'|'candidate'
+export type SkillReplayArm = 'none'|'base_skill'|'proposed_skill'|'current'|'candidate'
 export type SkillReplay = {
-  id:string; passed:boolean; suite_sha256?:string; model_config:{model:string}
+  id:string; passed:boolean; contract?:string; suite_sha256?:string; model_config:{model:string}
+  gains?:string[]; regressions?:string[]; incomplete?:string[]
   metrics:Partial<Record<SkillReplayArm,SkillReplayMetrics>>
   results:{case_id:string;policy:SkillReplayArm;status:string;success:boolean;wrong_reuse:boolean|null}[]
 }

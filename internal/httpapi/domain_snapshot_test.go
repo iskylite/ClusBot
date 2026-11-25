@@ -31,8 +31,9 @@ func setupDomainHTTP(t *testing.T) (*domainTestClient, *work.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	server := Server{Store: store, Token: "domain-token", Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}}
-	ts := httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("v3")}}))
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}}
+	businessFixturePrincipal(t, store)
+	ts := httptest.NewServer(productionFixtureHandler(t, server, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("v3")}}))
 	t.Cleanup(ts.Close)
 	c := &domainTestClient{ts: ts}
 	c.cookie = c.login(t)
@@ -41,7 +42,7 @@ func setupDomainHTTP(t *testing.T) (*domainTestClient, *work.Store) {
 
 func (c *domainTestClient) login(t *testing.T) string {
 	t.Helper()
-	req, _ := http.NewRequest("POST", c.ts.URL+"/api/v1/session", strings.NewReader("{\"token\":\"domain-token\"}"))
+	req, _ := http.NewRequest("POST", c.ts.URL+"/api/v1/session", strings.NewReader(businessFixtureCredentials))
 	req.Host = "127.0.0.1"
 	req.Header.Set("Origin", "http://127.0.0.1")
 	req.Header.Set("Content-Type", "application/json")

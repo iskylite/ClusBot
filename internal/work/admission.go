@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrClassification            = errors.New("委托分类未完成")
-	ErrClassificationUnconfirmed = fmt.Errorf("%w：结果尚未确认", ErrClassification)
+	ErrClassification               = errors.New("委托分类未完成")
+	ErrClassificationUnconfirmed    = fmt.Errorf("%w：结果尚未确认", ErrClassification)
+	ErrGeneralRouterRoleUnavailable = errors.New("常规路由模型档案已不可用，请检查绑定、版本、凭据和默认地址")
 )
 
 type DelegationResult struct {
@@ -206,6 +207,23 @@ WHERE request_key=? AND fingerprint=? AND state='running' AND requests<?`, key, 
 		return nil
 	})
 	decision, classifyErr := classify(classifyCtx, text, history, limit)
+	if errors.Is(classifyErr, ErrGeneralRouterRoleUnavailable) && decision.Requests == 0 && decision.Usage == nil && decision.Route == nil {
+		cancel()
+		// Only this typed local selection failure proves no call was issued.
+		// Release its exact reservation so the same admitted input can retry.
+		persistCtx, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		res, err := s.db.ExecContext(persistCtx, `DELETE FROM submission_classifications
+WHERE request_key=? AND fingerprint=? AND state='running' AND requests=1`, key, fingerprint)
+		if err == nil {
+			var count int64
+			count, err = res.RowsAffected()
+			if err == nil && count == 1 {
+				return result, ErrGeneralRouterRoleUnavailable
+			}
+		}
+		return result, ErrClassificationUnconfirmed
+	}
 	if cause := classifyCtx.Err(); cause != nil {
 		if errors.Is(cause, context.DeadlineExceeded) {
 			classifyErr = errors.New("委托分类超时，请重新发送")

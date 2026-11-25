@@ -94,7 +94,7 @@ FROM benchmark_admission_previews WHERE preview_id=? AND actor=?`, preview, acto
 		return BenchmarkAdmissionConfirmation{}, ErrBenchmarkAdmissionPreviewStale
 	}
 	stamp := now()
-	out.TaskID, err = submitBenchmarkRunTx(tx, actor, BenchmarkRunRequest{
+	out.TaskID, err = submitBenchmarkRunTx(ctx, tx, actor, BenchmarkRunRequest{
 		RequestKey: benchmarkAdmissionConfirmPrefix + preview, Profile: c.Profile.Profile, Version: c.Profile.Version,
 	}, provider, stamp)
 	if err != nil {

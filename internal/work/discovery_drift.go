@@ -2,6 +2,7 @@ package work
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -26,12 +27,14 @@ func migrateDiscoveryDrift(tx *sql.Tx) error {
 	return err
 }
 
-func discoveryDriftGranted(tx *sql.Tx, actor, source, scope string, stamp int64) (bool, error) {
+func discoveryDriftGranted(tx *sql.Tx, actor, source, scope string, stamp int64, fingerprint string) (bool, error) {
 	var ok bool
 	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM authorizations WHERE subject=? AND action='discover' AND object_ref=? AND scope_label=?
 AND revoked_at=0 AND valid_from<=? AND expires_at>? AND CASE WHEN json_valid(param_constraints) THEN
 json_extract(param_constraints,'$.source')=? AND json_extract(param_constraints,'$.scope')=?
-AND json_extract(param_constraints,'$.allow_drift_check')=1 ELSE 0 END)`, actor, source, scope, stamp, stamp, source, scope).Scan(&ok)
+AND json_extract(param_constraints,'$.allow_drift_check')=1
+AND coalesce(json_extract(param_constraints,'$.binding_fingerprint'),'')=? ELSE 0 END)`,
+		actor, source, scope, stamp, stamp, source, scope, fingerprint).Scan(&ok)
 	return ok, err
 }
 
@@ -43,7 +46,7 @@ func evaluateDiscoveryDrift(tx *sql.Tx, d discoveryTick, candidate, oldAddress, 
 	if err := tx.QueryRow("SELECT enabled=1 AND check_on_address_drift=1 FROM discovery_plans WHERE plan_id=? AND revision=?", d.plan, d.revision).Scan(&enabled); err != nil {
 		return err
 	}
-	granted, err := discoveryDriftGranted(tx, d.actor, d.source, d.scope, stamp)
+	granted, err := discoveryDriftGranted(tx, d.actor, d.source, d.scope, stamp, d.binding.fingerprint())
 	if err != nil {
 		return err
 	}
@@ -73,11 +76,12 @@ func evaluateDiscoveryDrift(tx *sql.Tx, d discoveryTick, candidate, oldAddress, 
 }
 
 func guardDiscoveryDriftCheck(tx *sql.Tx, task string, stamp int64) error {
-	var actor, source, scope, state string
+	var actor, source, scope, state, rawBinding string
 	var enabled bool
-	err := tx.QueryRow(`SELECT w.actor,c.source,c.scope,c.state,p.enabled=1 AND p.check_on_address_drift=1
+	err := tx.QueryRow(`SELECT w.actor,c.source,c.scope,c.state,p.enabled=1 AND p.check_on_address_drift=1,coalesce(b.binding,'')
 FROM discovery_drift_checks w JOIN discovery_candidates c ON c.candidate_id=w.candidate_id
-JOIN discovery_plans p ON p.plan_id=w.plan_id WHERE w.task_id=?`, task).Scan(&actor, &source, &scope, &state, &enabled)
+JOIN discovery_plans p ON p.plan_id=w.plan_id LEFT JOIN discovery_plan_bindings b ON b.plan_id=p.plan_id
+WHERE w.task_id=?`, task).Scan(&actor, &source, &scope, &state, &enabled, &rawBinding)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrAuthorizationDenied
 	}
@@ -87,7 +91,11 @@ JOIN discovery_plans p ON p.plan_id=w.plan_id WHERE w.task_id=?`, task).Scan(&ac
 	if !enabled || state != "admitted" {
 		return ErrAuthorizationDenied
 	}
-	allowed, err := discoveryDriftGranted(tx, actor, source, scope, stamp)
+	var binding *discoverySourceBinding
+	if rawBinding != "" && json.Unmarshal([]byte(rawBinding), &binding) != nil {
+		return ErrDiscoveryInput
+	}
+	allowed, err := discoveryDriftGranted(tx, actor, source, scope, stamp, binding.fingerprint())
 	if err != nil {
 		return err
 	}

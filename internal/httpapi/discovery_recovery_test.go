@@ -6,7 +6,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -48,7 +47,7 @@ func TestDiscoveryRecoveryGuardPrecedesUnavailableModel(t *testing.T) {
 		}
 	}()
 	f := &blockingDiscoveryFixture{started: make(chan struct{}, 1), release: make(chan struct{})}
-	const actor = "user:session"
+	actor := businessFixturePrincipal(t, store)
 	if _, err := store.GrantDiscovery(ctx, actor, work.DiscoveryGrant{Source: "fixture-discovery", Scope: "POD7", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}, f); err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +98,8 @@ func TestDiscoveryRecoveryGuardPrecedesUnavailableModel(t *testing.T) {
 	if _, err := store.RecoverRuntime(ctx, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
-	s := Server{Store: store, Settings: &model.Settings{Store: store}, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{store: store, ts: httptest.NewServer(s.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}}))}
+	s := Server{Store: store, Settings: &model.Settings{Store: store}, Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{store: store, ts: httptest.NewServer(businessFixtureHandler(t, s))}
 	defer a.ts.Close()
 	a.cookie = a.login()
 	for _, body := range []string{`{"revision":2,"client_request_id":"scan-resume"}`, `{"revision":2,"client_request_id":"scan-retry","retry":true}`,

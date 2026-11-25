@@ -50,7 +50,7 @@ func (s *Settings) ResolveTaskRunProvider(ctx context.Context) (work.TaskRunProv
 	if v.Source == "legacy_default" {
 		p, err := s.provider(ctx)
 		if err != nil {
-			return nil, err
+			return nil, work.ErrTaskWorkerModelRoleUnavailable
 		}
 		return pinnedTaskRunProvider{p}, nil
 	}

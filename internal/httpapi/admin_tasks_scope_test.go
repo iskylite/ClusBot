@@ -38,11 +38,11 @@ func TestAdminTasksScopeFilterAndReadOnlyNotices(t *testing.T) {
 
 	var srv Server
 	srv = Server{
-		Store:      store,
-		ServerMode: true,
-		Origin:     "https://ops.example",
-		Hosts:      []string{"ops.example"},
-		Token:      "legacy-token",
+		Store: store,
+
+		Origin: "https://ops.example",
+		Hosts:  []string{"ops.example"},
+
 		AdminTaskStores: func() map[string]*work.Store {
 			mu.Lock()
 			defer mu.Unlock()

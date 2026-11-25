@@ -78,18 +78,20 @@ type ExperienceEvaluationSource struct {
 }
 
 type ExperienceEvaluationResult struct {
-	CaseID          string                       `json:"case_id"`
-	Policy          string                       `json:"policy"`
-	Status          string                       `json:"status"`
-	Success         bool                         `json:"success"`
-	WrongReuse      *bool                        `json:"wrong_reuse"`
-	MissingRequired []string                     `json:"missing_required,omitempty"`
-	ForbiddenHits   []string                     `json:"forbidden_hits,omitempty"`
-	Sources         []ExperienceEvaluationSource `json:"sources,omitempty"`
-	Answer          string                       `json:"answer,omitempty"`
-	InputTokens     *int64                       `json:"input_tokens"`
-	OutputTokens    *int64                       `json:"output_tokens"`
-	DurationMS      int64                        `json:"duration_ms"`
+	CaseID           string                       `json:"case_id"`
+	Policy           string                       `json:"policy"`
+	Status           string                       `json:"status"`
+	Success          bool                         `json:"success"`
+	WrongReuse       *bool                        `json:"wrong_reuse"`
+	MissingRequired  []string                     `json:"missing_required,omitempty"`
+	ForbiddenHits    []string                     `json:"forbidden_hits,omitempty"`
+	RequiredMisses   int                          `json:"required_miss_count,omitempty"`
+	ForbiddenMatches int                          `json:"forbidden_match_count,omitempty"`
+	Sources          []ExperienceEvaluationSource `json:"sources,omitempty"`
+	Answer           string                       `json:"answer,omitempty"`
+	InputTokens      *int64                       `json:"input_tokens"`
+	OutputTokens     *int64                       `json:"output_tokens"`
+	DurationMS       int64                        `json:"duration_ms"`
 }
 
 type ExperienceEvaluationMetrics struct {

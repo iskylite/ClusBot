@@ -19,6 +19,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -37,9 +38,10 @@ var (
 )
 
 const (
-	Timeout     = 12 * time.Second
-	maxResponse = 1024 * 1024
-	MaxResult   = 16 * 1024
+	Timeout       = 12 * time.Second
+	MaxDomainCall = 10 * time.Minute
+	maxResponse   = 1024 * 1024
+	MaxResult     = 16 * 1024
 )
 
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,79}$`)
@@ -160,12 +162,37 @@ type ResultReference struct {
 }
 
 func Connect(ctx context.Context, cfg Config) (*mcp.ClientSession, error) {
+	return ConnectWithLifetime(ctx, ctx, cfg)
+}
+
+// ConnectWithLifetime bounds negotiation by handshakeCtx without ending a
+// successful stdio process when that context expires. The lifetime context
+// owns the subprocess; canceling it closes stdin before terminating the child.
+func ConnectWithLifetime(handshakeCtx, lifetime context.Context, cfg Config) (*mcp.ClientSession, error) {
+	return connectWithLifetime(handshakeCtx, lifetime, cfg, Timeout)
+}
+
+// ConnectForTrustedDomain permits a bounded long-running application-managed
+// query. Generic tool calls still use Timeout, and negotiation still has that
+// shorter deadline for both transports.
+func ConnectForTrustedDomain(handshakeCtx, lifetime context.Context, cfg Config, requestTimeout time.Duration) (*mcp.ClientSession, error) {
+	if requestTimeout <= 0 || requestTimeout > MaxDomainCall {
+		return nil, ErrConfig
+	}
+	return connectWithLifetime(handshakeCtx, lifetime, cfg, requestTimeout)
+}
+
+func connectWithLifetime(handshakeCtx, lifetime context.Context, cfg Config, requestTimeout time.Duration) (*mcp.ClientSession, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(handshakeCtx, Timeout)
+	defer cancel()
 	var transport mcp.Transport
+	var managed *managedCommandTransport
+	var stopHandshake func() bool
 	if cfg.Transport == "stdio" {
-		cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
+		cmd := exec.Command(cfg.Command, cfg.Args...)
 		cmd.Env = []string{}
 		cmd.Stderr = io.Discard
 		cmd.WaitDelay = 500 * time.Millisecond
@@ -176,7 +203,17 @@ func Connect(ctx context.Context, cfg Config) (*mcp.ClientSession, error) {
 			}
 			cmd.Env = append(cmd.Env, name+"="+value)
 		}
-		transport = &mcp.CommandTransport{Command: cmd, TerminateDuration: 250 * time.Millisecond}
+		processCtx, stopProcess := context.WithCancel(lifetime)
+		managed = &managedCommandTransport{
+			transport: mcp.CommandTransport{Command: cmd, TerminateDuration: 250 * time.Millisecond},
+		}
+		stopLifetime := context.AfterFunc(processCtx, managed.abort)
+		managed.stopLifetime = func() {
+			stopLifetime()
+			stopProcess()
+		}
+		stopHandshake = context.AfterFunc(ctx, managed.abort)
+		transport = managed
 	} else {
 		endpoint, _ := endpointURL(cfg.Endpoint)
 		var token string
@@ -191,7 +228,7 @@ func Connect(ctx context.Context, cfg Config) (*mcp.ClientSession, error) {
 		rt.DisableKeepAlives = true
 		transport = &mcp.StreamableClientTransport{
 			Endpoint: cfg.Endpoint, MaxRetries: -1, DisableStandaloneSSE: true, MaxEventSize: maxResponse,
-			HTTPClient: &http.Client{Transport: &boundTransport{base: rt, endpoint: endpoint, token: token}, Timeout: Timeout,
+			HTTPClient: &http.Client{Transport: &boundTransport{base: rt, endpoint: endpoint, token: token}, Timeout: requestTimeout,
 				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		}
 	}
@@ -199,10 +236,77 @@ func Connect(ctx context.Context, cfg Config) (*mcp.ClientSession, error) {
 		Capabilities: &mcp.ClientCapabilities{}, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	session, err := client.Connect(ctx, transport, nil)
+	if managed != nil {
+		if !stopHandshake() || ctx.Err() != nil || lifetime.Err() != nil || err != nil {
+			managed.abort()
+			managed.stopLifetime()
+			if session != nil {
+				_ = session.Close()
+			}
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("%w：连接未能及时完成（%w）", ErrConnect, ctx.Err())
+			}
+			if lifetime.Err() != nil {
+				return nil, fmt.Errorf("%w：连接已取消（%w）", ErrConnect, context.Cause(lifetime))
+			}
+			return nil, ErrConnect
+		}
+	}
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("%w：连接未能及时完成（%w）", ErrConnect, ctx.Err())
+		}
 		return nil, ErrConnect
 	}
 	return session, nil
+}
+
+// The SDK session's graceful Close waits for outstanding RPCs. Close the
+// underlying command transport directly on cancellation so a peer that never
+// responds (or stops draining stdin) cannot deadlock negotiation or shutdown.
+type managedCommandTransport struct {
+	transport    mcp.CommandTransport
+	stopLifetime func()
+	mu           sync.Mutex
+	conn         mcp.Connection
+	aborted      bool
+}
+
+func (t *managedCommandTransport) Connect(ctx context.Context) (mcp.Connection, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if t.aborted {
+		return nil, context.Canceled
+	}
+	conn, err := t.transport.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	t.conn = &managedCommandConnection{Connection: conn, stopLifetime: t.stopLifetime}
+	return t.conn, nil
+}
+
+func (t *managedCommandTransport) abort() {
+	t.mu.Lock()
+	t.aborted = true
+	conn := t.conn
+	t.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+type managedCommandConnection struct {
+	mcp.Connection
+	stopLifetime func()
+}
+
+func (c *managedCommandConnection) Close() error {
+	c.stopLifetime()
+	return c.Connection.Close()
 }
 
 func Discover(ctx context.Context, session *mcp.ClientSession) (Catalog, error) {

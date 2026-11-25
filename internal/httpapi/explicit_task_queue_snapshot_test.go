@@ -5,11 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"clusbot/internal/work"
 )
@@ -36,14 +34,15 @@ func TestExplicitTaskQueueSnapshotHTTPRequiresSessionAndUsesPrincipalWithoutMode
 	}
 	defer store.Close()
 	ctx := t.Context()
-	s := Server{Store: store, Hosts: []string{"127.0.0.1"}, Token: "test", MaxPendingExplicitTasks: 3}
-	handler := s.Handler(fstest.MapFS{})
-	expiry := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	s := Server{Store: store, Hosts: []string{"127.0.0.1"}, MaxPendingExplicitTasks: 3}
+	businessFixturePrincipal(t, store)
+	handler := productionFixtureHandler(t, s, "http://127.0.0.1", fstest.MapFS{})
+	cookie := businessFixtureLogin(t, handler, "http://127.0.0.1")
 	get := func(auth bool) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runtime/queue/explicit-tasks", nil)
 		if auth {
-			r.AddCookie(&http.Cookie{Name: "clusbot_session", Value: expiry + "." + s.signature(expiry)})
+			r.AddCookie(cookie)
 		}
 		out := httptest.NewRecorder()
 		handler.ServeHTTP(out, r)
@@ -80,7 +79,7 @@ func TestExplicitTaskQueueSnapshotHTTPRequiresSessionAndUsesPrincipalWithoutMode
 		}
 	}
 	assert(get(true), 0)
-	if _, err := store.AdmitExplicitTask(ctx, "own-test-key", "user:session", "own task", "", work.Delivery{}, nil, false, 0); err != nil {
+	if _, err := store.AdmitExplicitTask(ctx, "own-test-key", businessFixturePrincipal(t, store), "own task", "", work.Delivery{}, nil, false, 0); err != nil {
 		t.Fatal(err)
 	}
 	assert(get(true), 1)

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"testing"
 )
 
@@ -186,4 +187,42 @@ func TestModelRunPriorityCursorPreservedOnRestartAndRollback(t *testing.T) {
 	load(0)
 	claim(high)
 	load(1)
+}
+func TestModelRunClaimSkipsUnavailableRolesIncludingDefaultlessIsolation(t *testing.T) {
+	ctx := t.Context()
+	db, err := Open(filepath.Join(t.TempDir(), "role-claims.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	worker, err := db.Submit(ctx, "worker-first", "安排任务", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ordinary, err := db.Submit(ctx, "reply-after-worker", "解释问题", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := db.Submit(ctx, "pinned-only-after-worker", "仅本条", "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.db.Exec(`INSERT INTO isolated_reply_pins VALUES(?,?,?,'profile',1,'credential','only_this_message','not dispatched fixture')`,
+		isolated.ID, isolated.ConversationID, "user:fixture"); err != nil {
+		t.Fatal(err)
+	}
+	db.configureRuntime(1, RunLimits{ModelRunPriorityFairness: true})
+	assertClaim := func(reply, work bool, expected Run) {
+		t.Helper()
+		claim, err := db.claimAvailable(ctx, reply, work)
+		if err != nil || claim.ID != expected.ID {
+			t.Fatalf("selected %+v, want ID=%s: %v", claim, expected.ID, err)
+		}
+	}
+	assertClaim(false, false, isolated)
+	assertClaim(true, false, ordinary)
+	if got, err := db.claimAvailable(ctx, true, false); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("unavailable Worker was claimed: %+v %v", got, err)
+	}
+	assertClaim(false, true, worker)
 }

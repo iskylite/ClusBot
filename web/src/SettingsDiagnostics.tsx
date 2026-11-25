@@ -29,7 +29,7 @@ function formatBytes(value: number | undefined, english: boolean) {
   return `${new Intl.NumberFormat(english ? 'en-US' : 'zh-CN', {maximumFractionDigits: 2}).format(amount)} ${units[index]}`
 }
 
-export function SettingsDiagnostics({workspacePath, multiuser = false, english}: {workspacePath?: string; multiuser?: boolean; english: boolean}) {
+export function SettingsDiagnostics({english}: {english: boolean}) {
   const [storage, setStorage] = useState<StorageState>({status: 'loading'})
   const [request, setRequest] = useState(0)
   const t = (zh: string, en: string) => english ? en : zh
@@ -65,8 +65,8 @@ export function SettingsDiagnostics({workspacePath, multiuser = false, english}:
       <h2><FolderOpen size={14} aria-hidden="true"/>{t('工作区', 'Workspace')}</h2>
       <dl className="diagnostics-rows">
         <div className="diagnostics-row">
-          <dt>{multiuser ? t('范围', 'Scope') : t('路径', 'Path')}</dt>
-          <dd>{multiuser ? t('个人工作区 · 按账号隔离', 'Personal workspace · isolated by account') : workspacePath?.trim() ? <code>{workspacePath}</code> : unavailable}</dd>
+          <dt>{t('范围', 'Scope')}</dt>
+          <dd>{t('个人工作区 · 按账号隔离', 'Personal workspace · isolated by account')}</dd>
         </div>
       </dl>
     </section>

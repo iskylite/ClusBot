@@ -35,8 +35,9 @@ func setupA2HTTP(t *testing.T, dbPath string) (*a2HTTPClient, *work.Store) {
 		t.Fatal(err)
 	}
 	settings := &model.Settings{Store: store}
-	server := Server{Store: store, Token: "a2-token", Hosts: []string{"127.0.0.1"}, Settings: settings}
-	ts := httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("a2")}}))
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}, Settings: settings}
+	assignFixtureGrants(t, dbPath, businessFixturePrincipal(t, store))
+	ts := httptest.NewServer(productionFixtureHandler(t, server, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("a2")}}))
 	// 启动领域查询执行器（消费确定性 work_unit）。
 	ctx, cancel := context.WithCancel(context.Background())
 	executor, err := store.EnableAssetAcceptanceQuery(ctx)
@@ -71,7 +72,7 @@ func (c *a2HTTPClient) request(method, path, body string, authed bool) *http.Req
 }
 
 func (c *a2HTTPClient) login() string {
-	req, _ := http.NewRequest("POST", c.ts.URL+"/api/v1/session", strings.NewReader(`{"token":"a2-token"}`))
+	req, _ := http.NewRequest("POST", c.ts.URL+"/api/v1/session", strings.NewReader(businessFixtureCredentials))
 	req.Host = "127.0.0.1"
 	req.Header.Set("Origin", "http://127.0.0.1")
 	req.Header.Set("Content-Type", "application/json")

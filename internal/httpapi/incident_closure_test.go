@@ -8,25 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/work"
 )
-
-func loginLocalCookie(t *testing.T, handler http.Handler, token string) string {
-	t.Helper()
-	req := httptest.NewRequest("POST", "/api/v1/session", strings.NewReader(`{"token":"`+token+`"}`))
-	req.Host = "127.0.0.1:8080"
-	req.Header.Set("Origin", "http://127.0.0.1:8080")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || len(rec.Result().Cookies()) == 0 {
-		t.Fatalf("login failed: %d %s", rec.Code, rec.Body.String())
-	}
-	return rec.Result().Cookies()[0].String()
-}
 
 func doAuthedJSON(t *testing.T, handler http.Handler, method, path, cookie string, body any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -56,7 +41,7 @@ func TestFaultSegmentsAndIncidentFiveStepClosure(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{
+	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{
 		ObjectRef: "node-01",
 		Kind:      "node",
 		Identity:  "sn-node-01",
@@ -66,14 +51,14 @@ func TestFaultSegmentsAndIncidentFiveStepClosure(t *testing.T) {
 
 	srv := Server{
 		Store: store,
-		Token: "test-token",
+
 		Hosts: []string{"127.0.0.1:8080"},
 		TicketEffectChecker: func(ctx context.Context, objectRef string) (bool, string, error) {
 			return true, "independent health check ok for " + objectRef, nil
 		},
 	}
-	handler := srv.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})
-	cookie := loginLocalCookie(t, handler, "test-token")
+	handler := businessFixtureHandler(t, srv)
+	cookie := businessFixtureLogin(t, handler, "http://127.0.0.1:8080").String()
 
 	// 1. Record fault segment + observation -> ClusterTrendStats becomes live.
 	rec := doAuthedJSON(t, handler, "POST", "/api/v1/domain/fault-segments", cookie, map[string]any{

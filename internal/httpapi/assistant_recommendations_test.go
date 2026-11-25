@@ -84,8 +84,8 @@ func TestAssistantRecommendationModelAndSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: recommendationSettings(t, store, provider.URL), Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: recommendationSettings(t, store, provider.URL), Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer a.close()
 	a.cookie = a.login()
 	command, _ := json.Marshal(map[string]string{"text": "/助手 提出处理建议", "client_request_id": "recommendation-001"})
@@ -248,7 +248,7 @@ func TestAssistantRecommendationAccountSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	server := Server{Store: store, Settings: recommendationSettings(t, store, provider.URL), ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
+	server := Server{Store: store, Settings: recommendationSettings(t, store, provider.URL), Origin: "https://ops.example", Hosts: []string{"ops.example"}}
 	f := &accountFixture{t: t, store: store, handler: server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})}
 	f.setup()
 	admin := f.login("admin", "correct horse battery staple")

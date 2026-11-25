@@ -9,7 +9,9 @@ import (
 
 const modelRunEligible = ` FROM runs WHERE status='queued'
 AND NOT EXISTS(SELECT 1 FROM workflow_blocked_tasks w WHERE w.task_id=runs.task_id)
-AND NOT EXISTS(SELECT 1 FROM run_queue_order q WHERE q.after_run_id=runs.id)`
+AND NOT EXISTS(SELECT 1 FROM run_queue_order q WHERE q.after_run_id=runs.id)
+AND ((? AND coalesce(runs.task_id,'')='') OR (? AND coalesce(runs.task_id,'')<>'')
+OR EXISTS(SELECT 1 FROM isolated_reply_pins p WHERE p.run_id=runs.id))`
 const modelRunPriority = `CASE (SELECT priority FROM tasks WHERE id=runs.task_id) WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1 END`
 
 var modelRunPrioritySlots = [...]int{0, 0, 0, 0, 1, 1, 2}
@@ -28,9 +30,9 @@ INSERT INTO model_run_priority_cursor(singleton,next_slot) VALUES(1,0) ON CONFLI
 // optional policy allocates priority-class turns only among already eligible
 // work. Empty classes cost neither a claim nor a worker slot. The write to the
 // cursor rolls back if the caller cannot commit the actual claim.
-func selectModelRun(ctx context.Context, tx *sql.Tx, fair bool) (Run, error) {
+func selectModelRun(ctx context.Context, tx *sql.Tx, fair, replyReady, workerReady bool) (Run, error) {
 	if !fair {
-		return scanRun(tx.QueryRowContext(ctx, "SELECT "+runColumns+modelRunEligible+" ORDER BY "+modelRunPriority+",rowid LIMIT 1"))
+		return scanRun(tx.QueryRowContext(ctx, "SELECT "+runColumns+modelRunEligible+" ORDER BY "+modelRunPriority+",rowid LIMIT 1", replyReady, workerReady))
 	}
 	var next int
 	if err := tx.QueryRowContext(ctx, "SELECT next_slot FROM model_run_priority_cursor WHERE singleton=1").Scan(&next); err != nil {
@@ -48,7 +50,7 @@ func selectModelRun(ctx context.Context, tx *sql.Tx, fair bool) (Run, error) {
 		}
 		tried[priority] = true
 		run, err := scanRun(tx.QueryRowContext(ctx,
-			"SELECT "+runColumns+modelRunEligible+" AND "+modelRunPriority+"=? ORDER BY rowid LIMIT 1", priority))
+			"SELECT "+runColumns+modelRunEligible+" AND "+modelRunPriority+"=? ORDER BY rowid LIMIT 1", replyReady, workerReady, priority))
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
 		}

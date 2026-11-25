@@ -22,7 +22,7 @@ func TestClusterTrendsHTTPAccountIsolation(t *testing.T) {
 	paths := make(map[string]string)
 	var srv Server
 	srv = Server{
-		Store: instance, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+		Store: instance, Origin: "https://ops.example", Hosts: []string{"ops.example"},
 		PersonalAPI: func(owner string) (http.Handler, error) {
 			store := stores[owner]
 			if store == nil {

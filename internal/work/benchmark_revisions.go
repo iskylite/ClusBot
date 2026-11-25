@@ -224,7 +224,7 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 			proposedTargets[c.Key] = row.targets
 			continue
 		}
-		targets, grants, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
+		targets, grants, err := freezeBenchmarkCase(ctx, tx, actor, c, provider, stamp)
 		if err != nil {
 			return BenchmarkRevision{}, err
 		}

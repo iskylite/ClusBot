@@ -203,6 +203,9 @@ func (s *Settings) TextRunProvider(ctx context.Context, task bool) (work.Provide
 	}
 	provider, err := s.provider(ctx)
 	if err != nil {
+		if !task {
+			return nil, "", work.ErrConversationReplyRoleUnavailable
+		}
 		return nil, "", err
 	}
 	binding, _ := provider.ReadCheckpointIdentity()

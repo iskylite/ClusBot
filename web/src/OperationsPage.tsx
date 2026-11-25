@@ -122,7 +122,7 @@ function IncidentActions({incident, symptoms, showLogs, toggleLogs, refresh}:{in
       setOptions(result);setPage({items:result.assets,next_cursor:result.next_cursor});setCursor('');setHistory([]);setOptionsError('');setHidden(false)
     } catch(e) {
       if(request!==optionsRequest.current)return
-      if(e instanceof APIError && (e.status===403 || e.status===404 || e.code==='server_mode_unavailable')){setHidden(true);return}
+      if(e instanceof APIError && (e.status===403 || e.status===404 || e.code==='account_feature_unavailable')){setHidden(true);return}
       setOptionsError(errorMessage(e))
     }
   }

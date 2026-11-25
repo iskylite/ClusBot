@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"clusbot/internal/work"
 )
@@ -35,15 +34,16 @@ func TestExplicitTaskHTTPBackpressureOnlyOnNewTaskEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	s := Server{Store: store, Hosts: []string{"127.0.0.1"}, Token: "test", MaxPendingExplicitTasks: 1}
-	handler := s.Handler(fstest.MapFS{})
-	expiry := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	s := Server{Store: store, Hosts: []string{"127.0.0.1"}, MaxPendingExplicitTasks: 1}
+	businessFixturePrincipal(t, store)
+	handler := productionFixtureHandler(t, s, "http://127.0.0.1", fstest.MapFS{})
+	cookie := businessFixtureLogin(t, handler, "http://127.0.0.1")
 	send := func(path, body string) (*httptest.ResponseRecorder, map[string]any) {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, strings.NewReader(body))
 		req.Header.Set("Origin", "http://127.0.0.1")
 		req.Header.Set("Content-Type", "application/json")
-		req.AddCookie(&http.Cookie{Name: "clusbot_session", Value: expiry + "." + s.signature(expiry)})
+		req.AddCookie(cookie)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		var out map[string]any

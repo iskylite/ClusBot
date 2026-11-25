@@ -35,7 +35,7 @@ type accountRuntime struct {
 }
 
 func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (func(), error) {
-	key, err := accessToken(filepath.Join(cfg.DataDir, "connection-key"))
+	key, err := connectionCredentialKey(cfg.DataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (
 		ctx: businessCtx, cancel: cancel, root: root, cfg: cfg, api: *api,
 		handlers: make(map[string]http.Handler), stores: make(map[string]*work.Store),
 	}
-	if cfg.desktop && cfg.Benchmark.BaseURL != "" {
+	if cfg.Benchmark.BaseURL != "" {
 		runtime.benchmark, err = work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
 			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
 		if err != nil {
@@ -200,33 +200,45 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 			return nil, err
 		}
 	}
-	accountDiscovery := db.DynamicDiscoverySource(a.discovery)
+	// The instance owns connection configuration and usable credentials.
+	// Published plans and observations still belong to the account database.
+	accountDiscovery := work.GuardDiscoverySource(a.api.Store.DynamicDiscoverySource(a.discovery), func(ctx context.Context) error {
+		allowed, err := a.api.Store.AccountCanRunDiscovery(ctx, principal)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return work.ErrAuthorizationDenied
+		}
+		return nil
+	})
 
-	available := func() bool {
-		return a.api.ModelAvailable(a.ctx) && a.api.Store.AccountIsActive(a.ctx, principal)
-	}
-	loop := work.NewRuntimeLoop(db, available)
+	accountActive := func() bool { return a.api.Store.AccountIsActive(a.ctx, principal) }
+	loop := work.NewRuntimeLoop(db, nil)
 	a.background.Go(func() { loop.Run(a.ctx, 250*time.Millisecond, 0) })
 	a.background.Go(func() { executor.Run(a.ctx, 100*time.Millisecond) })
-	source := accountDiscoverySource{accountDiscovery, a.api.Store, principal}
-	a.background.Go(func() { db.RunDiscovery(a.ctx, source) })
+	a.background.Go(func() { db.RunDiscovery(a.ctx, accountDiscovery) })
 	limits := work.RunLimits{
 		ActiveTime:               time.Duration(a.cfg.Runtime.MaxRunSeconds) * time.Second,
 		ModelTimeout:             time.Duration(a.cfg.Runtime.ModelTimeoutSeconds) * time.Second,
 		OutputTokens:             a.cfg.Runtime.MaxOutputTokens,
 		ModelRunPriorityFairness: a.cfg.Runtime.ModelRunPriorityFairness,
 	}
-	workers := db.StartWhenModelAvailable(a.ctx, a.api.Settings, a.cfg.Runtime.MaxActiveRuns, limits, available)
+	workers := db.StartWithModelRoles(a.ctx, a.api.Settings, a.cfg.Runtime.MaxActiveRuns, limits, accountActive, a.api.Settings.RoleAvailable)
 	approvals := db.StartApprovalWorker(a.ctx)
 	a.background.Go(workers.Wait)
 	a.background.Go(approvals.Wait)
-	a.background.Go(func() { db.RunChatAdmissions(a.ctx, available, a.api.Settings.RouteSubmission) })
-	handler := a.api.PersonalHandler(db)
+	a.background.Go(func() {
+		db.RunChatAdmissions(a.ctx, accountActive, a.api.Settings.RouteSubmission, a.api.Settings.RoleAvailable)
+	})
+	accountAPI := a.api
+	accountAPI.DiscoverySource = accountDiscovery
+	handler := accountAPI.PersonalHandler(db)
 	if a.benchmark != nil {
 		// These already-authorized account routes need the pinned adapter to
 		// inspect and revise existing runs. Do not expose it to admission or
 		// dispatch routes, and do not start an account benchmark worker.
-		benchmarkAPI := a.api
+		benchmarkAPI := accountAPI
 		benchmarkAPI.BenchmarkProvider = a.benchmark
 		benchmarkHandler := benchmarkAPI.PersonalHandler(db)
 		mux := http.NewServeMux()
@@ -261,23 +273,4 @@ func (a *accountRuntime) taskStores() map[string]*work.Store {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return maps.Clone(a.stores)
-}
-
-// Recheck the instance account at dispatch so disabling or demoting an account
-// also removes its ability to run previously authorized discovery plans.
-type accountDiscoverySource struct {
-	work.DiscoveryScanSource
-	accounts  *work.Store
-	principal string
-}
-
-func (s accountDiscoverySource) ScanDiscovery(ctx context.Context, source, scope string) ([]work.DiscoveryObservation, error) {
-	allowed, err := s.accounts.AccountCanRunDiscovery(ctx, s.principal)
-	if err != nil {
-		return nil, err
-	}
-	if !allowed {
-		return nil, work.ErrAuthorizationDenied
-	}
-	return s.DiscoveryScanSource.ScanDiscovery(ctx, source, scope)
 }

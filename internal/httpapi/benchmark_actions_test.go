@@ -17,12 +17,14 @@ func TestBenchmarkActionProjectionMatchesControlGuards(t *testing.T) {
 	a := setupA1(t, dbPath)
 	defer a.close()
 	ctx := t.Context()
-	const actor, key = "user:session", "full"
+	actor := businessFixturePrincipal(t, a.store)
+	const key = "full"
 	const hold, resume, skip = "hold_before_dispatch", "resume_before_dispatch", "skip_this_run"
 	g := work.DomainBenchmarkGrant{Revision: 1, Connection: "bench", Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := a.store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{g}}}); err != nil {
+	if err := a.store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, a.store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{g}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	p := work.BenchmarkProfile{Key: key, Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Targets: []string{"node-1"},
 		Binding:         work.BenchmarkBinding{Connection: "bench", Tool: "test", Revision: 1, Validator: "structured-metrics@1"},
 		RequiredMetrics: map[string]string{"rate": "GB/s"},

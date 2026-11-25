@@ -4,10 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strconv"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"clusbot/internal/work"
 )
@@ -18,10 +16,10 @@ func TestDiscoverySetupStatusHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	server := Server{Store: store, Token: "fixture", Hosts: []string{"localhost"}}
-	handler := server.Handler(fstest.MapFS{})
-	expires := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
-	cookie := &http.Cookie{Name: "clusbot_session", Value: expires + "." + server.signature(expires)}
+	server := Server{Store: store, Hosts: []string{"localhost"}}
+	businessFixturePrincipal(t, store)
+	handler := productionFixtureHandler(t, server, "http://localhost", fstest.MapFS{})
+	cookie := businessFixtureLogin(t, handler, "http://localhost")
 	const path = "http://localhost/api/v1/domain/discovery/setup-status"
 	read := func(suffix string, auth *http.Cookie, want int) *httptest.ResponseRecorder {
 		t.Helper()
@@ -43,7 +41,7 @@ func TestDiscoverySetupStatusHTTP(t *testing.T) {
 		t.Fatalf("unexpected response: %s", got)
 	}
 	server.DiscoverySource = &blockingDiscoveryFixture{}
-	handler = server.Handler(fstest.MapFS{})
+	handler = productionFixtureHandler(t, server, "http://localhost", fstest.MapFS{})
 	if got := read("?source=fixture-discovery&scope=POD7", cookie, http.StatusOK).Body.String(); got != "{\"state\":\"no_active_plan\"}\n" {
 		t.Fatalf("unexpected response: %s", got)
 	}

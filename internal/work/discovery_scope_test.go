@@ -38,7 +38,7 @@ func TestDiscoveryCandidateScopeIsolationAndLegacyProvenance(t *testing.T) {
 		if err != nil || !ok || tick.plan != plan {
 			t.Fatalf("claim plan %s: %+v %t %v", plan, tick, ok, err)
 		}
-		if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{"same-serial", address}}, nil, stamp); err != nil {
+		if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{Serial: "same-serial", Address: address}}, nil, stamp); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -110,7 +110,7 @@ func TestDiscoveryCandidateScopeIsolationAndLegacyProvenance(t *testing.T) {
 	if err != nil || !claimed || tick.plan != "scan-a" {
 		t.Fatalf("claim conflict scan: %+v %t %v", tick, claimed, err)
 	}
-	if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{"same-serial", "192.0.2.71"}, {"same-serial", "192.0.2.72"}}, nil, start+120000); err != nil {
+	if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{Serial: "same-serial", Address: "192.0.2.71"}, {Serial: "same-serial", Address: "192.0.2.72"}}, nil, start+120000); err != nil {
 		t.Fatal(err)
 	}
 	both, err := s.ListDiscoveryCandidateObservations(ctx, a, c.ID, "", 2)
@@ -171,7 +171,7 @@ func TestDiscoveryDelayedReceiptsDoNotRewindCandidateOrTriggerReverseDrift(t *te
 	}
 	settle := func(tick discoveryTick, ip string, stamp int64) {
 		t.Helper()
-		if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{serial, ip}}, nil, stamp); err != nil {
+		if err := s.settleDiscovery(ctx, tick, []DiscoveryObservation{{Serial: serial, Address: ip}}, nil, stamp); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,10 +268,10 @@ func TestDiscoveryConflictUsesOnlyValidCanonicalAddresses(t *testing.T) {
 		t.Fatalf("claim: %v %v", ok, err)
 	}
 	batch := []DiscoveryObservation{
-		{"aliased", "192.0.2.1"}, {"aliased", "::ffff:192.0.2.1"},
-		{"valid", "192.0.2.2"}, {"valid", "malformed"}, {"valid", "::ffff:0.0.0.0"},
-		{"different", "192.0.2.3"}, {"different", "::ffff:192.0.2.4"},
-		{"invalid-only", "::ffff:224.0.0.1"},
+		{Serial: "aliased", Address: "192.0.2.1"}, {Serial: "aliased", Address: "::ffff:192.0.2.1"},
+		{Serial: "valid", Address: "192.0.2.2"}, {Serial: "valid", Address: "malformed"}, {Serial: "valid", Address: "::ffff:0.0.0.0"},
+		{Serial: "different", Address: "192.0.2.3"}, {Serial: "different", Address: "::ffff:192.0.2.4"},
+		{Serial: "invalid-only", Address: "::ffff:224.0.0.1"},
 	}
 	if err := s.settleDiscovery(ctx, tick, batch, nil, start); err != nil {
 		t.Fatal(err)

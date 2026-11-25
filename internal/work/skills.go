@@ -92,10 +92,21 @@ func (s *Store) DraftSkill(ctx context.Context, scope, instructions string, revi
 func draftSkillTx(tx *sql.Tx, scope, instructions string, revision int, reuse bool) (SkillVersion, error) {
 	var skill string
 	var current int
-	err := tx.QueryRow("SELECT id,revision FROM personal_skills WHERE scope_label=?", scope).Scan(&skill, &current)
-	if errors.Is(err, sql.ErrNoRows) && revision == 0 {
+	personal, err := accountOwnsRSIStore(tx)
+	if err != nil {
+		return SkillVersion{}, err
+	}
+	if personal && reuse {
+		return SkillVersion{}, ErrAccountDenied
+	}
+	lookup := "SELECT id,revision FROM main.personal_skills WHERE scope_label=?"
+	if personal {
+		lookup += " AND id IN (SELECT skill_id FROM main.account_rsi_skills)"
+	}
+	err = tx.QueryRow(lookup, scope).Scan(&skill, &current)
+	if errors.Is(err, sql.ErrNoRows) && revision == 0 && !personal {
 		skill = id()
-		_, err = tx.Exec("INSERT INTO personal_skills(id,scope_label,revision) VALUES(?,?,0)", skill, scope)
+		_, err = tx.Exec("INSERT INTO main.personal_skills(id,scope_label,revision) VALUES(?,?,0)", skill, scope)
 	}
 	if err != nil {
 		return SkillVersion{}, err
@@ -114,10 +125,10 @@ func draftSkillTx(tx *sql.Tx, scope, instructions string, revision int, reuse bo
 		}
 	}
 	var version int
-	if err = tx.QueryRow("SELECT coalesce(max(version),0)+1 FROM personal_skill_versions WHERE skill_id=?", skill).Scan(&version); err != nil {
+	if err = tx.QueryRow("SELECT coalesce(max(version),0)+1 FROM main.personal_skill_versions WHERE skill_id=?", skill).Scan(&version); err != nil {
 		return SkillVersion{}, err
 	}
-	if _, err = tx.Exec("INSERT INTO personal_skill_versions(skill_id,version,base_revision,instructions,sha256) VALUES(?,?,?,?,?)",
+	if _, err = tx.Exec("INSERT INTO main.personal_skill_versions(skill_id,version,base_revision,instructions,sha256) VALUES(?,?,?,?,?)",
 		skill, version, revision, instructions, hash); err != nil {
 		return SkillVersion{}, err
 	}
@@ -141,6 +152,13 @@ func (s *Store) ActivateSkill(ctx context.Context, skill string, version, revisi
 }
 
 func activateSkillTx(tx *sql.Tx, skill string, version, revision int, hash, proposal, replayID string) error {
+	personal, err := accountOwnsRSIStore(tx)
+	if err != nil {
+		return err
+	}
+	if personal && proposal == "" {
+		return ErrAccountDenied
+	}
 	v, err := scanSkill(tx.QueryRow(skillSelect+" WHERE s.id=? AND v.version=?", skill, version))
 	if err != nil {
 		return err
@@ -169,21 +187,27 @@ func activateSkillTx(tx *sql.Tx, skill string, version, revision int, hash, prop
 		if err := requirePassedSkillReplay(tx, proposal, replayID, SkillProposalVersion{version, revision, hash}); err != nil {
 			return err
 		}
+	} else if proposalID != "" {
+		// Reactivating a generated historical version remains contingent on
+		// the original independently paired evidence, not approved_at alone.
+		if err := verifyPassedSkillReplay(tx, proposalID, "", SkillProposalVersion{version, v.BaseRevision, hash}); err != nil {
+			return err
+		}
 	}
 	if retry {
 		return nil
 	}
-	if _, err = tx.Exec("UPDATE personal_skill_versions SET approved_at=coalesce(approved_at,?) WHERE skill_id=? AND version=?", now(), skill, version); err != nil {
+	if _, err = tx.Exec("UPDATE main.personal_skill_versions SET approved_at=coalesce(approved_at,?) WHERE skill_id=? AND version=?", now(), skill, version); err != nil {
 		return err
 	}
-	if _, err = tx.Exec("UPDATE personal_skills SET active_version=?,revision=revision+1 WHERE id=?", version, skill); err != nil {
+	if _, err = tx.Exec("UPDATE main.personal_skills SET active_version=?,revision=revision+1 WHERE id=?", version, skill); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (s *Store) DisableSkill(ctx context.Context, skill string, revision int) error {
-	res, err := s.db.ExecContext(ctx, "UPDATE personal_skills SET active_version=NULL,revision=revision+1 WHERE id=? AND revision=?", skill, revision)
+	res, err := s.db.ExecContext(ctx, "UPDATE main.personal_skills SET active_version=NULL,revision=revision+1 WHERE id=? AND revision=? AND NOT EXISTS(SELECT 1 FROM main.account_business_owner)", skill, revision)
 	if err != nil {
 		return err
 	}
@@ -222,9 +246,10 @@ SELECT ?,skill_id,version,binding_source FROM run_skills WHERE run_id=?`, run.ID
 FROM runs r JOIN tasks t ON t.id=r.task_id
 JOIN conversation_skill_bindings b ON b.conversation_id=r.conversation_id
 JOIN personal_skills s ON s.id=b.skill_id AND s.scope_label=t.scope_label
-WHERE r.id=? UNION ALL
-SELECT s.id,s.active_version,'scope_default' FROM personal_skills s JOIN tasks t ON t.scope_label=s.scope_label
-WHERE t.id=? AND s.active_version IS NOT NULL LIMIT 1`, run.ID, run.TaskID).Scan(&skill, &version, &source)
+WHERE r.id=?`, run.ID).Scan(&skill, &version, &source)
+			if errors.Is(err, sql.ErrNoRows) {
+				skill, version, source, err = defaultSkillForTask(tx, run.TaskID)
+			}
 			if err != nil && !errors.Is(err, sql.ErrNoRows) {
 				return nil, err
 			}

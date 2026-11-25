@@ -2,7 +2,6 @@ package work
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -103,86 +102,57 @@ VALUES(?,?,?,?,?,?,?,?)`,
 	}, nil
 }
 
-// SyncFaultSegmentsFromMCP calls a bound/allowed `fault_check` MCP tool and persists
-// any unhealthy findings as observations + fault_segments.
+// SyncFaultSegmentsFromMCP explicitly checks named nodes with a bound NHC.
+// An execution or coverage failure is not a fault finding or a healthy node.
+// Attributable faults may persist even if another target was not observed.
 func (s *Store) SyncFaultSegmentsFromMCP(ctx context.Context, scope string) ([]FaultSegmentSummary, error) {
-	extra := map[string]any{"sync": true}
-	res, binding, ok, err := s.CallBoundMCPTargetTool(ctx, "ops.fault_check", "fault_check", strings.TrimSpace(scope), extra)
-	if !ok {
-		res, binding, ok, err = s.CallBoundMCPTargetTool(ctx, "", "fault_check", strings.TrimSpace(scope), extra)
+	nodes := strings.Split(scope, ",")
+	if len(nodes) > 32 {
+		return nil, fmt.Errorf("%w：一次最多明确指定 32 个节点", ErrHealthCoverage)
 	}
-	if !ok {
-		return nil, fmt.Errorf("%w：未配置或未启用 fault_check MCP 工具", ErrCapabilityBinding)
+	seen := make(map[string]bool, len(nodes))
+	for i, node := range nodes {
+		node = strings.TrimSpace(node)
+		if !healthNodeName.MatchString(node) || seen[node] {
+			return nil, fmt.Errorf("%w：请提供不重复的具体节点名称，以逗号分隔", ErrHealthCoverage)
+		}
+		seen[node], nodes[i] = true, node
 	}
+	res, binding, bound, err := s.callBoundNHC(ctx, "ops.fault_check", nodes, false)
 	if err != nil {
 		return nil, err
 	}
-
-	sourceRef := "mcp:" + firstNonEmpty(binding.ConnectionName, binding.ConnectionID, "fault_check")
-	inputs := parseMCPFaultFindings(res, scope, sourceRef)
-	out := make([]FaultSegmentSummary, 0, len(inputs))
-	for _, in := range inputs {
-		item, recErr := s.RecordFaultSegment(ctx, in)
-		if recErr != nil {
-			return out, recErr
+	if !bound {
+		return nil, fmt.Errorf("%w：未配置只读 ops.fault_check → nhc", ErrCapabilityBinding)
+	}
+	report := parseMCPNHCResult(res, nodes)
+	source := "mcp:" + binding.ConnectionID + ":nhc:" + report.TaskID
+	out := make([]FaultSegmentSummary, 0)
+	for _, node := range nodes {
+		if report.Nodes[node] != mcpNHCFault {
+			continue
+		}
+		item, err := s.RecordFaultSegment(ctx, FaultSegmentInput{
+			FaultKey: "nhc", ObjectRef: node, FieldKey: "fault_status",
+			Value: mcpNHCFault, SourceRef: source, State: "active",
+		})
+		if err != nil {
+			return out, err
 		}
 		out = append(out, item)
 	}
-	return out, nil
-}
-
-func parseMCPFaultFindings(res ConnectionResult, scope, sourceRef string) []FaultSegmentInput {
-	raw := res.Structured
-	if len(raw) == 0 {
-		raw = []byte(strings.TrimSpace(res.Text))
-	}
-	type finding struct {
-		Host     string `json:"host"`
-		Node     string `json:"node"`
-		Object   string `json:"object_ref"`
-		FaultKey string `json:"fault_key"`
-		Check    string `json:"check"`
-		Status   string `json:"status"`
-		Healthy  *bool  `json:"healthy"`
-		Detail   string `json:"detail"`
-	}
-	var env struct {
-		Findings []finding `json:"findings"`
-		Failures []finding `json:"failures"`
-		Results  []finding `json:"results"`
-	}
-	var out []FaultSegmentInput
-	if len(raw) > 0 && json.Unmarshal(raw, &env) == nil {
-		items := append(append([]finding{}, env.Findings...), env.Failures...)
-		if len(items) == 0 {
-			for _, r := range env.Results {
-				if (r.Healthy != nil && !*r.Healthy) || strings.EqualFold(r.Status, "failed") || strings.EqualFold(r.Status, "unhealthy") {
-					items = append(items, r)
-				}
+	if !report.Complete {
+		var missing []string
+		for _, node := range nodes {
+			if report.Nodes[node] == mcpNHCUnknown {
+				missing = append(missing, node)
 			}
 		}
-		for _, item := range items {
-			obj := firstNonEmpty(item.Object, item.Host, item.Node, scope, "cluster")
-			key := firstNonEmpty(item.FaultKey, item.Check, "fault_check")
-			out = append(out, FaultSegmentInput{
-				FaultKey:  key,
-				ObjectRef: obj,
-				FieldKey:  "fault_check",
-				Value:     firstNonEmpty(item.Detail, item.Status, "unhealthy"),
-				SourceRef: sourceRef,
-				State:     "active",
-			})
+		list := strings.Join(missing[:min(len(missing), 3)], "、")
+		if len(missing) > 3 {
+			list += fmt.Sprintf("等 %d 个节点", len(missing))
 		}
+		return out, fmt.Errorf("%w：未能核实 %s；本次已保存 %d 条可归属故障", ErrHealthCoverage, list, len(out))
 	}
-	if len(out) == 0 && res.IsError {
-		out = append(out, FaultSegmentInput{
-			FaultKey:  "fault_check_error",
-			ObjectRef: firstNonEmpty(strings.TrimSpace(scope), "cluster"),
-			FieldKey:  "fault_check",
-			Value:     firstNonEmpty(strings.TrimSpace(res.Text), "error"),
-			SourceRef: sourceRef,
-			State:     "active",
-		})
-	}
-	return out
+	return out, nil
 }

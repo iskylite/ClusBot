@@ -145,6 +145,9 @@ WHERE e.source='chat' AND e.event_id=? AND (?='' OR e.principal=?)`, requestKey,
 	switch e.State {
 	case "received":
 		receipt.Reason = "已受理，等待分类与执行"
+		if failure != "" {
+			receipt.Reason = failure
+		}
 	case "applying":
 		receipt.Reason = "正在处理"
 	case "applied":
@@ -457,6 +460,58 @@ type chatAdmissionInput struct {
 	MaterialIDs                 []string
 }
 
+// ChatAdmissionRole names only the next stage. Ordinary new messages need
+// Router; direct follow-ups, explicit tasks and dedicated task replies do not.
+func (s *Store) ChatAdmissionRole(ctx context.Context, conversation string, task bool, delivery Delivery) (string, error) {
+	if task || delivery.Criteria != nil || delivery.Filename != nil || delivery.Read != nil ||
+		len(delivery.Reads) != 0 || delivery.ReplaceMaterials {
+		return TaskWorkerModelRole, nil
+	}
+	if conversation != "" {
+		var taskID string
+		err := s.db.QueryRowContext(ctx, "SELECT id FROM tasks WHERE conversation_id=?", conversation).Scan(&taskID)
+		switch {
+		case err == nil:
+			err = requireOrdinaryTaskFollowup(s.db, taskID)
+			switch {
+			case err == nil:
+				return TaskWorkerModelRole, nil
+			case isDedicatedTaskBoundary(err):
+				return ConversationReplyModelRole, nil
+			default:
+				return "", err
+			}
+		case !errors.Is(err, sql.ErrNoRows):
+			return "", err
+		}
+	}
+	if delivery.TaskRef != nil {
+		return ConversationReplyModelRole, nil
+	}
+	return GeneralRouterModelRole, nil
+}
+
+func ChatModelPendingReason(role string) string {
+	switch role {
+	case TaskWorkerModelRole:
+		return "事项执行模型不可用，输入已受理，配置后会继续"
+	case ConversationReplyModelRole:
+		return "对话回复模型不可用，输入已受理，配置后会继续"
+	default:
+		return "路由模型不可用，输入已受理，配置后会继续识别意图"
+	}
+}
+
+func (s *Store) DeferChatAdmissionForModel(ctx context.Context, key, role string) error {
+	return s.deferChatAdmissionForModel(ctx, key, role, 0)
+}
+
+func (s *Store) deferChatAdmissionForModel(ctx context.Context, key, role string, retryAt int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE inbox_events SET kind='chat_pending',failure=?,next_retry_at=?
+WHERE source='chat' AND event_id=? AND state='received'`, ChatModelPendingReason(role), retryAt, key)
+	return err
+}
+
 type PendingChatAdmission struct {
 	RequestKey     string `json:"request_key"`
 	Summary        string `json:"summary"`
@@ -488,17 +543,32 @@ ORDER BY e.received_at DESC,e.rowid DESC LIMIT 50`, principal)
 }
 
 func (s *Store) ProcessChatAdmissions(ctx context.Context, route Router) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT event_id,payload_ref FROM inbox_events
+	return s.processChatAdmissions(ctx, route, nil, nil)
+}
+
+type chatAdmissionCursor struct{ receivedAt, rowID int64 }
+
+func (s *Store) processChatAdmissions(ctx context.Context, route Router, available func(context.Context, string) bool, cursor *chatAdmissionCursor) error {
+	var after chatAdmissionCursor
+	limit := 8
+	if cursor != nil {
+		after, limit = *cursor, 64
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT event_id,payload_ref,received_at,rowid FROM inbox_events
 WHERE source='chat' AND state='received' AND payload_ref<>'' AND next_retry_at<=?
-ORDER BY received_at,rowid LIMIT 8`, now())
+AND (received_at,rowid)>(?,?)
+ORDER BY received_at,rowid LIMIT ?`, now(), after.receivedAt, after.rowID, limit)
 	if err != nil {
 		return err
 	}
-	type item struct{ key, payload string }
+	type item struct {
+		key, payload string
+		position     chatAdmissionCursor
+	}
 	var pending []item
 	for rows.Next() {
 		var entry item
-		if err := rows.Scan(&entry.key, &entry.payload); err != nil {
+		if err := rows.Scan(&entry.key, &entry.payload, &entry.position.receivedAt, &entry.position.rowID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -509,7 +579,15 @@ ORDER BY received_at,rowid LIMIT 8`, now())
 	if err != nil {
 		return err
 	}
+	processed := 0
+	ready := make(map[string]bool, 3)
 	for _, entry := range pending {
+		if cursor != nil && processed == 8 {
+			return nil
+		}
+		if cursor != nil {
+			*cursor = entry.position
+		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -520,11 +598,29 @@ ORDER BY received_at,rowid LIMIT 8`, now())
 			}
 			continue
 		}
+		if available != nil {
+			role, err := s.ChatAdmissionRole(ctx, input.ConversationID, input.Task, input.Delivery)
+			if err != nil {
+				return err
+			}
+			ok, checked := ready[role]
+			if !checked {
+				ok = available(ctx, role)
+				ready[role] = ok
+			}
+			if !ok {
+				if err := s.deferChatAdmissionForModel(ctx, entry.key, role, now()+2000); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if input.Task {
 			_, err = s.SubmitWithDelivery(ctx, entry.key, input.Text, input.Scope, input.ConversationID, true, input.Delivery, input.MaterialIDs...)
 		} else {
 			_, err = s.SubmitRoutedChat(ctx, entry.key, input.Text, input.Scope, input.ConversationID, input.Delivery, route, input.MaterialIDs...)
 		}
+		processed++
 		if err == nil {
 			continue
 		}
@@ -537,9 +633,18 @@ ORDER BY received_at,rowid LIMIT 8`, now())
 			}
 			continue
 		}
+		if errors.Is(err, ErrGeneralRouterRoleUnavailable) {
+			if err := s.deferChatAdmissionForModel(ctx, entry.key, GeneralRouterModelRole, now()+2000); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := s.FailChatAdmission(ctx, entry.key, err.Error()); err != nil {
 			return err
 		}
+	}
+	if cursor != nil && len(pending) < limit {
+		*cursor = chatAdmissionCursor{}
 	}
 	return nil
 }
@@ -549,16 +654,17 @@ func (s *Store) FailChatAdmission(ctx context.Context, key, reason string) error
 	return err
 }
 
-func (s *Store) RunChatAdmissions(ctx context.Context, modelAvailable func() bool, route Router) {
+func (s *Store) RunChatAdmissions(ctx context.Context, accountActive func() bool, route Router, roleAvailable func(context.Context, string) bool) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	var cursor chatAdmissionCursor
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if modelAvailable() {
-				if err := s.ProcessChatAdmissions(ctx, route); err != nil && ctx.Err() == nil {
+			if accountActive == nil || accountActive() {
+				if err := s.processChatAdmissions(ctx, route, roleAvailable, &cursor); err != nil && ctx.Err() == nil {
 					slog.Error("推进 Chat 受理失败", "error", err)
 				}
 			}

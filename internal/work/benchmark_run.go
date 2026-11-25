@@ -182,14 +182,14 @@ func (s *Store) SubmitBenchmarkRun(ctx context.Context, actor string, request Be
 		return "", err
 	}
 	defer tx.Rollback()
-	task, err := submitBenchmarkRunTx(tx, actor, request, provider, now())
+	task, err := submitBenchmarkRunTx(ctx, tx, actor, request, provider, now())
 	if err != nil {
 		return "", err
 	}
 	return task, tx.Commit()
 }
 
-func submitBenchmarkRunTx(tx *sql.Tx, actor string, request BenchmarkRunRequest, provider BenchmarkProvider, stamp int64) (string, error) {
+func submitBenchmarkRunTx(ctx context.Context, tx *sql.Tx, actor string, request BenchmarkRunRequest, provider BenchmarkProvider, stamp int64) (string, error) {
 	if actor == "" {
 		return "", ErrAuthorizationDenied
 	}
@@ -229,7 +229,7 @@ VALUES(?,?,?,?,'基准测试','active','queued','方案已受理',?)`, taskID, c
 	}
 	ids := map[string]string{}
 	for i, c := range p.Cases {
-		targets, auths, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
+		targets, auths, err := freezeBenchmarkCase(ctx, tx, actor, c, provider, stamp)
 		if err != nil {
 			return "", err
 		}
@@ -254,9 +254,15 @@ VALUES(?,?,?,?,?,'queued')`, step, taskID, c.Key, toJSON(targets), toJSON(auths)
 	return taskID, nil
 }
 
-func freezeBenchmarkCase(tx *sql.Tx, actor string, c BenchmarkCase, provider BenchmarkProvider, stamp int64) ([]ticketTarget, map[string]string, error) {
-	if provider == nil || !provider.Supports(c.Binding) {
-		return nil, nil, fmt.Errorf("%w：测项 %s 没有可用连接及工具", ErrBenchmarkBinding, c.Key)
+func freezeBenchmarkCase(ctx context.Context, tx *sql.Tx, actor string, c BenchmarkCase, provider BenchmarkProvider, stamp int64) ([]ticketTarget, map[string]string, error) {
+	// The transaction is already bound to the caller's context. The provider
+	// lookup uses this exact transaction and also imposes its own finite limit.
+	selection, err := selectBenchmarkProvider(ctx, tx, provider, c.Binding)
+	if err != nil {
+		return nil, nil, fmt.Errorf("测项 %s 没有可用连接及工具: %w", c.Key, err)
+	}
+	if err := selection.validate(benchmarkCaseRequest(c, "benchmark:preflight")); err != nil {
+		return nil, nil, err
 	}
 	targets, auths := []ticketTarget{}, map[string]string{}
 	for _, ref := range c.Targets {
@@ -388,7 +394,7 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 		return p, err
 	}
 	if inspectProvider {
-		if err := projectBenchmarkReconciliationBlockers(tx, &p, actionInputs, provider); err != nil {
+		if err := projectBenchmarkReconciliationBlockers(ctx, tx, &p, actionInputs, provider); err != nil {
 			return p, err
 		}
 	}
@@ -400,7 +406,7 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	return p, nil
 }
 
-func projectBenchmarkReconciliationBlockers(tx *sql.Tx, progress *BenchmarkRunProgress, inputs []benchmarkActionProjection, provider BenchmarkProvider) error {
+func projectBenchmarkReconciliationBlockers(ctx context.Context, tx *sql.Tx, progress *BenchmarkRunProgress, inputs []benchmarkActionProjection, provider BenchmarkProvider) error {
 	var base *BenchmarkProfile
 	for i := range progress.Cases {
 		c := &progress.Cases[i]
@@ -430,8 +436,18 @@ func projectBenchmarkReconciliationBlockers(tx *sql.Tx, progress *BenchmarkRunPr
 			}
 		}
 		b := spec.Binding
-		if spec.Key == c.Key && b.Connection != "" && b.Revision > 0 && b.Tool != "" && b.Validator != "" &&
-			(provider == nil || !provider.Supports(b)) {
+		if spec.Key != c.Key || b.Connection == "" || b.Revision <= 0 || b.Tool == "" || b.Validator == "" {
+			continue
+		}
+		selection, err := selectBenchmarkProvider(ctx, tx, provider, b)
+		if err != nil && !errors.Is(err, ErrBenchmarkBinding) {
+			return err
+		}
+		op, readErr := readOperation(tx, c.Operation.ID)
+		if readErr != nil {
+			return readErr
+		}
+		if err != nil || selection.requestDigest(benchmarkCaseRequest(spec, "benchmark:"+c.StepID)) != op.ParamsDigest {
 			c.ReconciliationBlocker = &BenchmarkReconciliationBlocker{
 				Code:   "adapter_revision_unavailable",
 				Reason: "当前未配置与该作业冻结版本匹配的适配器，暂无法核对原作业；不会重新派发。",

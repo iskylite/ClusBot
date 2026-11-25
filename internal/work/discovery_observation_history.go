@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -17,12 +18,13 @@ type DiscoveryObservationPage struct {
 }
 
 type DiscoveryObservationView struct {
-	CandidateID  string `json:"candidate_id"`
-	Address      string `json:"address"`
-	SeenAt       int64  `json:"seen_at_unix_ms"`
-	ScheduledAt  int64  `json:"scheduled_at_unix_ms"`
-	PlanRevision int    `json:"plan_revision"`
-	ScanTaskID   string `json:"scan_task_id,omitempty"`
+	CandidateID  string                `json:"candidate_id"`
+	Address      string                `json:"address"`
+	SeenAt       int64                 `json:"seen_at_unix_ms"`
+	ScheduledAt  int64                 `json:"scheduled_at_unix_ms"`
+	PlanRevision int                   `json:"plan_revision"`
+	ScanTaskID   string                `json:"scan_task_id,omitempty"`
+	Evidence     *DiscoveryObservation `json:"evidence,omitempty"`
 }
 
 // ListDiscoveryObservations returns source-reported address observations from
@@ -51,10 +53,17 @@ func (s *Store) ListDiscoveryObservations(ctx context.Context, actor, plan, befo
 	}
 	defer tx.Rollback()
 	out := DiscoveryObservationPage{PlanID: plan, Items: []DiscoveryObservationView{}}
-	if err := tx.QueryRowContext(ctx, "SELECT source,scope FROM discovery_plans WHERE actor=? AND plan_id=?", actor, plan).Scan(&out.Source, &out.Scope); err != nil {
+	var rawBinding string
+	if err := tx.QueryRowContext(ctx, `SELECT p.source,p.scope,coalesce(b.binding,'') FROM discovery_plans p
+LEFT JOIN discovery_plan_bindings b ON b.plan_id=p.plan_id WHERE p.actor=? AND p.plan_id=?`, actor, plan).
+		Scan(&out.Source, &out.Scope, &rawBinding); err != nil {
 		return DiscoveryObservationPage{}, err
 	}
-	allowed, err := discoveryGranted(tx, actor, out.Source, out.Scope, false, now())
+	var binding *discoverySourceBinding
+	if rawBinding != "" && json.Unmarshal([]byte(rawBinding), &binding) != nil {
+		return DiscoveryObservationPage{}, ErrDiscoveryInput
+	}
+	allowed, err := discoveryGranted(tx, actor, out.Source, out.Scope, false, now(), binding.fingerprint())
 	if err != nil {
 		return DiscoveryObservationPage{}, err
 	}
@@ -64,9 +73,10 @@ func (s *Store) ListDiscoveryObservations(ctx context.Context, actor, plan, befo
 
 	// Take address and observation time from the immutable scan row, never
 	// from the current mutable candidate. Disabled plans retain history.
-	query := `SELECT d.candidate_id,d.address,d.seen_at,d.scheduled_at,d.ordinal,o.plan_revision,coalesce(o.task_id,'')
+	query := `SELECT d.candidate_id,d.address,d.seen_at,d.scheduled_at,d.ordinal,o.plan_revision,coalesce(o.task_id,''),coalesce(ev.evidence,'')
 FROM discovery_observations d JOIN discovery_occurrences o
 ON o.plan_id=d.plan_id AND o.scheduled_at=d.scheduled_at
+LEFT JOIN discovery_observation_evidence ev ON ev.plan_id=d.plan_id AND ev.scheduled_at=d.scheduled_at AND ev.ordinal=d.ordinal
 WHERE d.plan_id=? AND o.status='done'`
 	args := []any{plan}
 	if before != "" {
@@ -85,8 +95,12 @@ WHERE d.plan_id=? AND o.status='done'`
 			break
 		}
 		var item DiscoveryObservationView
-		if err := rows.Scan(&item.CandidateID, &item.Address, &item.SeenAt, &item.ScheduledAt, &ordinal, &item.PlanRevision, &item.ScanTaskID); err != nil {
+		var rawEvidence string
+		if err := rows.Scan(&item.CandidateID, &item.Address, &item.SeenAt, &item.ScheduledAt, &ordinal, &item.PlanRevision, &item.ScanTaskID, &rawEvidence); err != nil {
 			return DiscoveryObservationPage{}, err
+		}
+		if rawEvidence != "" && json.Unmarshal([]byte(rawEvidence), &item.Evidence) != nil {
+			return DiscoveryObservationPage{}, ErrDiscoveryInput
 		}
 		last = fmt.Sprintf("%d:%d", item.ScheduledAt, ordinal)
 		out.Items = append(out.Items, item)

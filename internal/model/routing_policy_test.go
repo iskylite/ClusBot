@@ -258,7 +258,7 @@ func TestRoutingPolicyRunPersistsAttemptsReceiptsAndBudget(t *testing.T) {
 	}
 }
 
-func TestCoreRoutingAvailableRequiresEveryCoreStage(t *testing.T) {
+func TestModelAvailabilityIsScopedToItsRoleWithoutDefault(t *testing.T) {
 	store, s, first, _ := routingFixture(t, "http://127.0.0.1:1/v1", "http://127.0.0.1:2/v1")
 	ctx := t.Context()
 	settings, err := store.ModelSettings(ctx)
@@ -269,22 +269,25 @@ func TestCoreRoutingAvailableRequiresEveryCoreStage(t *testing.T) {
 	if _, err = store.SaveModelSettings(ctx, settings); err != nil {
 		t.Fatal(err)
 	}
-	if s.CoreRoutingAvailable(ctx) {
-		t.Fatal("missing phases reported available")
-	}
-	for _, pair := range [][2]string{{"conversation", work.GeneralRouterModelRole}, {"conversation", work.ConversationReplyModelRole}, {"task", work.TaskWorkerModelRole}} {
+	pairs := [][2]string{{"conversation", work.GeneralRouterModelRole}, {"conversation", work.ConversationReplyModelRole}, {"task", work.TaskWorkerModelRole}}
+	for i, pair := range pairs {
+		if s.RoleAvailable(ctx, pair[1]) {
+			t.Fatalf("role %s reported available before configuration", pair[1])
+		}
 		if _, err := s.SaveModelRoutingPolicy(ctx, pair[0], pair[1], routingInput(0, first)); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if !s.CoreRoutingAvailable(ctx) {
-		t.Fatal("fully configured core routes not available")
+		for j, stage := range pairs {
+			if s.RoleAvailable(ctx, stage[1]) != (j <= i) {
+				t.Fatalf("configuring %s unexpectedly affected %s", pair[1], stage[1])
+			}
+		}
 	}
 	if _, err := s.SaveModelRoutingPolicy(ctx, "task", work.TaskWorkerModelRole, RoutingPolicyInput{Revision: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if s.CoreRoutingAvailable(ctx) {
-		t.Fatal("missing worker treated as available")
+	if s.RoleAvailable(ctx, work.TaskWorkerModelRole) || !s.RoleAvailable(ctx, work.GeneralRouterModelRole) || !s.RoleAvailable(ctx, work.ConversationReplyModelRole) {
+		t.Fatal("clearing the worker unexpectedly changed the other roles")
 	}
 }
 

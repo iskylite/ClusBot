@@ -71,7 +71,7 @@ func TestStorageSnapshotUsesEachAccountStore(t *testing.T) {
 	paths := make(map[string]string)
 	var srv Server
 	srv = Server{
-		Store: instance, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+		Store: instance, Origin: "https://ops.example", Hosts: []string{"ops.example"},
 		PersonalAPI: func(owner string) (http.Handler, error) {
 			if stores[owner] == nil {
 				path := filepath.Join(dir, fmt.Sprintf("personal-%d.db", len(stores)))

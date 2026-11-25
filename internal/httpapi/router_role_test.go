@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 
 	"clusbot/internal/model"
 	"clusbot/internal/work"
@@ -49,8 +49,8 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	api := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	api := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer api.close()
 	api.cookie = api.login()
 	if api.cookie == "" {
@@ -157,15 +157,15 @@ func TestGeneralRouterRoleHTTPPreservesAdmissionAndModelOff(t *testing.T) {
 	}
 	// Stale credentials prevent selection before any outgoing model request.
 	t.Setenv("CLUSBOT_ROUTER_HTTP_FIXTURE", "another-local-fixture")
-	call(http.MethodPost, route, `{"client_request_id":"router-role-stale","text":"这条不能回退到其他模型"}`, http.StatusBadGateway, nil)
-	var failed struct {
+	call(http.MethodPost, route, `{"client_request_id":"router-role-stale","text":"这条不能回退到其他模型"}`, http.StatusAccepted, nil)
+	var stageWait struct {
+		State       string                      `json:"state"`
+		Reason      string                      `json:"reason"`
 		RouterModel *work.RouterModelProvenance `json:"router_model"`
 	}
-	call(http.MethodGet, "/api/v1/admissions/router-role-stale", "", http.StatusOK, &failed)
-	if failed.RouterModel == nil || failed.RouterModel.State != "selection_unavailable" ||
-		failed.RouterModel.ProfileID != profile.ID || failed.RouterModel.RequestedModel != "" ||
-		failed.RouterModel.ReportedModel != "" || calls.Load() != 2 {
-		t.Fatalf("invalid binding misrepresented as a model call: %+v calls=%d", failed.RouterModel, calls.Load())
+	call(http.MethodGet, "/api/v1/admissions/router-role-stale", "", http.StatusOK, &stageWait)
+	if stageWait.State != "received" || !strings.Contains(stageWait.Reason, "路由模型") || stageWait.RouterModel != nil || calls.Load() != 2 {
+		t.Fatalf("invalid binding was rejected, rerouted, or misrepresented as a call: %+v calls=%d", stageWait, calls.Load())
 	}
 
 }

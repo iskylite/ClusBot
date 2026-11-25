@@ -4,25 +4,23 @@ ClusBot 是以受托工作为中心的本机 Personal Agent。它使用工作区
 
 ## 开发与本机运行
 
-构建需要 Go 1.26 或更新版本、Node.js 22.12 或更新版本、npm 和 Make。从仓库根目录运行以下命令。
+构建需要 Go 1.26 或更新版本、Node.js 22.12 或更新版本、npm 和 Make。从仓库根目录运行：
 
 ```sh
 make build
-./bin/clusbot serve --demo --data-dir ./data/local
+./bin/clusbot serve --data-dir ./data/accounts
 ```
 
-打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)，使用启动日志中 `token_file` 指向的口令文件登录。首次启动自动创建 SQLite 数据库、口令文件和工作区。工作区默认位于数据目录下的 `workspace/`，其中 `materials/` 放输入材料，`outputs/` 保存确认写入的成果。省略 `--data-dir` 时使用 `./data`；可用 `--workspace-root` 和 `--listen` 指定工作区和本机监听地址。
+打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。全新数据目录先初始化超级管理员，然后用账号和密码登录。浏览器和 macOS App 使用同一套账号、权限和业务接口。每个账号的数据与工作区独立保存在 `account-data/<账号标识>/`。工作区内的 `materials/` 用于输入材料，`outputs/` 保存确认写入的成果。省略 `--data-dir` 时使用 `./data`；可用 `--listen` 指定其他回环 IP 和端口。未配置模型时仍可登录和使用不依赖模型的功能。
 
-`--demo` 使用明确标记的本地演示回复，可用于走通事项受理、成果、写入确认和验收。使用真实模型时，按下文配置后去掉 `--demo`。
-
-当前开发版本从一份完整 schema 创建新库。版本 43 至 46 的数据库会自动升级，其他不受支持的版本会被拒绝。日常开发可重复使用本版本已经初始化的目录。
+已经启用账号的实例升级后继续使用原数据目录和账号。旧版单用户数据库没有账号归属，新版不会转用共享口令、覆盖原数据或把旧数据分给首个账号。遇到启动拒绝时先停止旧应用，用 `backup` 备份原目录并保留源数据。可以用 `--data-dir` 指向新的空目录体验；旧数据须另外明确迁移到指定账号。
 
 修改前端时可用 Vite 热更新。先在一个终端构建初始静态资源并启动 Go 后端：
 
 ```sh
 npm --prefix web ci
 npm --prefix web run build
-go run ./cmd/clusbot serve --demo --data-dir ./data/dev --listen 127.0.0.1:8081
+go run ./cmd/clusbot serve --data-dir ./data/dev-accounts --listen 127.0.0.1:8081
 ```
 
 在另一个终端启动前端：
@@ -31,9 +29,9 @@ go run ./cmd/clusbot serve --demo --data-dir ./data/dev --listen 127.0.0.1:8081
 npm --prefix web run dev
 ```
 
-打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，使用后端启动日志中的口令。Vite 会将 API 请求转发到 8081。修改 Go 代码后重启后端。初始静态资源用于 Go 的内嵌资源构建，修改前端时由 Vite 热更新。
+打开 [http://127.0.0.1:5173](http://127.0.0.1:5173)，初始化管理员或登录。Vite 把 API 请求转发到后端 8081。修改 Go 代码后重启后端。初始静态资源供 Go 内嵌构建，修改前端时由 Vite 热更新。
 
-安装前端依赖后，运行 `make test` 执行前端类型检查、生产构建和全部 Go 测试。
+安装前端依赖后运行 `make test`，执行前端类型检查、生产构建和全部 Go 测试。
 
 ## 打包与运行
 
@@ -41,30 +39,23 @@ npm --prefix web run dev
 make release
 ```
 
-产物是 `dist/clusbot-<GOOS>-<GOARCH>.tar.gz`，包含内嵌前端的 `bin/clusbot`、`configs/example.yaml` 和 `README.md`。例如，在 macOS Apple Silicon 上打包后可用以下命令启动：
+产物是 `dist/clusbot-<GOOS>-<GOARCH>.tar.gz`，包含内嵌前端的 `bin/clusbot`、`configs/example.yaml` 和 `README.md`。解压后运行 `./bin/clusbot serve`，不需要安装 Go 或 Node.js。MCP stdio 服务的运行依赖由连接提供方说明。
+
+### 对外 HTTPS 部署
 
 ```sh
-mkdir -p /tmp/clusbot-release
-tar -xzf dist/clusbot-darwin-arm64.tar.gz -C /tmp/clusbot-release
-cd /tmp/clusbot-release
-./bin/clusbot serve --demo
+./bin/clusbot serve --mode server --listen 127.0.0.1:8080 --origin https://clusbot.example.com --data-dir /var/lib/clusbot
 ```
 
-运行压缩包里的二进制无需安装 Go 或 Node.js。按启动日志给出的地址和口令文件登录。MCP stdio 服务的额外运行依赖由连接提供方说明。
+由反向代理在指定 HTTPS Origin 终止 TLS，并转发到回环监听地址，保留对外 Host（含非默认端口）。不要把后端 HTTP 监听端口直接对外开放。初始化超级管理员之前，先在防火墙、私网或反向代理上限制站点访问，只让实例管理员进入完成初始化。此部署方式与本机 App 使用相同的账号和权限规则，登录 Cookie 通过 HTTPS 传输。
 
 ### macOS 桌面版
 
-在装有 Xcode 命令行工具的 Mac 上运行 `make dmg`，产物为 `dist/ClusBot-arm64.dmg`，适用于 macOS 14 或更新版本的 Apple Silicon Mac。
+在装有 Xcode 命令行工具的 Mac 上运行 `make dmg`。产物 `dist/ClusBot-arm64.dmg` 适用于 macOS 14 或更新版本的 Apple Silicon Mac。
 
-挂载镜像，将 `ClusBot.app` 拖到「应用程序」，然后双击启动。全新数据目录首次启动会打开「初始化超级管理员」，创建账号后进入个人助手。重新启动时登录已创建的账号。升级前已有账号的数据目录继续使用原账号，旧版无账号的本机工作区继续按原方式打开，保留原有数据和访问方式。退出应用会停止随它启动的本机服务。数据保存在 `~/Library/Application Support/ClusBot`。应用版本可在 Finder 的「显示简介」和应用菜单的「关于 ClusBot」查看。
+挂载镜像，将 `ClusBot.app` 拖到「应用程序」并打开。首次启动进入超级管理员初始化，后续使用已创建的账号。App 退出时停止随它启动的本机服务。数据保存在 `~/Library/Application Support/ClusBot`。启动时会读取数据目录中的 `config.yaml`（如有）。应用版本可在 Finder 的「显示简介」和「关于 ClusBot」查看。
 
-桌面版启动时会读取数据目录中的 `config.yaml`（如有）。基准连接使用 `benchmark.base_url`、`benchmark.connection`、`benchmark.revision` 和 `benchmark.tools`。在桌面账号模式下，已拥有任务及所需授权的账号可读取进度、预览和应用修订，已有基准派发流程继续使用本机模式。本机模式的工单使用 `tickets.base_url`，独立复检使用 `tickets.health_url`。
-
-用现有 `import-domain-assets` 命令导入集群资产时，将 POD 登记为 `kind: pod`，并在成员节点填写 `pod_ref`。POD 和节点都需要 `allow_read: true` 才会纳入可见分组。可转工单的资产需要读取和维修授权，例如在可信资产清单中同时设置 `allow_read: true` 与 `allow_repair: true`。
-
-桌面界面默认随窗口缩放，长内容在各栏内滚动。「显示」菜单可放大、缩小或恢复适应窗口。未发送的对话和事项草稿、未保存的记忆编辑可在退出应用后继续。下载成果或工具回执时，系统会询问保存位置。
-
-本机构建使用临时签名，供本机使用。
+桌面界面默认随窗口缩放，长内容在各栏内滚动。「显示」菜单可放大、缩小或恢复适应窗口。下载成果或工具回执时，系统会询问保存位置。本机构建使用临时签名，供本机使用。
 
 ## 模型与运行配置
 
@@ -72,8 +63,9 @@ cd /tmp/clusbot-release
 
 ```yaml
 server:
+  mode: loopback
   listen: 127.0.0.1:8080
-data_dir: ../data/local
+data_dir: ../data/accounts
 model:
   provider: chat_completions
   base_url: https://api.example.com/v1
@@ -88,7 +80,7 @@ runtime:
 ```
 
 ```sh
-./bin/clusbot serve --config ./configs/local.yaml
+./bin/clusbot serve --config ./configs/personal.yaml
 ```
 
 相对路径以配置文件所在目录解析。在「设置」选择 Chat Completions 或 Responses，填写 API 根地址、模型 ID 和 API Key。应用将密钥明文保存在本地 SQLite，数据库备份也会包含密钥。保存后的密钥优先使用，未保存或移除后读取配置的环境变量（默认 `CLUSBOT_MODEL_API_KEY`）。测试连接会使用当前输入，在 30 秒内检查流式文本、一次应用内测试函数调用及工具结果回传。测试仅使用临时测试码。清空模型 ID 并保存可停用外部模型。
@@ -97,7 +89,9 @@ runtime:
 
 设置页的「获取模型」使用当前服务地址和密钥请求 API 根地址下的 `/models`。模型 ID 始终可手填。服务返回上下文长度、图片输入类型或推理参数时，页面会填入已知属性。缺失项保留为未知，也可手动补齐或覆盖并保存。模型属性用于记录规格，当前任务仍按原有的输入格式和请求预算执行。
 
-模型设置首次从 YAML 导入 SQLite，之后页面保存的值会保留。设置 `CLUSBOT_MODEL_BASE_URL` 或 `CLUSBOT_MODEL_ID` 时，对应字段在页面只读。`--demo` 模式下日常工作仍使用演示回复，设置页可单独测试外部端点。
+模型设置首次从 YAML 导入 SQLite，之后页面保存的值会保留。设置 `CLUSBOT_MODEL_BASE_URL` 或 `CLUSBOT_MODEL_ID` 时，对应字段在页面只读。
+
+旧版 `tickets.*` 实例级工单配置和 `benchmark.event_secret_env` 回调暂不支持账号隔离。配置中使用任一项会明确拒绝启动，不会静默忽略，也不会启用旧共享入口。启用账号服务前，请把这些设置另存；原配置和已有数据不会自动迁移。
 
 执行时间与输出预算按 Run 累计，排队和等待用户确认不计入执行时间。模型未报告的 Token 显示未知；异常退出后的时长标为已保存记录的下限。继续执行沿用原预算，预算耗尽后可用「重新执行」开启同一事项的新 Run。
 
@@ -195,19 +189,17 @@ runtime:
 
 ## 备份与恢复
 
-停止 ClusBot，确认工作区没有其他程序正在写入，再执行：
+停止 ClusBot，确认没有其他程序正在写入工作区，再执行：
 
 ```sh
-./bin/clusbot backup --data-dir ./data/local --out ./clusbot-backup
+./bin/clusbot backup --data-dir ./data/accounts --out ./clusbot-backup
 ./bin/clusbot restore --from ./clusbot-backup --data-dir ./data-restored
-./bin/clusbot serve --data-dir ./data-restored --demo
+./bin/clusbot serve --data-dir ./data-restored
 ```
 
-备份包含 SQLite 中的事项、对话、成果、记忆、连接、已上传原件，以及工作区 `materials/`、`outputs/` 的普通文件和 SHA-256 清单。自定义工作区时，给 `backup` 传原来的 `--workspace-root`。恢复把工作区放入新数据目录的 `workspace/`。
+账号实例备份包含账号及实例配置、每个账号的 SQLite 业务库、上传原件、工作区 `materials/` 与 `outputs/` 的普通文件，以及 SHA-256 清单。恢复后使用原账号重新登录；旧会话不随备份迁移。涉及工具与外部模型的环境变量及部署配置须单独保管。MCP 连接恢复后需重新启用和授权。
 
-备份与恢复的目标必须为新目录。待核对的文件写入先在原工作台核对；恢复后原待确认写入失效，排队工作等待手动继续，MCP 连接需重新启用和授权。新工作台生成新登录口令，启动 YAML 和环境变量对应密钥需单独保存。
-
-备份和恢复使用当前数据库 schema。
+备份与恢复的目标须为新目录。旧版单用户数据也可单独备份；如旧版曾将工作区放在数据目录以外，给 `backup` 传入原来的 `--workspace-root`。旧单用户备份不会恢复为一个已绑定账号的实例，备份不等于迁移。
 
 ## 设计与验证
 

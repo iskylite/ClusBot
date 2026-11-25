@@ -110,7 +110,7 @@ func (s Server) assistantModelSetupChat(w http.ResponseWriter, r *http.Request, 
 	}
 	account, hasAccount := accountFromContext(r)
 	if !s.assistantFormAllowed(r, "configure_model_role") || !s.assistantFormAllowed(r, "configure_model_provider") ||
-		(s.ServerMode && (!hasAccount || account.MustChangePassword)) {
+		!hasAccount || account.MustChangePassword {
 		fail(w, http.StatusForbidden, "forbidden", "只有有权管理模型设置的用户可以打开此表单")
 		return true
 	}

@@ -271,10 +271,8 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 23px 0; }
 .message.source-message { background: var(--selected); border-radius: 9px; padding: 10px; scroll-margin: 24px; }
 .message-incomplete { margin-top: 8px; color: var(--muted); font-size: 12px; }
 .login-shell { display: grid; place-items: center; min-height: 100dvh; padding: 20px; background: #f5f5fa; }
-.login-card, .new-dialog { padding: 26px; display: grid; gap: 16px; background: white; border-radius: 18px; box-shadow: var(--shadow); }
-.login-card { width: min(100%,420px); }
-.login-card input, .mobile-chat-select { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: white; min-width: 0; }
-.login-card p { font-size: 14px; }
+.new-dialog { padding: 26px; display: grid; gap: 16px; background: white; border-radius: 18px; box-shadow: var(--shadow); }
+.mobile-chat-select { padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: white; min-width: 0; }
 .new-dialog { width: min(calc(100% - 24px),560px); max-width: none; max-height: calc(100dvh - 24px); margin: auto; border: 1px solid var(--line); overflow: auto; color: inherit; grid-template-columns: minmax(0,1fr); }
 .new-dialog header { display: flex; justify-content: space-between; align-items: center; }
 .new-dialog:not([open]) { display: none; }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"clusbot/internal/mcpclient"
@@ -200,7 +201,7 @@ status='untested',detail='',protocol='',checked_at=0,credential_binding='' WHERE
 	if err := tx.Commit(); err != nil {
 		return Connection{}, err
 	}
-	s.evictMCPSession(key)
+	s.invalidateMCPSession(key, saved.Revision)
 	return saved, nil
 }
 
@@ -283,7 +284,7 @@ WHERE id=? AND revision=? AND enabled=1`, status, detail, catalog.Protocol, now(
 	if err = tx.Commit(); err != nil {
 		return c, err
 	}
-	s.evictMCPSession(key)
+	s.invalidateMCPSession(key, revision+1)
 	return s.Connection(ctx, key)
 }
 
@@ -352,7 +353,7 @@ func (s *Store) SetToolPermissionWithMode(ctx context.Context, key, name, versio
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	s.evictMCPSession(key)
+	s.invalidateMCPSession(key, revision+1)
 	return nil
 }
 
@@ -364,18 +365,27 @@ type ConnectionResult struct {
 }
 
 func (s *Store) CallConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any) (ConnectionResult, error) {
-	return s.callDirectConnectionTool(ctx, key, name, revision, args, "")
+	return s.callDirectConnectionTool(ctx, key, name, revision, args, "", mcpclient.Timeout)
 }
 
 func (s *Store) CallAccountConnectionTool(ctx context.Context, principal, key, name string, revision int, args map[string]any) (ConnectionResult, error) {
 	if principal == "" {
 		return ConnectionResult{}, ErrAccountDenied
 	}
-	return s.callDirectConnectionTool(ctx, key, name, revision, args, principal)
+	return s.callDirectConnectionTool(ctx, key, name, revision, args, principal, mcpclient.Timeout)
 }
 
-func (s *Store) callDirectConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, principal string) (ConnectionResult, error) {
-	result, err := s.executeConnectionTool(ctx, key, name, revision, args, "", 0, principal)
+// Only application-managed domain logic can set this timeout. Normal account
+// and model-initiated calls do not expose a deadline argument.
+func (s *Store) callTrustedDomainConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, timeout time.Duration) (ConnectionResult, error) {
+	if timeout <= 0 || timeout > mcpclient.MaxDomainCall {
+		return ConnectionResult{}, mcpclient.ErrConfig
+	}
+	return s.callDirectConnectionTool(ctx, key, name, revision, args, "", timeout)
+}
+
+func (s *Store) callDirectConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, principal string, timeout time.Duration) (ConnectionResult, error) {
+	result, err := s.executeConnectionTool(ctx, key, name, revision, args, "", 0, principal, timeout)
 	if err != nil {
 		return result, err
 	}
@@ -399,10 +409,10 @@ func (s *Store) callDirectConnectionTool(ctx context.Context, key, name string, 
 }
 
 func (s *Store) callConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int) (ConnectionResult, error) {
-	return s.executeConnectionTool(ctx, key, name, revision, args, runID, position, "")
+	return s.executeConnectionTool(ctx, key, name, revision, args, runID, position, "", mcpclient.Timeout)
 }
 
-func (s *Store) executeConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int, principal string) (ConnectionResult, error) {
+func (s *Store) executeConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int, principal string, timeout time.Duration) (ConnectionResult, error) {
 	c, err := s.Connection(ctx, key)
 	if err != nil {
 		return ConnectionResult{}, err
@@ -433,7 +443,7 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 	if err = mcpclient.ValidateArguments(granted, args); err != nil {
 		return ConnectionResult{}, err
 	}
-	deadline, cancel := context.WithTimeout(ctx, mcpclient.Timeout)
+	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var (
 		session *mcp.ClientSession
@@ -445,17 +455,28 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 		if err != nil {
 			return ConnectionResult{}, err
 		}
-		pooled.callMu.Lock()
-		defer pooled.callMu.Unlock()
+		var release func()
+		deadline, release, err = pooled.beginCall(deadline)
+		if err != nil {
+			return ConnectionResult{}, err
+		}
+		defer release()
 		session = pooled.session
 		catalog = pooled.catalog
 	} else {
-		session, err = mcpclient.Connect(deadline, c.Config)
+		handshake, stopHandshake := context.WithTimeout(deadline, mcpclient.Timeout)
+		defer stopHandshake()
+		if timeout == mcpclient.Timeout {
+			session, err = mcpclient.ConnectWithLifetime(handshake, deadline, c.Config)
+		} else {
+			session, err = mcpclient.ConnectForTrustedDomain(handshake, deadline, c.Config, timeout)
+		}
 		if err != nil {
 			return ConnectionResult{}, err
 		}
 		defer session.Close()
-		catalog, err = mcpclient.Discover(deadline, session)
+		catalog, err = mcpclient.Discover(handshake, session)
+		stopHandshake()
 		if err != nil {
 			return ConnectionResult{}, err
 		}
@@ -475,7 +496,7 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 	}
 	if !valid || catalog.Protocol != c.Protocol {
 		if pooled != nil {
-			s.evictMCPSession(key)
+			s.mcpPool.retire(key, pooled, mcpclient.ErrSchemaChanged)
 		}
 		return ConnectionResult{}, mcpclient.ErrSchemaChanged
 	}
@@ -483,9 +504,20 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 	if err = s.dispatchConnectionCallForPrincipal(deadline, callID, key, granted, revision, runID, position, principal); err != nil {
 		return ConnectionResult{}, err
 	}
+	var stopAbort func() bool
+	if pooled != nil {
+		// A timed-out in-flight RPC may be blocked writing to a stalled
+		// child. Retire its transport rather than waiting for the write.
+		stopAbort = context.AfterFunc(deadline, func() {
+			s.mcpPool.retire(key, pooled, mcpclient.ErrCall)
+		})
+	}
 	outcome, evidence, callErr := mcpclient.Call(deadline, session, granted, args, c.Config)
+	if stopAbort != nil {
+		stopAbort()
+	}
 	if callErr != nil && pooled != nil {
-		s.evictMCPSession(key)
+		s.mcpPool.retire(key, pooled, mcpclient.ErrCall)
 	}
 	status := "completed"
 	if callErr != nil {

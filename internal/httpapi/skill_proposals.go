@@ -59,19 +59,22 @@ func (s Server) skillProposals(w http.ResponseWriter, r *http.Request) {
 
 func (s Server) proposeSkill(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Scope           string                          `json:"scope_label"`
-		Goal            string                          `json:"goal"`
-		Report          work.ExperienceEvaluationReport `json:"report"`
-		EvaluationRunID string                          `json:"evaluation_run_id"`
-		MatchMode       string                          `json:"match_mode"`
-		MatchKeywords   []string                        `json:"match_keywords"`
-		Synthesize      bool                            `json:"synthesize"`
+		Scope           string   `json:"scope_label"`
+		Goal            string   `json:"goal"`
+		EvaluationRunID string   `json:"evaluation_run_id"`
+		MatchMode       string   `json:"match_mode"`
+		MatchKeywords   []string `json:"match_keywords"`
+		Synthesize      bool     `json:"synthesize"`
 	}
 	if !decode(w, r, &input) {
 		return
 	}
-	if input.EvaluationRunID == "" && len(input.Report.SuiteDigest) != 64 {
-		fail(w, http.StatusBadRequest, "invalid_skill_proposal", "请使用服务端评测记录或附带 suite_sha256 摘要的隔离评测报告")
+	if !validID(input.EvaluationRunID) {
+		fail(w, http.StatusBadRequest, "invalid_skill_proposal", "请使用本账号的服务端三臂评测记录生成提案")
+		return
+	}
+	if input.MatchMode != "" && input.MatchMode != work.SkillMatchGoalExact || len(input.MatchKeywords) != 0 {
+		fail(w, http.StatusBadRequest, "invalid_skill_proposal", "私有提案只适用于已评测的同范围、同目标，不能扩大到关键词或整个范围")
 		return
 	}
 	opts := work.SkillProposalOptions{
@@ -86,7 +89,7 @@ func (s Server) proposeSkill(w http.ResponseWriter, r *http.Request) {
 			opts.ModelConfig = config
 		}
 	}
-	result, err := s.Store.ProposeSkillWithOptions(r.Context(), input.Scope, input.Goal, input.Report, opts)
+	result, err := s.Store.ProposeSkillWithOptions(r.Context(), input.Scope, input.Goal, work.ExperienceEvaluationReport{}, opts)
 	if errors.Is(err, work.ErrSkill) || errors.Is(err, work.ErrSkillProposal) {
 		fail(w, http.StatusBadRequest, "invalid_skill_proposal", err.Error())
 		return
@@ -109,6 +112,10 @@ func (s Server) replaySkillProposal(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if !validID(id) || !validSkillProposalVersion(input.SkillProposalVersion) {
 		fail(w, http.StatusBadRequest, "invalid_skill_proposal", "需要提案编号、候选版本、当前修订和摘要")
+		return
+	}
+	if len(input.Suite.Cases) < 2 {
+		fail(w, http.StatusBadRequest, "invalid_skill_replay", "请提交与训练评测不同的独立留出集，至少包含两个用例")
 		return
 	}
 	if s.Settings.Demo {

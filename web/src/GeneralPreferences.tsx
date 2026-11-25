@@ -126,12 +126,11 @@ function zoneLabel(zone:string) {
   return offset?`${zone} (${offset})`:zone
 }
 
-export function GeneralPreferencesPage({state,onChange,onRetry,onResolve,multiuser,view='general',modelConcurrency}: {
+export function GeneralPreferencesPage({state,onChange,onRetry,onResolve,view='general',modelConcurrency}: {
   state:PreferenceSnapshot
   onChange:<K extends PreferenceKey>(key:K, value:Preferences[K])=>void
   onRetry:()=>void
   onResolve:(keepMine:boolean)=>void
-  multiuser:boolean
   view?:'general'|'execution'
   modelConcurrency?:number
 }) {
@@ -171,7 +170,7 @@ export function GeneralPreferencesPage({state,onChange,onRetry,onResolve,multius
     {execution ? <section className="settings-section">
       <h2><ShieldCheck size={14} aria-hidden="true"/>{t('执行与权限边界','Execution and permissions')}</h2>
       <div className="preference-row"><div className="preference-copy"><strong>{t('跨提供方数据出域确认','Cross-provider data transfer confirmation')}</strong><small>{t('配置跨提供方的模型策略时须确认发送的数据范围','Confirm what data can be sent when configuring cross-provider model routing')}</small></div><span className="preference-value">{t('需要确认','Confirmation required')}</span></div>
-      <div className="preference-row"><div className="preference-copy"><strong>{t('工作区与账号存储隔离','Workspace and account storage')}</strong>{multiuser&&<small>{t('按账号独立存储对话、附件与运行回执','Conversations, attachments, and run receipts are stored separately by account')}</small>}</div><span className="preference-value">{multiuser?t('多人服务器模式 · 已启用','Multi-user server · Enabled'):t('本机模式','Local mode')}</span></div>
+      <div className="preference-row"><div className="preference-copy"><strong>{t('工作区与账号存储隔离','Workspace and account storage')}</strong><small>{t('按账号独立存储对话、附件与运行回执','Conversations, attachments, and run receipts are stored separately by account')}</small></div><span className="preference-value">{t('按账号隔离','Isolated by account')}</span></div>
     </section> : <section className="settings-section">
       <h2><Settings size={14} aria-hidden="true"/>{t('常规偏好','General preferences')}</h2>
       <div className="preference-row preference-select-row"><div className="preference-copy"><label htmlFor="pref-language">{t('界面语言','Interface language')}</label></div><select id="pref-language" value={draft.language} disabled={!value} onChange={event=>onChange('language',event.currentTarget.value as Preferences['language'])}>

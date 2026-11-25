@@ -89,7 +89,7 @@ FROM inbox_events WHERE source='chat' AND event_id=?`, key).Scan(&owner); err !=
 			}
 		}
 		if response == "" {
-			task, err = submitBenchmarkRunTx(tx, actor, BenchmarkRunRequest{RequestKey: "chat:" + key, Profile: profile, Version: version}, provider, stamp)
+			task, err = submitBenchmarkRunTx(ctx, tx, actor, BenchmarkRunRequest{RequestKey: "chat:" + key, Profile: profile, Version: version}, provider, stamp)
 			if err != nil {
 				return Run{}, true, err
 			}

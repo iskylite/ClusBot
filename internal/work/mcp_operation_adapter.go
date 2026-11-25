@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"clusbot/internal/mcpclient"
@@ -264,10 +263,12 @@ type MCPToolCaller func(ctx context.Context, toolName string, args map[string]an
 // MCPBenchmarkProvider adapts an MCP server (such as Cluskit2-MCP) to the
 // BenchmarkProvider + benchmarkCanceller Operation contract.
 type MCPBenchmarkProvider struct {
-	connection string
-	revision   int
-	binding    MCPToolBinding
-	caller     MCPToolCaller
+	connection      string
+	revision        int
+	binding         MCPToolBinding
+	caller          MCPToolCaller
+	pin             string
+	startDefinition *mcpclient.Tool
 }
 
 func NewMCPBenchmarkProvider(connection string, revision int, binding MCPToolBinding, caller MCPToolCaller) (*MCPBenchmarkProvider, error) {
@@ -293,47 +294,10 @@ func (p *MCPBenchmarkProvider) Start(ctx context.Context, req BenchmarkJobReques
 	}
 	var args map[string]any
 	if p.binding.StartTool == "bench_run" {
-		args = map[string]any{
-			"idempotency_key": req.IdempotencyKey,
-		}
-		if len(req.Targets) > 0 {
-			args["nodes"] = strings.Join(req.Targets, ",")
-		}
-		if suite := strings.TrimSpace(req.Parameters["suite"]); suite != "" {
-			args["suite"] = suite
-		}
-		if bench := strings.TrimSpace(req.Parameters["benchmark"]); bench != "" {
-			args["benchmark"] = bench
-		} else if _, hasSuite := args["suite"]; !hasSuite && strings.TrimSpace(req.Case) != "" {
-			args["benchmark"] = strings.TrimSpace(req.Case)
-		}
-		for _, k := range []string{"hostfile", "exclude", "mode", "protocol", "ssh_backend", "timeout", "device"} {
-			if v := strings.TrimSpace(req.Parameters[k]); v != "" {
-				args[k] = v
-			}
-		}
-		fanoutRaw := strings.TrimSpace(req.Parameters["fanout"])
-		if fanoutRaw == "" {
-			fanoutRaw = strings.TrimSpace(req.Parameters["concurrency"])
-		}
-		if fanoutRaw != "" {
-			if n, convErr := strconv.Atoi(fanoutRaw); convErr == nil && n > 0 {
-				args["fanout"] = n
-			}
-		}
-		for _, k := range []string{"group_size", "iterations", "ibperf_runtime"} {
-			if v := strings.TrimSpace(req.Parameters[k]); v != "" {
-				if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
-					args[k] = n
-				}
-			}
-		}
-		for _, k := range []string{"enable_nhc", "prepare_only", "keep_alive"} {
-			if v := strings.TrimSpace(req.Parameters[k]); v != "" {
-				if b, convErr := strconv.ParseBool(v); convErr == nil {
-					args[k] = b
-				}
-			}
+		var err error
+		args, err = cluskitBenchmarkArguments(req)
+		if err != nil {
+			return "", err
 		}
 	} else {
 		args = map[string]any{
@@ -356,6 +320,9 @@ func (p *MCPBenchmarkProvider) Start(ctx context.Context, req BenchmarkJobReques
 	}
 	if err := decodeMCPResultJSON(res, &out); err != nil {
 		return "", err
+	}
+	if out.JobID != "" && out.TaskID != "" && out.JobID != out.TaskID {
+		return "", ErrBenchmarkBinding
 	}
 	if out.JobID != "" {
 		return out.JobID, nil
@@ -400,6 +367,9 @@ func (p *MCPBenchmarkProvider) Lookup(ctx context.Context, req BenchmarkJobReque
 		strings.EqualFold(out.Status, "not_found") {
 		return "", nil
 	}
+	if out.JobID != "" && out.TaskID != "" && out.JobID != out.TaskID {
+		return "", ErrBenchmarkBinding
+	}
 	if out.JobID != "" {
 		return out.JobID, nil
 	}
@@ -431,26 +401,24 @@ func (p *MCPBenchmarkProvider) Get(ctx context.Context, req BenchmarkJobRequest,
 		return BenchmarkJobResult{}, err
 	}
 	var env struct {
-		TaskID  string         `json:"task_id"`
-		State   string         `json:"state"`
-		Status  string         `json:"status"`
-		Summary map[string]any `json:"summary"`
-		Results any            `json:"results"`
+		TaskID  string                         `json:"task_id"`
+		State   string                         `json:"state"`
+		Status  string                         `json:"status"`
+		Results []cluskitBenchmarkResultRecord `json:"results"`
 	}
-	_ = decodeMCPResultJSON(res, &env)
-	if out.JobID == "" {
-		if env.TaskID != "" {
-			out.JobID = env.TaskID
-		} else {
-			out.JobID = jobID
-		}
+	if err := decodeMCPResultJSON(res, &env); err != nil {
+		return BenchmarkJobResult{}, err
+	}
+	out.JobID = firstNonEmpty(out.JobID, env.TaskID)
+	if out.JobID != jobID || env.TaskID != "" && env.TaskID != jobID {
+		return BenchmarkJobResult{}, fmt.Errorf("%w：没有核对到原基准作业的身份", ErrBenchmarkBinding)
 	}
 	rawState := firstNonEmpty(out.State, env.State, env.Status)
 	if rawState != "" {
 		switch strings.ToLower(strings.TrimSpace(rawState)) {
-		case "queued", "running":
+		case "queued", "running", "active", "rrunning", "pending":
 			out.State = "running"
-		case "succeeded", "completed":
+		case "succeeded", "completed", "complete":
 			out.State = "completed"
 		case "failed":
 			out.State = "failed"
@@ -458,50 +426,13 @@ func (p *MCPBenchmarkProvider) Get(ctx context.Context, req BenchmarkJobRequest,
 			out.State = "cancelled"
 		}
 	}
-	if len(out.Measurements) == 0 && (out.State == "completed" || out.State == "failed") {
-		rawBytes := res.Structured
-		if len(rawBytes) == 0 {
-			rawBytes = []byte(res.Text)
-		}
-		metrics := extractNumericMetrics(env.Summary)
-		if len(metrics) == 0 {
-			metrics["completed"] = BenchmarkMeasuredMetric{Value: 1, Unit: "count"}
-		}
-		outcome := "ok"
-		if out.State != "completed" {
-			outcome = "failed"
-		}
-		targets := req.Targets
-		if len(targets) == 0 {
-			targets = []string{"cluster"}
-		}
-		for _, target := range targets {
-			out.Measurements = append(out.Measurements, BenchmarkMeasurement{
-				Target:  target,
-				Outcome: outcome,
-				Metrics: metrics,
-				Raw: &BenchmarkRawArtifact{
-					Ref:    "mcp:" + out.JobID,
-					SHA256: digest(string(rawBytes)),
-					Bytes:  rawBytes,
-				},
-			})
+	if p.binding.GetTool == "task_status" {
+		out.Measurements = nil
+		if out.State == "completed" || out.State == "failed" || out.State == "cancelled" {
+			out.Measurements = cluskitBenchmarkMeasurements(req, jobID, env.Results)
 		}
 	}
 	return out, nil
-}
-
-func extractNumericMetrics(summary map[string]any) map[string]BenchmarkMeasuredMetric {
-	out := make(map[string]BenchmarkMeasuredMetric)
-	for k, v := range summary {
-		switch val := v.(type) {
-		case float64:
-			out[k] = BenchmarkMeasuredMetric{Value: val, Unit: "unit"}
-		case int:
-			out[k] = BenchmarkMeasuredMetric{Value: float64(val), Unit: "unit"}
-		}
-	}
-	return out
 }
 
 func (p *MCPBenchmarkProvider) Cancel(ctx context.Context, req BenchmarkJobRequest, jobID string) error {
@@ -522,15 +453,34 @@ func (p *MCPBenchmarkProvider) Cancel(ctx context.Context, req BenchmarkJobReque
 		return fmt.Errorf("mcp cancel error: %s", res.Text)
 	}
 	var out struct {
-		Acknowledged bool   `json:"acknowledged"`
-		Confirmed    bool   `json:"confirmed"`
-		Status       string `json:"status"`
+		Acknowledged bool            `json:"acknowledged"`
+		Confirmed    json.RawMessage `json:"confirmed"`
+		Unconfirmed  []string        `json:"unconfirmed"`
+		TaskIDs      []string        `json:"task_ids"`
+		Status       string          `json:"status"`
 	}
 	if err := decodeMCPResultJSON(res, &out); err != nil {
 		return err
 	}
 	status := strings.ToLower(strings.TrimSpace(out.Status))
-	if !out.Acknowledged && !out.Confirmed && status != "confirmed" && status != "canceled" && status != "canceling" {
+	if len(out.TaskIDs) != 0 && (len(out.TaskIDs) != 1 || out.TaskIDs[0] != jobID) || len(out.Unconfirmed) != 0 {
+		return ErrState
+	}
+	var addresses []string
+	if p.binding.CancelTool == "task_cancel" {
+		if len(out.TaskIDs) != 1 || !out.Acknowledged || json.Unmarshal(out.Confirmed, &addresses) != nil || len(addresses) == 0 {
+			return ErrState
+		}
+		// This ack only proves acceptance. Get must still confirm the job's exit.
+		return nil
+	}
+	var legacyAck bool
+	if len(out.Confirmed) != 0 && json.Unmarshal(out.Confirmed, &addresses) != nil && json.Unmarshal(out.Confirmed, &legacyAck) != nil {
+		return ErrState
+	}
+	// Confirmed entries (engine:..., local:..., etc.) acknowledge cancel
+	// delivery only. The runtime must still query the original job's exit.
+	if !out.Acknowledged && !legacyAck && len(addresses) == 0 && status != "confirmed" && status != "canceled" && status != "canceling" {
 		return ErrState
 	}
 	return nil
@@ -678,134 +628,77 @@ func (s *Store) DynamicBenchmarkProvider(fallback BenchmarkProvider) BenchmarkPr
 	return &dynamicBenchmarkProvider{store: s, fallback: fallback}
 }
 
-func (p *dynamicBenchmarkProvider) resolve(b BenchmarkBinding) (*MCPBenchmarkProvider, bool) {
-	if p == nil || p.store == nil {
-		return nil, false
-	}
-	bindings, err := p.store.ListCapabilityBindings(context.Background())
-	if err != nil {
-		return nil, false
-	}
-	for _, cb := range bindings {
-		if cb.StartTool != b.Tool {
-			continue
-		}
-		if cb.ConnectionName != b.Connection && cb.ConnectionID != b.Connection {
-			continue
-		}
-		if cb.ConnectionRevision != b.Revision {
-			continue
-		}
-		connID := cb.ConnectionID
-		rev := cb.ConnectionRevision
-		prov, err := NewMCPBenchmarkProvider(b.Connection, b.Revision, cb.MCPToolBinding, func(ctx context.Context, toolName string, args map[string]any) (mcpclient.Result, error) {
-			res, err := p.store.CallConnectionTool(ctx, connID, toolName, rev, args)
-			return res.Result, err
-		})
-		if err == nil {
-			return prov, true
-		}
-	}
-	return nil, false
-}
-
 func (p *dynamicBenchmarkProvider) Supports(b BenchmarkBinding) bool {
-	if _, ok := p.resolve(b); ok {
-		return true
+	if p == nil || p.store == nil {
+		return false
 	}
-	return p.fallback != nil && p.fallback.Supports(b)
+	_, err := p.resolve(context.Background(), p.store.db, b)
+	return err == nil
 }
 
 func (p *dynamicBenchmarkProvider) Start(ctx context.Context, req BenchmarkJobRequest) (string, error) {
-	if mcpProv, ok := p.resolve(req.Binding); ok {
-		return mcpProv.Start(ctx, req)
+	pinned, err := p.resolve(ctx, p.store.db, req.Binding)
+	if err != nil {
+		return "", err
 	}
-	if p.fallback != nil {
-		return p.fallback.Start(ctx, req)
-	}
-	return "", ErrBenchmarkBinding
+	return pinned.provider.Start(ctx, req)
 }
 
 func (p *dynamicBenchmarkProvider) Lookup(ctx context.Context, req BenchmarkJobRequest) (string, error) {
-	if mcpProv, ok := p.resolve(req.Binding); ok {
-		return mcpProv.Lookup(ctx, req)
+	pinned, err := p.resolve(ctx, p.store.db, req.Binding)
+	if err != nil {
+		return "", err
 	}
-	if p.fallback != nil {
-		return p.fallback.Lookup(ctx, req)
-	}
-	return "", ErrBenchmarkBinding
+	return pinned.provider.Lookup(ctx, req)
 }
 
 func (p *dynamicBenchmarkProvider) Get(ctx context.Context, req BenchmarkJobRequest, jobID string) (BenchmarkJobResult, error) {
-	if mcpProv, ok := p.resolve(req.Binding); ok {
-		return mcpProv.Get(ctx, req, jobID)
+	pinned, err := p.resolve(ctx, p.store.db, req.Binding)
+	if err != nil {
+		return BenchmarkJobResult{}, err
 	}
-	if p.fallback != nil {
-		return p.fallback.Get(ctx, req, jobID)
-	}
-	return BenchmarkJobResult{}, ErrBenchmarkBinding
+	return pinned.provider.Get(ctx, req, jobID)
 }
 
 func (p *dynamicBenchmarkProvider) Cancel(ctx context.Context, req BenchmarkJobRequest, jobID string) error {
-	if mcpProv, ok := p.resolve(req.Binding); ok {
-		return mcpProv.Cancel(ctx, req, jobID)
+	pinned, err := p.resolve(ctx, p.store.db, req.Binding)
+	if err != nil {
+		return err
 	}
-	if canceller, ok := p.fallback.(benchmarkCanceller); ok {
-		return canceller.Cancel(ctx, req, jobID)
+	if !pinned.canStop {
+		return ErrBenchmarkBinding
 	}
-	return ErrBenchmarkBinding
+	return pinned.provider.(benchmarkCanceller).Cancel(ctx, req, jobID)
 }
 
-// DynamicEffectChecker verifies device recovery independently via bound MCP fault_check/doctor
-// tools before falling back to an HTTP EffectChecker.
+// DynamicEffectChecker verifies recovery only from a concrete, independent
+// device-health check. Generic Slurm fault listings and command success cannot
+// prove a healthy device. An explicitly configured HTTP checker is a fallback
+// only when no MCP checker was configured, not when the active source fails.
 func (s *Store) DynamicEffectChecker(fallback EffectChecker) EffectChecker {
 	return func(ctx context.Context, objectRef string) (bool, string, error) {
-		extra := map[string]any{"sync": true}
-		res, _, ok, err := s.CallBoundMCPTargetTool(ctx, "ops.effect_check", "fault_check", objectRef, extra)
-		if !ok {
-			res, _, ok, err = s.CallBoundMCPTargetTool(ctx, "", "fault_check", objectRef, extra)
+		if strings.TrimSpace(objectRef) == "" {
+			return false, "", fmt.Errorf("%w：复检需要明确目标", ErrHealthCoverage)
 		}
-		if ok {
-			if err != nil {
-				return false, "", err
-			}
-			evidence := strings.TrimSpace(res.Text)
-			if evidence == "" && len(res.Structured) > 0 {
-				evidence = string(res.Structured)
-			}
-			if evidence == "" {
-				evidence = fmt.Sprintf("mcp fault_check on %s", objectRef)
-			}
-			if len(evidence) > 4000 {
-				evidence = evidence[:4000]
-			}
-			if res.IsError {
-				return false, evidence, nil
-			}
-			var parsed struct {
-				Healthy *bool  `json:"healthy"`
-				OK      *bool  `json:"ok"`
-				Status  string `json:"status"`
-			}
-			if decodeMCPResultJSON(res.Result, &parsed) == nil {
-				if parsed.Healthy != nil {
-					return *parsed.Healthy, evidence, nil
-				}
-				if parsed.OK != nil {
-					return *parsed.OK, evidence, nil
-				}
-				switch strings.ToLower(strings.TrimSpace(parsed.Status)) {
-				case "failed", "unhealthy", "degraded", "error":
-					return false, evidence, nil
-				case "ok", "healthy", "passed", "succeeded":
-					return true, evidence, nil
-				}
-			}
-			return true, evidence, nil
+		res, _, bound, err := s.callBoundNHC(ctx, "ops.effect_check", []string{objectRef}, true)
+		if err != nil {
+			return false, "", err
 		}
-		if fallback != nil {
-			return fallback(ctx, objectRef)
+		if !bound {
+			if fallback != nil {
+				return fallback(ctx, objectRef)
+			}
+			return false, "", fmt.Errorf("%w：未配置独立设备健康验证器或 ops.effect_check → nhc", ErrCapabilityBinding)
 		}
-		return false, "", errors.New("未配置独立设备效果验证器或 fault_check MCP 能力绑定")
+		report := parseMCPNHCResult(res, []string{objectRef})
+		switch report.Nodes[objectRef] {
+		case mcpNHCHealthy:
+			if report.Complete && report.Status == "COMPLETE" && !res.IsError {
+				return true, mcpNHCEvidence(res, report, objectRef, mcpNHCHealthy), nil
+			}
+		case mcpNHCFault:
+			return false, mcpNHCEvidence(res, report, objectRef, mcpNHCFault), nil
+		}
+		return false, "", fmt.Errorf("%w：没有节点 %s 本次完整的 NHC 结果", ErrHealthCoverage, objectRef)
 	}
 }

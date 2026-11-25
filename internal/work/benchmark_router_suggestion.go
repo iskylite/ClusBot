@@ -27,11 +27,14 @@ func RouterBenchmarkSuggestion(ctx context.Context) *BenchmarkRouterSuggestion {
 
 func benchmarkRouterSuggestionTx(ctx context.Context, tx *sql.Tx, actor, conversation, text string) (*BenchmarkRouterSuggestion, error) {
 	s := strings.TrimSpace(text)
-	if actor != "user:session" || benchmarkAdmissionText(text) != nil || strings.ContainsAny(text, "\n\r`'") ||
+	if benchmarkAdmissionText(text) != nil || strings.ContainsAny(text, "\n\r`'") ||
 		strings.HasPrefix(s, "[") || strings.HasPrefix(s, ">") || strings.HasPrefix(s, "$") ||
 		strings.Contains(text, "日志") || strings.Contains(text, "示例") ||
 		!strings.Contains(text, "基准") {
 		return nil, nil
+	}
+	if allowed, err := ownsPersonalBusiness(tx, actor); err != nil || !allowed {
+		return nil, err
 	}
 	if conversation != "" {
 		var existing bool

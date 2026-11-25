@@ -24,7 +24,7 @@ func TestSharedConnectionCallOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	server := Server{Store: store, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
+	server := Server{Store: store, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
 	handler := server.Handler(fstest.MapFS{})
 	const testHash = "fixture-password-hash"
 	admin, err := store.BootstrapAccount(ctx, "admin", "Admin", testHash)

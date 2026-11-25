@@ -17,18 +17,21 @@ import (
 )
 
 func TestDecisionsApprove(t *testing.T) {
-	store, err := work.Open(filepath.Join(t.TempDir(), "decisions.db"))
+	dbPath := filepath.Join(t.TempDir(), "decisions.db")
+	store, err := work.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
+	owner := businessFixturePrincipal(t, store)
 	if err := store.SeedDomainDemo(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Token: "dec-token", Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}}
-	ts := httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("v3")}}))
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}, Settings: &model.Settings{Store: store}}
+	assignFixtureGrants(t, dbPath, owner)
+	ts := httptest.NewServer(productionFixtureHandler(t, server, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("v3")}}))
 	t.Cleanup(ts.Close)
-	login, _ := http.NewRequest("POST", ts.URL+"/api/v1/session", strings.NewReader("{\"token\":\"dec-token\"}"))
+	login, _ := http.NewRequest("POST", ts.URL+"/api/v1/session", strings.NewReader(businessFixtureCredentials))
 	login.Host = "127.0.0.1"
 	login.Header.Set("Origin", "http://127.0.0.1")
 	login.Header.Set("Content-Type", "application/json")

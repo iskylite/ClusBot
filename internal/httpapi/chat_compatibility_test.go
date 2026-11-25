@@ -3,14 +3,19 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestExistingDemoConversationChatEndpoints(t *testing.T) {
 	a := setupA1(t, filepath.Join(t.TempDir(), "demo-chat.sqlite"))
+	a.ts.Close()
+	a.ts = httptest.NewServer(productionFixtureHandler(t, Server{Store: a.store, Hosts: []string{"127.0.0.1"}}, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("test")}}))
 	defer a.close()
+	a.cookie = a.login()
 	if err := a.store.SeedDomainDemo(t.Context()); err != nil {
 		t.Fatal(err)
 	}

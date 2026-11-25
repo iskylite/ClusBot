@@ -86,6 +86,10 @@ error_code=CASE WHEN control='' THEN 'process_interrupted' ELSE control END,time
 }
 
 func (s *Store) claim(ctx context.Context) (Run, error) {
+	return s.claimAvailable(ctx, true, true)
+}
+
+func (s *Store) claimAvailable(ctx context.Context, replyReady, workerReady bool) (Run, error) {
 	// Failed outcomes retain their execution ownership until reconciled. Stop
 	// new claims while any are pending, bounding the backlog by active workers.
 	s.finalizationMu.Lock()
@@ -102,7 +106,7 @@ func (s *Store) claim(ctx context.Context) (Run, error) {
 		return Run{}, err
 	}
 	defer tx.Rollback()
-	run, err := selectModelRun(ctx, tx, fairPriority)
+	run, err := selectModelRun(ctx, tx, fairPriority, replyReady, workerReady)
 	if err != nil {
 		return Run{}, err
 	}
@@ -345,10 +349,10 @@ response=CASE WHEN ?='input_required' THEN ? ELSE response END WHERE id=?`,
 }
 
 func (s *Store) Start(ctx context.Context, provider Provider, concurrency int, limits RunLimits) *sync.WaitGroup {
-	return s.StartWhenModelAvailable(ctx, provider, concurrency, limits, nil)
+	return s.StartWithModelRoles(ctx, provider, concurrency, limits, nil, nil)
 }
 
-func (s *Store) StartWhenModelAvailable(ctx context.Context, provider Provider, concurrency int, limits RunLimits, modelAvailable func() bool) *sync.WaitGroup {
+func (s *Store) StartWithModelRoles(ctx context.Context, provider Provider, concurrency int, limits RunLimits, accountActive func() bool, roleAvailable func(context.Context, string) bool) *sync.WaitGroup {
 	s.configureRuntime(concurrency, limits)
 	var workers sync.WaitGroup
 	workers.Go(func() {
@@ -378,10 +382,12 @@ func (s *Store) StartWhenModelAvailable(ctx context.Context, provider Provider, 
 					if ctx.Err() != nil {
 						return
 					}
-					if modelAvailable != nil && !modelAvailable() {
+					if accountActive != nil && !accountActive() {
 						break
 					}
-					run, err := s.claim(ctx)
+					replyReady := roleAvailable == nil || roleAvailable(ctx, ConversationReplyModelRole)
+					workerReady := roleAvailable == nil || roleAvailable(ctx, TaskWorkerModelRole)
+					run, err := s.claimAvailable(ctx, replyReady, workerReady)
 					if errors.Is(err, sql.ErrNoRows) || errors.Is(err, context.Canceled) {
 						break
 					}
@@ -690,9 +696,9 @@ FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictA
 		case errors.Is(err, ErrIsolatedReplyUnavailable):
 			status, reason, accounting.errorCode = "failed", ErrIsolatedReplyUnavailable.Error(), "isolated_reply_unavailable"
 		case errors.Is(err, ErrConversationReplyRoleUnavailable):
-			status, reason, accounting.errorCode = "failed", ErrConversationReplyRoleUnavailable.Error(), "conversation_reply_role_unavailable"
+			reason, accounting.errorCode = ErrConversationReplyRoleUnavailable.Error(), "conversation_reply_role_unavailable"
 		case errors.Is(err, ErrTaskWorkerModelRoleUnavailable):
-			status, reason, accounting.errorCode = "failed", ErrTaskWorkerModelRoleUnavailable.Error(), "task_worker_role_unavailable"
+			reason, accounting.errorCode = ErrTaskWorkerModelRoleUnavailable.Error(), "task_worker_role_unavailable"
 		case errors.Is(err, ErrReadCheckpoint):
 			reason, accounting.errorCode = ErrReadCheckpoint.Error(), "read_checkpoint_unavailable"
 		case checkpointed:

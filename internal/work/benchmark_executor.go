@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -22,6 +21,7 @@ const benchmarkWaitRecheckMS = int64((5 * time.Minute) / time.Millisecond)
 
 type benchmarkDispatch struct {
 	request                                   BenchmarkJobRequest
+	provider                                  BenchmarkProvider
 	spec                                      BenchmarkCase
 	step, task, actor, operation, job, action string
 	generation                                int
@@ -65,13 +65,13 @@ func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider
 	var result BenchmarkJobResult
 	switch d.action {
 	case "start":
-		confirmed, err = provider.Start(call, d.request)
+		confirmed, err = d.provider.Start(call, d.request)
 	case "lookup":
-		confirmed, err = provider.Lookup(call, d.request)
+		confirmed, err = d.provider.Lookup(call, d.request)
 	case "get":
-		result, err = provider.Get(call, d.request, d.job)
+		result, err = d.provider.Get(call, d.request, d.job)
 	case "cancel":
-		err = provider.(benchmarkCanceller).Cancel(call, d.request, d.job)
+		err = d.provider.(benchmarkCanceller).Cancel(call, d.request, d.job)
 	}
 	// Never retry Start. If the process dies here, the durable row only
 	// permits lookup using the original idempotency key.
@@ -139,7 +139,12 @@ ORDER BY CASE WHEN b.phase='queued' AND b.next_at=0 THEN max(s.updated_at, coale
 	if d.spec.Key == "" || d.spec.Key != d.request.Case {
 		return d, false, ErrState
 	}
-	d.request.Binding, d.request.Targets, d.request.Parameters = d.spec.Binding, d.spec.Targets, d.spec.Parameters
+	d.request = benchmarkCaseRequest(d.spec, "benchmark:"+d.step)
+	selection, selectErr := selectBenchmarkProvider(ctx, tx, provider, d.request.Binding)
+	if selectErr != nil && !errors.Is(selectErr, ErrBenchmarkBinding) {
+		return d, false, selectErr
+	}
+	d.provider = selection.provider
 	if phase == "queued" {
 		reason := ""
 		var revoked bool
@@ -153,8 +158,10 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 		if revoked || stopping {
 			reason = "任务已取消、要求已修改或必需依赖未核实"
 		}
-		if !provider.Supports(d.request.Binding) {
+		if selectErr != nil {
 			reason = "冻结的基准连接或工具不可用"
+		} else if err := selection.validate(d.request); err != nil {
+			reason = err.Error()
 		}
 		var targets []ticketTarget
 		var auths map[string]string
@@ -212,10 +219,14 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				return d, false, err
 			}
 		}
-		d.request.IdempotencyKey = "benchmark:" + d.step
-		o, err := registerOperation(tx, Operation{TaskID: d.task, StepID: d.step, CapabilityKey: "benchmark." + d.spec.Binding.Tool,
-			CapabilityVersion: d.spec.Binding.Revision, ConnectionID: d.spec.Binding.Connection, TargetRefs: targetsRaw,
-			ParamsDigest: digest(toJSON(d.request)), AuthorizationRef: digest(authsRaw), IdempotencyKey: d.request.IdempotencyKey}, stamp)
+		capabilityKey, capabilityVersion, connectionID := selection.capabilityKey, selection.capabilityVersion, selection.connectionID
+		if capabilityKey == "" {
+			capabilityKey = "benchmark." + d.spec.Binding.Tool
+			capabilityVersion, connectionID = d.spec.Binding.Revision, d.spec.Binding.Connection
+		}
+		o, err := registerOperation(tx, Operation{TaskID: d.task, StepID: d.step, CapabilityKey: capabilityKey,
+			CapabilityVersion: capabilityVersion, ConnectionID: connectionID, TargetRefs: targetsRaw,
+			ParamsDigest: selection.requestDigest(d.request), AuthorizationRef: digest(authsRaw), IdempotencyKey: d.request.IdempotencyKey}, stamp)
 		if err != nil {
 			return d, false, err
 		}
@@ -240,18 +251,23 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 			return d, false, err
 		}
 	} else {
-		if !provider.Supports(d.request.Binding) {
+		op, err := readOperation(tx, d.operation)
+		if err != nil {
+			return d, false, err
+		}
+		// Never send a query/cancel to another tool or transport after Start.
+		// A pre-upgrade operation without a provable pin also stays unknown.
+		if selectErr != nil || op.ParamsDigest != selection.requestDigest(d.request) {
 			_, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+30000, d.step)
 			if err != nil {
 				return d, false, err
 			}
 			return d, true, tx.Commit()
 		}
-		d.request.IdempotencyKey = "benchmark:" + d.step
 		d.action = "lookup"
 		if phase == "following" {
 			d.action = "get"
-			if _, supported := provider.(benchmarkCanceller); stopping && !cancelSent && supported {
+			if stopping && !cancelSent && selection.canStop {
 				if _, err = tx.Exec("UPDATE benchmark_cases SET cancel_sent=1 WHERE step_id=?", d.step); err != nil {
 					return d, false, err
 				}
@@ -312,12 +328,12 @@ func (s *Store) settleBenchmark(ctx context.Context, d benchmarkDispatch, confir
 	}
 	if !unknown && (d.action == "start" || d.action == "lookup") {
 		if _, err = tx.Exec(`INSERT INTO benchmark_job_identities VALUES(?,?,?,?)
-ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec.Binding.Connection, d.spec.Binding.Revision, confirmed, d.operation); err != nil {
+ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, op.ConnectionID, d.spec.Binding.Revision, confirmed, d.operation); err != nil {
 			return err
 		}
 		var owner string
 		if err = tx.QueryRow(`SELECT operation_id FROM benchmark_job_identities WHERE connection_key=? AND binding_revision=? AND provider_job_id=?`,
-			d.spec.Binding.Connection, d.spec.Binding.Revision, confirmed).Scan(&owner); err != nil {
+			op.ConnectionID, d.spec.Binding.Revision, confirmed).Scan(&owner); err != nil {
 			return err
 		}
 		unknown = owner != d.operation
@@ -494,7 +510,7 @@ func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (
 	observed := make([]benchmarkObservation, 0, len(r.Measurements))
 	total := 0
 	if len(r.Measurements) > 2048 {
-		return benchReportJSON{}, fmt.Errorf("%w：远端结果超出边界", ErrBenchmarkInput)
+		r.Measurements = nil
 	}
 	for _, m := range r.Measurements {
 		if !targets[m.Target] {

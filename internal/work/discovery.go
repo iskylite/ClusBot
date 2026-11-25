@@ -3,6 +3,7 @@ package work
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -62,62 +63,90 @@ type DiscoveryScanSource interface {
 	ScanDiscovery(ctx context.Context, id, scope string) ([]DiscoveryObservation, error)
 }
 type DiscoveryObservation struct {
-	Serial  string `json:"serial,omitempty"`
-	Address string `json:"address"`
+	Serial         string    `json:"serial,omitempty"`
+	Address        string    `json:"address"`
+	Kind           string    `json:"kind,omitempty"`
+	SSHEndpoint    string    `json:"ssh_endpoint,omitempty"`
+	BMCEndpoint    string    `json:"bmc_endpoint,omitempty"`
+	SourceIdentity string    `json:"source_identity,omitempty"`
+	ProviderTaskID string    `json:"provider_task_id,omitempty"`
+	ProviderTarget string    `json:"provider_target,omitempty"`
+	Sequence       uint64    `json:"sequence,omitempty"`
+	ObservedAt     time.Time `json:"observed_at,omitempty"`
 }
 type DiscoveryPlanRequest struct {
-	ID                  string `json:"id"`
-	Source              string `json:"source"`
-	Scope               string `json:"scope"`
-	PeriodSeconds       int64  `json:"period_seconds"`
-	FirstAt             int64  `json:"first_at_unix_ms"`
-	CheckAfterAdmit     bool   `json:"check_after_admit"`
-	CheckOnAddressDrift bool   `json:"check_on_address_drift"`
+	ID                  string              `json:"id"`
+	Source              string              `json:"source"`
+	Scope               string              `json:"scope"`
+	PeriodSeconds       int64               `json:"period_seconds"`
+	FirstAt             int64               `json:"first_at_unix_ms"`
+	CheckAfterAdmit     bool                `json:"check_after_admit"`
+	CheckOnAddressDrift bool                `json:"check_on_address_drift"`
+	Scan                *DiscoveryScopeSpec `json:"scan,omitempty"`
 }
 type DiscoveryGrant struct {
-	Source              string `json:"source"`
-	Scope               string `json:"scope"`
-	ExpiresAt           int64  `json:"expires_at_unix_ms"`
-	AllowAdmissionCheck bool   `json:"allow_admission_check"`
-	AllowDriftCheck     bool   `json:"allow_drift_check"`
+	Source              string              `json:"source"`
+	Scope               string              `json:"scope"`
+	ExpiresAt           int64               `json:"expires_at_unix_ms"`
+	AllowAdmissionCheck bool                `json:"allow_admission_check"`
+	AllowDriftCheck     bool                `json:"allow_drift_check"`
+	Scan                *DiscoveryScopeSpec `json:"scan,omitempty"`
 }
 
 func (s *Store) GrantDiscovery(ctx context.Context, actor string, g DiscoveryGrant, source DiscoveryScanSource) (string, error) {
-	if actor == "" || source == nil || !source.AllowsDiscovery(g.Source, g.Scope) || g.ExpiresAt <= now() {
+	if actor == "" || g.ExpiresAt <= now() {
 		return "", ErrDiscoveryInput
 	}
+	binding, err := pinDiscoverySource(ctx, source, g.Source, g.Scope, g.Scan)
+	if err != nil {
+		return "", err
+	}
+	params := struct {
+		DiscoveryGrant
+		Fingerprint string `json:"binding_fingerprint,omitempty"`
+	}{g, binding.fingerprint()}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
 	a, err := grantAuthorization(tx, Authorization{Subject: actor, Action: "discover", ObjectRef: g.Source, ScopeLabel: g.Scope, ExpiresAt: g.ExpiresAt,
-		Owner: actor, Source: "explicit-discovery-settings", ParamConstraints: toJSON(g)}, now())
+		Owner: actor, Source: "explicit-discovery-settings", ParamConstraints: toJSON(params)}, now())
 	if err != nil {
 		return "", err
 	}
 	return a.AuthID, tx.Commit()
 }
-func discoveryGranted(tx *sql.Tx, actor, source, scope string, check bool, stamp int64) (bool, error) {
+func discoveryGranted(tx *sql.Tx, actor, source, scope string, check bool, stamp int64, fingerprints ...string) (bool, error) {
 	var ok bool
+	var fingerprint any
+	if len(fingerprints) != 0 {
+		fingerprint = fingerprints[0]
+	}
 	err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM authorizations WHERE subject=? AND action='discover' AND object_ref=? AND scope_label=?
  AND revoked_at=0 AND valid_from<=? AND expires_at>? AND json_valid(param_constraints)
  AND json_extract(param_constraints,'$.source')=? AND json_extract(param_constraints,'$.scope')=?
- AND (?=0 OR json_extract(param_constraints,'$.allow_admission_check')=1))`, actor, source, scope, stamp, stamp, source, scope, check).Scan(&ok)
+ AND (?=0 OR json_extract(param_constraints,'$.allow_admission_check')=1)
+ AND (? IS NULL OR coalesce(json_extract(param_constraints,'$.binding_fingerprint'),'')=?))`,
+		actor, source, scope, stamp, stamp, source, scope, check, fingerprint, fingerprint).Scan(&ok)
 	return ok, err
 }
 func (s *Store) PublishDiscoveryPlan(ctx context.Context, actor string, p DiscoveryPlanRequest, source DiscoveryScanSource) error {
 	stamp := now()
-	if actor == "" || !validBenchKey(p.ID) || source == nil || !source.AllowsDiscovery(p.Source, p.Scope) || p.PeriodSeconds < 60 ||
+	if actor == "" || !validBenchKey(p.ID) || p.PeriodSeconds < 60 ||
 		p.PeriodSeconds > 7*86400 || p.FirstAt < stamp || p.FirstAt > stamp+int64(31*24*time.Hour/time.Millisecond) {
 		return ErrDiscoveryInput
+	}
+	binding, err := pinDiscoverySource(ctx, source, p.Source, p.Scope, p.Scan)
+	if err != nil {
+		return err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	allowed, err := discoveryGranted(tx, actor, p.Source, p.Scope, false, stamp)
+	allowed, err := discoveryGranted(tx, actor, p.Source, p.Scope, false, stamp, binding.fingerprint())
 	if err != nil {
 		return err
 	}
@@ -138,6 +167,11 @@ func (s *Store) PublishDiscoveryPlan(ctx context.Context, actor string, p Discov
 		p.ID, actor, p.Source, p.Scope, p.PeriodSeconds*1000, p.FirstAt, p.CheckAfterAdmit, p.CheckOnAddressDrift); err != nil {
 		return err
 	}
+	if binding != nil {
+		if _, err = tx.Exec("INSERT INTO discovery_plan_bindings VALUES(?,?)", p.ID, toJSON(binding)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 func (s *Store) DisableDiscoveryPlan(ctx context.Context, actor, plan string) error {
@@ -156,6 +190,8 @@ type discoveryTick struct {
 	plan, actor, source, scope, task string
 	at                               int64
 	generation, revision             int
+	binding                          *discoverySourceBinding
+	coverage                         *discoveryScanCoverage
 }
 
 func (s *Store) RunDiscovery(ctx context.Context, source DiscoveryScanSource) {
@@ -180,9 +216,21 @@ func (s *Store) runDiscoveryOnce(ctx context.Context, source DiscoveryScanSource
 	if err != nil || !worked || d.task == "" {
 		return worked, err
 	}
-	call, cancel := context.WithTimeout(ctx, 10*time.Second)
+	wait := 10 * time.Second
+	if d.binding != nil {
+		wait = 2 * time.Minute
+	}
+	call, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
-	observed, scanErr := source.ScanDiscovery(call, d.source, d.scope)
+	var observed []DiscoveryObservation
+	var scanErr error
+	if adapter, ok := source.(scopedDiscoverySource); ok {
+		observed, d.coverage, scanErr = adapter.scanPinnedDiscovery(call, d.source, d.scope, d.binding, fmt.Sprintf("%s:%d:%s", d.plan, d.at, d.task))
+	} else if d.binding != nil {
+		scanErr = ErrDiscoveryInput
+	} else {
+		observed, scanErr = source.ScanDiscovery(call, d.source, d.scope)
+	}
 	return true, s.settleDiscovery(ctx, d, observed, scanErr, now())
 }
 func (s *Store) claimDiscovery(ctx context.Context, source DiscoveryScanSource, stamp int64) (discoveryTick, bool, error) {
@@ -196,22 +244,27 @@ func (s *Store) claimDiscovery(ctx context.Context, source DiscoveryScanSource, 
 	}
 	defer tx.Rollback()
 	var period int64
-	err = tx.QueryRow(`SELECT plan_id,actor,source,scope,next_at,period_ms,revision FROM discovery_plans
- WHERE enabled=1 AND next_at<=? ORDER BY next_at,plan_id LIMIT 1`, stamp).
-		Scan(&d.plan, &d.actor, &d.source, &d.scope, &d.at, &period, &d.revision)
+	var rawBinding string
+	err = tx.QueryRow(`SELECT p.plan_id,p.actor,p.source,p.scope,p.next_at,p.period_ms,p.revision,coalesce(b.binding,'') FROM discovery_plans p
+ LEFT JOIN discovery_plan_bindings b ON b.plan_id=p.plan_id
+ WHERE p.enabled=1 AND p.next_at<=? ORDER BY p.next_at,p.plan_id LIMIT 1`, stamp).
+		Scan(&d.plan, &d.actor, &d.source, &d.scope, &d.at, &period, &d.revision, &rawBinding)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return d, false, err
 	}
 	if err == nil {
+		if rawBinding != "" && json.Unmarshal([]byte(rawBinding), &d.binding) != nil {
+			return d, false, ErrDiscoveryInput
+		}
 		next := d.at + ((stamp-d.at)/period+1)*period
 		if _, err = tx.Exec("UPDATE discovery_plans SET next_at=? WHERE plan_id=?", next, d.plan); err != nil {
 			return d, false, err
 		}
-		authorized, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp)
+		authorized, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp, d.binding.fingerprint())
 		if err != nil {
 			return d, false, err
 		}
-		if stamp-d.at >= period || !authorized || !source.AllowsDiscovery(d.source, d.scope) {
+		if stamp-d.at >= period || !authorized || (d.binding == nil && !source.AllowsDiscovery(d.source, d.scope)) {
 			if _, err = tx.Exec(`INSERT INTO discovery_occurrences(plan_id,scheduled_at,plan_revision,status,summary) VALUES(?,?,?,'skipped',?)`,
 				d.plan, d.at, d.revision, "已错过计划时点、授权失效或连接禁用"); err != nil {
 				return d, false, err
@@ -250,21 +303,25 @@ func (s *Store) claimDiscovery(ctx context.Context, source DiscoveryScanSource, 
 	d = discoveryTick{}
 	var current int
 	var enabled bool
-	err = tx.QueryRow(`SELECT p.plan_id,p.actor,p.source,p.scope,o.task_id,o.scheduled_at,o.generation,o.plan_revision,p.revision,p.enabled
+	err = tx.QueryRow(`SELECT p.plan_id,p.actor,p.source,p.scope,o.task_id,o.scheduled_at,o.generation,o.plan_revision,p.revision,p.enabled,coalesce(b.binding,'')
  FROM discovery_occurrences o JOIN discovery_plans p ON p.plan_id=o.plan_id JOIN tasks t ON t.id=o.task_id
+ LEFT JOIN discovery_plan_bindings b ON b.plan_id=p.plan_id
  WHERE o.status IN ('queued','running') AND o.next_attempt<=? AND t.status='active' ORDER BY o.scheduled_at,p.plan_id LIMIT 1`, stamp).
-		Scan(&d.plan, &d.actor, &d.source, &d.scope, &d.task, &d.at, &d.generation, &d.revision, &current, &enabled)
+		Scan(&d.plan, &d.actor, &d.source, &d.scope, &d.task, &d.at, &d.generation, &d.revision, &current, &enabled, &rawBinding)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, false, tx.Commit()
 	}
 	if err != nil {
 		return d, false, err
 	}
-	ok, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp)
+	if rawBinding != "" && json.Unmarshal([]byte(rawBinding), &d.binding) != nil {
+		return d, false, ErrDiscoveryInput
+	}
+	ok, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp, d.binding.fingerprint())
 	if err != nil {
 		return d, false, err
 	}
-	if !ok || !enabled || d.revision != current || !source.AllowsDiscovery(d.source, d.scope) {
+	if !ok || !enabled || d.revision != current || (d.binding == nil && !source.AllowsDiscovery(d.source, d.scope)) {
 		if err := finishDiscovery(tx, d, false, "发现来源或授权已失效", stamp); err != nil {
 			return d, false, err
 		}
@@ -283,8 +340,12 @@ func (s *Store) claimDiscovery(ctx context.Context, source DiscoveryScanSource, 
 		return d, false, ErrState
 	}
 	d.generation++
+	lease := int64(30000)
+	if d.binding != nil {
+		lease = 150000
+	}
 	if _, err = tx.Exec(`UPDATE discovery_occurrences SET status='running',generation=?,next_attempt=? WHERE plan_id=? AND scheduled_at=?`,
-		d.generation, stamp+30000, d.plan, d.at); err != nil {
+		d.generation, stamp+lease, d.plan, d.at); err != nil {
 		return d, false, err
 	}
 	return d, true, tx.Commit()
@@ -305,7 +366,7 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 	if gen != d.generation || status != "running" {
 		return nil
 	}
-	ok, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp)
+	ok, err := discoveryGranted(tx, d.actor, d.source, d.scope, false, stamp, d.binding.fingerprint())
 	if err != nil {
 		return err
 	}
@@ -346,6 +407,14 @@ func (s *Store) settleDiscovery(ctx context.Context, d discoveryTick, observed [
 			continue
 		}
 		identity := []string{d.source, "serial", o.Serial}
+		if d.binding != nil {
+			if o.SourceIdentity != "mcp:"+d.binding.ConnectionID || o.Serial == "" || o.Kind == "" || o.ProviderTaskID == "" || o.Sequence == 0 {
+				continue
+			}
+			// Revision changes require a fresh authorization, but do not create
+			// another identity for the same provider and physical device.
+			identity = []string{o.SourceIdentity, o.Kind, strings.ToUpper(o.Serial)}
+		}
 		state := "observed"
 		if o.Serial == "" {
 			identity = []string{d.source, d.scope, "address", ip}
@@ -392,9 +461,23 @@ FROM discovery_candidates c LEFT JOIN discovery_observations o ON o.rowid=(
 			return err
 		}
 
+		if d.binding != nil {
+			if _, err = tx.Exec("INSERT INTO discovery_observation_evidence VALUES(?,?,?,?,?)", d.plan, d.at, i, toJSON(o), d.binding.fingerprint()); err != nil {
+				return err
+			}
+		}
 		accepted++
 	}
-	if err = finishDiscovery(tx, d, true, fmt.Sprintf("已登记 %d 条有来源的观测；未自动纳管", accepted), stamp); err != nil {
+	summary := fmt.Sprintf("已登记 %d 条有来源的观测；未自动纳管", accepted)
+	if d.coverage != nil {
+		if _, err = tx.Exec("INSERT INTO discovery_scan_coverages VALUES(?,?,?)", d.plan, d.at, toJSON(d.coverage)); err != nil {
+			return err
+		}
+		if d.coverage.Outcome == "partial" {
+			summary = fmt.Sprintf("部分发现：登记 %d 条可信观测，%d 个最终记录；未观测到的资产不能判断不存在", accepted, d.coverage.Total)
+		}
+	}
+	if err = finishDiscovery(tx, d, true, summary, stamp); err != nil {
 		return err
 	}
 	return tx.Commit()

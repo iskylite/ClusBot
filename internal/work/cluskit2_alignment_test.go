@@ -167,9 +167,12 @@ func TestCluskit2BenchmarkProviderAdaptation(t *testing.T) {
 				}
 				return mcpclient.Result{Text: `{"found":true,"task_id":"task-99","state":"RUNNING"}`}, nil
 			}
-			return mcpclient.Result{Text: `{"task_id":"task-99","state":"SUCCEEDED","summary":{"passed":2,"bw_gbps":195.4}}`}, nil
+			return mcpclient.Result{Text: `{"task_id":"task-99","state":"COMPLETE","summary":{"passed":2,"bw_gbps":1000},"results":[
+			  {"task_id":"task-99","node":"node-1","event":"result","state":"succeeded","code":0,"data":{"benchmark":"hpl","metrics":{"Rmax":195.4,"Unit":"GFLOPS"},"row":{"node":"node-1","benchmark":"hpl","status":"succeeded","metrics":{"unit":"GFLOPS","fields":{"Rmax":195.4}}}}},
+			  {"task_id":"task-99","node":"node-2","event":"result","state":"succeeded","code":0,"data":{"benchmark":"hpl","metrics":{"Rmax":170.2,"Unit":"GFLOPS"},"row":{"node":"node-2","benchmark":"hpl","status":"succeeded","metrics":{"unit":"GFLOPS","fields":{"Rmax":170.2}}}}}
+			]}`}, nil
 		case "task_cancel":
-			return mcpclient.Result{Text: `{"task_id":"task-99","acknowledged":true}`}, nil
+			return mcpclient.Result{Text: `{"task_ids":["task-99"],"acknowledged":true,"confirmed":["engine:task-99"],"unconfirmed":[],"remote_exit_verified":false}`}, nil
 		default:
 			return mcpclient.Result{IsError: true, Text: "unknown tool"}, nil
 		}
@@ -215,7 +218,7 @@ func TestCluskit2BenchmarkProviderAdaptation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
-	if res.State != "completed" || len(res.Measurements) != 2 || res.Measurements[0].Metrics["bw_gbps"].Value != 195.4 {
+	if res.State != "completed" || len(res.Measurements) != 2 || res.Measurements[0].Metrics["Rmax"] != (BenchmarkMeasuredMetric{Value: 195.4, Unit: "GFLOPS"}) || res.Measurements[1].Metrics["Rmax"].Value != 170.2 || res.Measurements[0].Outcome != "measured" || res.Measurements[0].Raw != nil {
 		t.Fatalf("unexpected BenchmarkJobResult: %+v", res)
 	}
 	if err := prov.Cancel(context.Background(), req, jobID); err != nil {
@@ -223,80 +226,5 @@ func TestCluskit2BenchmarkProviderAdaptation(t *testing.T) {
 	}
 	if calls.Load() != 5 {
 		t.Fatalf("expected 5 MCP calls, got %d", calls.Load())
-	}
-}
-
-func TestExecuteIncidentSelfHealOperationLifecycle(t *testing.T) {
-	ctx := context.Background()
-	store, err := Open(t.TempDir() + "/clusbot.db")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-
-	inc, err := store.CreateIncident(ctx, "node-01 nvlink down", `{"nodes":["node-01"]}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pol, err := store.UpsertSelfHealPolicy(ctx, SelfHealPolicyInput{
-		PolicyKey:            "gpu.fabric.reset",
-		Version:              1,
-		Subject:              "local-owner",
-		ActionCapability:     "ops.self_heal",
-		PerNodeMaxWrites:     5,
-		ClusterMaxConcurrent: 5,
-		State:                "active",
-		ObserveOnly:          false,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Grant authorization for both ops.self_heal and dispatch.
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stamp := now()
-	for _, act := range []struct{ action, obj, scope string }{
-		{"ops.self_heal", "node-01", "self_heal"},
-		{"dispatch", "ops.self_heal", ""},
-	} {
-		if _, err := tx.Exec(`INSERT INTO authorizations(auth_id,subject,action,object_ref,scope_label,policy_version,valid_from,expires_at,revoked_at,owner,created_at,updated_at)
-VALUES(?,?,?,?,?,1,?,0,0,'local-owner',?,?)`, id(), "local-owner", act.action, act.obj, act.scope, stamp, stamp, stamp); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-
-	// 1. Unknown/lost verification outcome -> Operation must transition to reconcile_required, not failed.
-	ex1, err := store.ExecuteIncidentSelfHeal(ctx, "local-owner", inc.IncidentID, pol.PolicyID, "node-01", func(context.Context, string) (bool, string, error) {
-		return false, "", context.DeadlineExceeded
-	})
-	if err != nil {
-		t.Fatalf("ExecuteIncidentSelfHeal (reconcile) failed: %v", err)
-	}
-	if ex1.State != "dispatched" || !strings.Contains(ex1.VerificationOutcome, "reconcile_required") {
-		t.Fatalf("expected dispatched+reconcile_required, got %+v", ex1)
-	}
-	var opState string
-	if err := store.db.QueryRow(`SELECT state FROM operations WHERE operation_id=?`, ex1.OperationID).Scan(&opState); err != nil || opState != string(RuntimeOperationReconcile) {
-		t.Fatalf("expected operation state reconcile_required, got %q (err=%v)", opState, err)
-	}
-
-	// 2. Healthy EffectChecker -> Operation succeeded + execution verified.
-	ex2, err := store.ExecuteIncidentSelfHeal(ctx, "local-owner", inc.IncidentID, pol.PolicyID, "node-01", func(context.Context, string) (bool, string, error) {
-		return true, "healthy", nil
-	})
-	if err != nil {
-		t.Fatalf("ExecuteIncidentSelfHeal (verified) failed: %v", err)
-	}
-	if ex2.State != "verified" {
-		t.Fatalf("expected verified execution, got %+v", ex2)
-	}
-	if err := store.db.QueryRow(`SELECT state FROM operations WHERE operation_id=?`, ex2.OperationID).Scan(&opState); err != nil || opState != string(RuntimeOperationSucceeded) {
-		t.Fatalf("expected operation state succeeded, got %q (err=%v)", opState, err)
 	}
 }

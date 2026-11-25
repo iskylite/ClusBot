@@ -27,7 +27,7 @@ func newAccountFixture(t *testing.T) *accountFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	s := Server{Store: store, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"}, Token: "legacy-token"}
+	s := Server{Store: store, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
 	return &accountFixture{t: t, store: store, handler: s.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})}
 }
 
@@ -153,14 +153,25 @@ func TestServerBootstrapSessionAndLegacyRoutesClosed(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("foreign origin accepted: %d", w.Code)
 	}
-	local := Server{Store: f.store, Token: "legacy-token", Hosts: []string{"ops.example"}}.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})
-	r = httptest.NewRequest("POST", "http://ops.example/api/v1/session", bytes.NewBufferString(`{"token":"legacy-token"}`))
-	r.Header.Set("Origin", "http://ops.example")
-	r.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	local.ServeHTTP(w, r)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("server database reopened in local mode: %d", w.Code)
+	for _, tc := range []struct {
+		method, path string
+	}{
+		{"GET", "/api/v1/session"},
+		{"GET", "/api/v1/conversations"},
+		{"GET", "/api/v1/assistant/tools"},
+	} {
+		legacyCookie := &http.Cookie{Name: "clusbot_session", Value: "9999999999.not-an-account-session"}
+		w = f.request(tc.method, tc.path, nil, legacyCookie)
+		if tc.path == "/api/v1/session" {
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"authenticated":false`) {
+				t.Fatalf("legacy cookie was accepted as a session: %d %s", w.Code, w.Body)
+			}
+		} else if w.Code != http.StatusUnauthorized {
+			t.Fatalf("legacy cookie reached %s: %d %s", tc.path, w.Code, w.Body)
+		}
+	}
+	if w := f.request("POST", "/api/v1/provider/benchmark-events", map[string]string{}, cookie); w.Code != http.StatusNotFound {
+		t.Fatalf("unscoped provider webhook remained reachable: %d %s", w.Code, w.Body)
 	}
 }
 
@@ -171,7 +182,7 @@ func TestDesktopLoopbackAccountSession(t *testing.T) {
 	}
 	defer store.Close()
 	const origin = "http://127.0.0.1:52123"
-	handler := (Server{Store: store, ServerMode: true, Origin: origin, Hosts: []string{"127.0.0.1:52123"}}).Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})
+	handler := (Server{Store: store, Origin: origin, Hosts: []string{"127.0.0.1:52123"}}).Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})
 	request := func(method, path, body, requestOrigin string, cookie *http.Cookie) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, origin+path, strings.NewReader(body))
@@ -342,5 +353,81 @@ func TestServerPagesServeApplicationShellAndKeepAPIGates(t *testing.T) {
 	}
 	if w := f.request(http.MethodGet, "/not-a-route", nil, nil); w.Code != http.StatusNotFound {
 		t.Fatalf("unknown page returned %d", w.Code)
+	}
+}
+
+func TestAssistantConfirmationBelongsToAccountSessionAndCannotBeReplayed(t *testing.T) {
+	f := newAccountFixture(t)
+	stores := map[string]*work.Store{}
+	server := Server{
+		Store: f.store, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+		PersonalAPI: func(id string) (http.Handler, error) {
+			if store := stores[id]; store != nil {
+				return (Server{Store: f.store}).PersonalHandler(store), nil
+			}
+			return nil, work.ErrAccountDenied
+		},
+	}
+	f.handler = server.Handler(fstest.MapFS{})
+	adminID := f.setup()
+	admin := f.login("admin", "correct horse battery staple")
+	created := f.request("POST", "/api/v1/admin/users", map[string]string{
+		"username": "member", "password": "member initial password 123",
+	}, admin)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create member: %d %s", created.Code, created.Body)
+	}
+	var body struct {
+		User work.Account
+	}
+	accountJSON(t, created, &body)
+	member := f.login("member", "member initial password 123")
+	if changed := f.request("POST", "/api/v1/me/password", map[string]string{
+		"current_password": "member initial password 123", "new_password": "member new password 456",
+	}, member); changed.Code != http.StatusNoContent {
+		t.Fatalf("set member password: %d %s", changed.Code, changed.Body)
+	}
+	member = f.login("member", "member new password 456")
+	anotherAdminSession := f.login("admin", "correct horse battery staple")
+	for _, id := range []string{adminID, body.User.PrincipalID} {
+		store, err := work.Open(filepath.Join(t.TempDir(), "personal.sqlite"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { store.Close() })
+		if err := store.BindAccountBusinessStore(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		stores[id] = store
+	}
+	preview := f.request("POST", "/api/v1/assistant/tools", map[string]any{
+		"tool": "create_task", "body": map[string]string{"client_request_id": "admin-preview-proof", "text": "do a fixture task"},
+	}, admin)
+	var receipt struct {
+		ID string `json:"confirmation_id"`
+	}
+	accountJSON(t, preview, &receipt)
+	if preview.Code != http.StatusOK || receipt.ID == "" {
+		t.Fatalf("preview: %d %s", preview.Code, preview.Body)
+	}
+	confirmation := map[string]string{"confirmation_id": receipt.ID}
+	if w := f.request("POST", "/api/v1/assistant/confirm", confirmation, nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous confirmation: %d %s", w.Code, w.Body)
+	}
+	for _, unauthorised := range []*http.Cookie{member, anotherAdminSession} {
+		if w := f.request("POST", "/api/v1/assistant/confirm", confirmation, unauthorised); w.Code != http.StatusConflict {
+			t.Fatalf("different account/session confirmed: %d %s", w.Code, w.Body)
+		}
+	}
+	if w := f.request("POST", "/api/v1/assistant/confirm", confirmation, admin); w.Code != http.StatusOK {
+		t.Fatalf("authorized confirmation: %d %s", w.Code, w.Body)
+	}
+	if w := f.request("POST", "/api/v1/assistant/confirm", confirmation, admin); w.Code != http.StatusConflict {
+		t.Fatalf("replayed confirmation: %d %s", w.Code, w.Body)
+	}
+	adminRead := f.request("GET", "/api/v1/admissions/admin-preview-proof", nil, admin)
+	memberRead := f.request("GET", "/api/v1/admissions/admin-preview-proof", nil, member)
+	if adminRead.Code != http.StatusOK || memberRead.Code != http.StatusNotFound {
+		t.Fatalf("receipt not isolated: admin=%d %s, member=%d %s", adminRead.Code, adminRead.Body, memberRead.Code, memberRead.Body)
 	}
 }

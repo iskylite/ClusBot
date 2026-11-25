@@ -63,7 +63,7 @@ func TestImportedBenchmarkGrantEnforcesWindowWithoutScheduling(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		task, err := submitBenchmarkRunTx(tx, actor, BenchmarkRunRequest{name, profile, 1}, p, stamp)
+		task, err := submitBenchmarkRunTx(ctx, tx, actor, BenchmarkRunRequest{name, profile, 1}, p, stamp)
 		if err != nil {
 			t.Fatal(err)
 		}

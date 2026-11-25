@@ -19,7 +19,8 @@ func TestBenchmarkDraftDependencyPreview(t *testing.T) {
 	a := setupA1(t, filepath.Join(t.TempDir(), "draft-dependency.sqlite"))
 	defer a.close()
 	ctx := t.Context()
-	const actor, key = "user:session", "profile-secret"
+	actor := businessFixturePrincipal(t, a.store)
+	const key = "profile-secret"
 	const spoken = "让 deep 在 bandwidth 之后运行"
 	const route = "/api/v1/domain/benchmark-profiles/" + key + "/draft/preview-dependency-edit"
 	c := work.BenchmarkCase{Key: "deep", Binding: work.BenchmarkBinding{Connection: "private-connection", Revision: 1, Tool: "private-tool", Validator: "structured-metrics@1"},

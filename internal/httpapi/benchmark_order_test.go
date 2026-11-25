@@ -14,7 +14,8 @@ import (
 )
 
 func TestBenchmarkChatTargetAPI(t *testing.T) {
-	a := setupA1(t, filepath.Join(t.TempDir(), "benchmark.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "benchmark.sqlite")
+	a := setupA1(t, dbPath)
 	defer a.close()
 	const profiles = "/api/v1/domain/benchmark-profiles"
 	const target = "/api/v1/domain/benchmark-chat-targets/POD7"
@@ -74,9 +75,10 @@ func TestBenchmarkChatTargetAPI(t *testing.T) {
 	// The familiar sentence has a local suggestion fallback even with no
 	// configured model or provider, but no longer accepts a real test run.
 	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := a.store.ImportDomainAssets(t.Context(), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := a.store.ImportDomainAssetsForAccount(t.Context(), businessFixturePrincipal(t, a.store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	const oldPhrase = `{"client_request_id":"benchmark-inactive","text":"跑 POD7 全套基准"}`
 	for range 2 {
 		code, out := a.post("/api/v1/conversations", oldPhrase)
@@ -121,15 +123,17 @@ type benchmarkReadProvider struct{ work.BenchmarkProvider }
 func (benchmarkReadProvider) Supports(work.BenchmarkBinding) bool { return true }
 
 func TestBenchmarkProgressLifecycleAPINoModel(t *testing.T) {
-	a := setupA1(t, filepath.Join(t.TempDir(), "benchmark-read.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "benchmark-read.sqlite")
+	a := setupA1(t, dbPath)
 	defer a.close()
 	ctx := t.Context()
 	grant := work.DomainBenchmarkGrant{Revision: 1, Connection: "bench", Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := a.store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "inventory-1", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := a.store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, a.store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "inventory-1", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
 	profile := work.BenchmarkProfile{Key: "full", Version: 1, Cases: []work.BenchmarkCase{{Key: "test", Binding: work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"}, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}}
-	const actor = "user:session"
+	actor := businessFixturePrincipal(t, a.store)
+
 	if err := a.store.PublishBenchmarkProfile(ctx, actor, profile); err != nil {
 		t.Fatal(err)
 	}

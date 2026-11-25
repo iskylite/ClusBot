@@ -11,14 +11,17 @@ import (
 )
 
 func TestBenchmarkDispatchControlAPINoModel(t *testing.T) {
-	a := setupA1(t, filepath.Join(t.TempDir(), "benchmark-gate-api.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "benchmark-gate-api.sqlite")
+	a := setupA1(t, dbPath)
 	defer a.close()
 	ctx := t.Context()
-	const actor, key = "user:session", "full"
+	actor := businessFixturePrincipal(t, a.store)
+	const key = "full"
 	grant := work.DomainBenchmarkGrant{Revision: 1, Connection: "bench", Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := a.store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := a.store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, a.store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	b := work.BenchmarkBinding{Connection: grant.Connection, Revision: grant.Revision, Tool: grant.Tool, Validator: "structured-metrics@1"}
 	if err := a.store.PublishBenchmarkProfile(ctx, actor, work.BenchmarkProfile{Key: key, Version: 1, Cases: []work.BenchmarkCase{
 		{Key: "first", Binding: b, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}},

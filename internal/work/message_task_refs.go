@@ -23,8 +23,12 @@ func migrateMessageTaskRefs(tx *sql.Tx) error {
 	return err
 }
 
-const visibleMessageTask = `t.conversation_id=c.id AND c.archived=0 AND NOT EXISTS(
- SELECT 1 FROM benchmark_runs b WHERE b.task_id=t.id AND b.actor<>'user:session')`
+// The only dynamic part is an internally selected SQL parameter/column for
+// the viewer. Never infer benchmark ownership from a historical actor name.
+func visibleMessageTask(viewer string) string {
+	return `t.conversation_id=c.id AND c.archived=0 AND NOT EXISTS(
+ SELECT 1 FROM benchmark_runs b WHERE b.task_id=t.id AND b.actor<>` + viewer + `)`
+}
 
 func checkMessageTaskRef(tx *sql.Tx, actor, conversation string, ref *MessageTaskRef) error {
 	if ref == nil {
@@ -44,7 +48,7 @@ func checkMessageTaskRef(tx *sql.Tx, actor, conversation string, ref *MessageTas
 	}
 	var id string
 	return tx.QueryRow(`SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
-WHERE c.id=? AND t.id=? AND `+visibleMessageTask, conversation, ref.TaskID).Scan(&id)
+WHERE c.id=? AND t.id=? AND `+visibleMessageTask("?"), conversation, ref.TaskID, actor).Scan(&id)
 }
 
 // MessageTaskReferenceOptions applies the same identity and visibility rules
@@ -66,7 +70,7 @@ func (s *Store) MessageTaskReferenceOptions(ctx context.Context, actor, conversa
 		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT t.id FROM tasks t JOIN conversations c ON c.id=t.conversation_id
-		WHERE c.id=? AND `+visibleMessageTask, conversation)
+		WHERE c.id=? AND `+visibleMessageTask("?"), conversation, actor)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +99,7 @@ func enrichMessageTaskRefs(tx *sql.Tx, conversation string, messages []Message) 
 JOIN messages m ON m.seq=ref.message_seq AND m.role='user'
 JOIN tasks t ON t.id=ref.task_id JOIN conversations c ON c.id=m.conversation_id
 WHERE c.id=? AND (ref.actor='user:session' OR EXISTS(SELECT 1 FROM account_business_owner owner WHERE owner.principal_id=ref.actor)) AND m.seq IN (SELECT value FROM json_each(?))
-AND `+visibleMessageTask, conversation, toJSON(ids))
+AND `+visibleMessageTask("ref.actor"), conversation, toJSON(ids))
 	if err != nil {
 		return err
 	}

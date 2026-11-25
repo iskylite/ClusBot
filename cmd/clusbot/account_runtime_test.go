@@ -32,7 +32,7 @@ func TestServerAccountRuntimeIsolation(t *testing.T) {
 	}
 	t.Cleanup(func() { instance.Close() })
 	const origin = "https://ops.example"
-	api := httpapi.Server{Store: instance, ServerMode: true, Origin: origin, Hosts: []string{"ops.example"}}
+	api := httpapi.Server{Store: instance, Origin: origin, Hosts: []string{"ops.example"}}
 	var cfg config
 	cfg.DataDir = dir
 	cfg.Model.Provider = model.ProtocolChat
@@ -377,7 +377,7 @@ func TestServerAccountRuntimeIsolation(t *testing.T) {
 
 	stop()
 	stopped = true
-	freshAPI := httpapi.Server{Store: instance, ServerMode: true, Origin: origin, Hosts: []string{"ops.example"}}
+	freshAPI := httpapi.Server{Store: instance, Origin: origin, Hosts: []string{"ops.example"}}
 	closeRestarted, err := startAccountRuntime(context.Background(), &freshAPI, cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -425,7 +425,7 @@ func TestServerAccountRuntimeIsolation(t *testing.T) {
 		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fixture result\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
 	}))
 	defer modelServer.Close()
-	recovered := httpapi.Server{Store: instance, ServerMode: true, Origin: origin, Hosts: []string{"ops.example"}}
+	recovered := httpapi.Server{Store: instance, Origin: origin, Hosts: []string{"ops.example"}}
 	// Instance configuration is persisted, so the replacement instance points at
 	// the fixture via the same override used by normal startup.
 	t.Setenv("CLUSBOT_MODEL_BASE_URL", modelServer.URL)

@@ -140,7 +140,7 @@ func defaultComposerReplyStrategies() []composerReplyStrategy {
 }
 
 // composerOptions 为 Composer 提供 `/` 指令补全、`@任务` / `@成员` 引用候选项以及「模型策略」（与本轮可选模型）列表。
-// 多人模式下严格按会话身份隔离任务与成员视野，绝不回传敏感凭据或私有对话。
+// 按会话身份隔离任务与成员视野，绝不回传敏感凭据或私有对话。
 func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 	if s.Store == nil {
 		fail(w, http.StatusServiceUnavailable, "store_unavailable", "任务存储暂不可用")
@@ -154,13 +154,13 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 		ReplyModels:     []composerReplyModel{},
 	}
 
-	if s.ServerMode && s.BenchmarkProvider == nil {
+	if s.BenchmarkProvider == nil {
 		resp.SlashCommands = slices.DeleteFunc(resp.SlashCommands, func(command composerSlashCommand) bool {
 			return command.Command == "/benchmark"
 		})
 	}
 	account, hasAccount := accountFromContext(r)
-	if r.URL.Query().Get("scope") == "all" && s.ServerMode && hasAccount && account.IsSuperadmin && s.AdminTaskStores != nil {
+	if r.URL.Query().Get("scope") == "all" && hasAccount && account.IsSuperadmin && s.AdminTaskStores != nil {
 		for owner, store := range s.AdminTaskStores() {
 			items, err := store.ListTasks(r.Context(), work.TaskFilter{Limit: 15})
 			if err != nil {
@@ -202,18 +202,16 @@ func (s Server) composerOptions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.ServerMode {
-		accountStore := s.instanceStore
-		if accountStore == nil {
-			accountStore = s.Store
-		}
-		users, err := accountStore.ListMentionableAccounts(r.Context(), 50)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		resp.Users = users
+	accountStore := s.instanceStore
+	if accountStore == nil {
+		accountStore = s.Store
 	}
+	users, err := accountStore.ListMentionableAccounts(r.Context(), 50)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	resp.Users = users
 
 	if s.Settings != nil {
 		defaultProfileID := ""

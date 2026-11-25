@@ -18,8 +18,9 @@ func TestAttentionWithoutModelRequiresLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	server := Server{Store: store, Token: "attention-token", Hosts: []string{"127.0.0.1"}}
-	h := server.Handler(fstest.MapFS{"index.html": {Data: []byte("v3")}})
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}}
+	businessFixturePrincipal(t, store)
+	h := productionFixtureHandler(t, server, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("v3")}})
 	req := func(method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
 		t.Helper()
 		request := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
@@ -37,7 +38,7 @@ func TestAttentionWithoutModelRequiresLogin(t *testing.T) {
 	if got := req(http.MethodGet, "/api/v1/attention", "", nil).Code; got != http.StatusUnauthorized {
 		t.Fatalf("anonymous got %d", got)
 	}
-	resp := req(http.MethodPost, "/api/v1/session", `{"token":"attention-token"}`, nil)
+	resp := req(http.MethodPost, "/api/v1/session", businessFixtureCredentials, nil)
 	if cookies := resp.Result().Cookies(); resp.Code != http.StatusOK || len(cookies) == 0 {
 		t.Fatalf("login got %d", resp.Code)
 	}

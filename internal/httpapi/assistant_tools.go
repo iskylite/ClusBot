@@ -33,6 +33,7 @@ type assistantPreview struct {
 	method, path string
 	body         json.RawMessage
 	tool         string
+	a2ui         *discoveryA2UIConfirmation
 	expires      time.Time
 }
 
@@ -68,16 +69,13 @@ func (s Server) assistantAllowed(r *http.Request, tool assistantTool) bool {
 	if readOnlyAssistant(r) && (tool.Method != http.MethodGet || tool.Confirm) {
 		return false
 	}
-	if !s.ServerMode {
-		return !strings.HasPrefix(tool.Path, "/api/v1/admin/") && !strings.HasPrefix(tool.Path, "/api/v1/me/")
-	}
 	account, ok := accountFromContext(r)
 	if !ok || account.MustChangePassword {
 		return false
 	}
 	if strings.HasPrefix(tool.Path, "/api/v1/domain/") && tool.Path != "/api/v1/domain/discovery/setup-status" {
 		allowed := accountPersonalRoute(tool.Method + " " + tool.Path)
-		return allowed && (!strings.HasPrefix(tool.Path, "/api/v1/domain/discovery/") || (account.IsSuperadmin && s.DiscoverySource != nil))
+		return allowed && (!strings.HasPrefix(tool.Path, "/api/v1/domain/discovery/") || account.IsSuperadmin)
 	}
 	if strings.HasPrefix(tool.Path, "/api/v1/loans") || tool.Path == "/api/v1/settings/data/storage" {
 		return false
@@ -124,9 +122,6 @@ func (s Server) assistantToolViews(r *http.Request) []assistantToolView {
 func (s Server) assistantFormAllowed(r *http.Request, name string) bool {
 	if readOnlyAssistant(r) {
 		return false
-	}
-	if !s.ServerMode {
-		return name != "change_my_password" && name != "manage_accounts"
 	}
 	account, ok := accountFromContext(r)
 	return ok && (account.IsSuperadmin || name == "change_my_password" || name == "configure_conversation")
@@ -461,13 +456,7 @@ func assistantToolPath(path string, params, query map[string]string) (string, bo
 }
 
 func (s Server) assistantSession(r *http.Request) string {
-	if s.ServerMode {
-		return s.accountSessionDigest(r)
-	}
-	if c, err := r.Cookie("clusbot_session"); err == nil {
-		return secretDigest(c.Value)
-	}
-	return ""
+	return s.accountSessionDigest(r)
 }
 
 func (b *assistantBridge) prepare(p assistantPreview) (string, time.Time, bool) {
@@ -504,7 +493,7 @@ func (s Server) assistantConfirm(w http.ResponseWriter, r *http.Request) {
 		fail(w, 503, "assistant_unavailable", "对话工具暂不可用")
 		return
 	}
-	p, valid := bridge.take(in.ID, s.assistantSession(r))
+	p, valid := bridge.takeForConfirmation(in.ID, s.assistantSession(r), "", "")
 	if !valid {
 		fail(w, 409, "assistant_confirmation_expired", "确认已失效，请重新预览")
 		return
@@ -523,6 +512,31 @@ func (s Server) assistantDiscard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (b *assistantBridge) hasPreview(id, session string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.pending[id]
+	return ok && session != "" && session == p.session && time.Now().Before(p.expires)
+}
+
+func (b *assistantBridge) takeForConfirmation(id, session, conversation, requestKey string) (assistantPreview, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	p, ok := b.pending[id]
+	if !ok || session == "" || p.session != session || !time.Now().Before(p.expires) {
+		return assistantPreview{}, false
+	}
+	if p.a2ui == nil {
+		if conversation != "" || requestKey != "" {
+			return assistantPreview{}, false
+		}
+	} else if p.a2ui.Action.Conversation != conversation || p.a2ui.Action.ClientKey != requestKey {
+		return assistantPreview{}, false
+	}
+	delete(b.pending, id)
+	return p, true
 }
 
 func (b *assistantBridge) take(id, session string) (assistantPreview, bool) {

@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -59,7 +58,8 @@ func TestBenchmarkCommandPreviewHTTPMaterialsAndSafety(t *testing.T) {
 	}))
 	defer fake.Close()
 
-	store, err := work.Open(filepath.Join(t.TempDir(), "preview-http.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "preview-http.sqlite")
+	store, err := work.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,20 +80,21 @@ func TestBenchmarkCommandPreviewHTTPMaterialsAndSafety(t *testing.T) {
 	profile := work.BenchmarkProfile{Key: "plan", Version: 4, Cases: []work.BenchmarkCase{{Key: "network",
 		Binding: work.BenchmarkBinding{Connection: "private-connection", Revision: 1, Tool: "test", Validator: "structured-metrics@1"},
 		Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}}
-	if err := store.PublishBenchmarkProfile(ctx, "user:session", profile); err != nil {
+	if err := store.PublishBenchmarkProfile(ctx, businessFixturePrincipal(t, store), profile); err != nil {
 		t.Fatal(err)
 	}
 	deniedProfile := profile
 	deniedProfile.Key = "denied"
 	deniedProfile.Cases = append([]work.BenchmarkCase(nil), profile.Cases...)
 	deniedProfile.Cases[0].Targets = []string{"node-unauthorized"}
-	if err := store.PublishBenchmarkProfile(ctx, "user:session", deniedProfile); err != nil {
+	if err := store.PublishBenchmarkProfile(ctx, businessFixturePrincipal(t, store), deniedProfile); err != nil {
 		t.Fatal(err)
 	}
 	grant := work.DomainBenchmarkGrant{Connection: "private-connection", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := store.OpenUploads(filepath.Join(t.TempDir(), "uploads")); err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +112,8 @@ func TestBenchmarkCommandPreviewHTTPMaterialsAndSafety(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{store: store, ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}}))}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{store: store, ts: httptest.NewServer(businessFixtureHandler(t, server))}
 	defer a.ts.Close()
 	a.cookie = a.login()
 	text := "/benchmark plan@v4\n  只跑 7 个健康节点，排除 node-03\n核对结果  "
@@ -199,7 +200,8 @@ func TestBenchmarkCommandPreviewHTTPMaterialsAndSafety(t *testing.T) {
 func TestBenchmarkCommandPreviewHTTPExplicitTaskReference(t *testing.T) {
 	ctx := t.Context()
 	t.Setenv("CLUSBOT_REFERENCE_TEST_KEY", "fixture-secret")
-	store, err := work.Open(filepath.Join(t.TempDir(), "reference-http.sqlite"))
+	dbPath := filepath.Join(t.TempDir(), "reference-http.sqlite")
+	store, err := work.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,18 +257,19 @@ func TestBenchmarkCommandPreviewHTTPExplicitTaskReference(t *testing.T) {
 	profile := work.BenchmarkProfile{Key: "plan", Version: 4, Cases: []work.BenchmarkCase{{Key: "network",
 		Binding: work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"},
 		Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}}
-	if err := store.PublishBenchmarkProfile(ctx, "user:session", profile); err != nil {
+	if err := store.PublishBenchmarkProfile(ctx, businessFixturePrincipal(t, store), profile); err != nil {
 		t.Fatal(err)
 	}
 	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
-	selectedTask, err = store.SubmitBenchmarkRun(ctx, "user:session", work.BenchmarkRunRequest{RequestKey: "reference-fixture-one", Profile: "plan", Version: 4}, benchmarkReadProvider{})
+
+	selectedTask, err = store.SubmitBenchmarkRun(ctx, businessFixturePrincipal(t, store), work.BenchmarkRunRequest{RequestKey: "reference-fixture-one", Profile: "plan", Version: 4}, benchmarkReadProvider{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raceTask, err = store.SubmitBenchmarkRun(ctx, "user:session", work.BenchmarkRunRequest{RequestKey: "reference-fixture-two", Profile: "plan", Version: 4}, benchmarkReadProvider{})
+	raceTask, err = store.SubmitBenchmarkRun(ctx, businessFixturePrincipal(t, store), work.BenchmarkRunRequest{RequestKey: "reference-fixture-two", Profile: "plan", Version: 4}, benchmarkReadProvider{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,8 +289,8 @@ func TestBenchmarkCommandPreviewHTTPExplicitTaskReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{store: store, ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}}))}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{store: store, ts: httptest.NewServer(businessFixtureHandler(t, server))}
 	defer a.ts.Close()
 	a.cookie = a.login()
 	endpoint := "/api/v1/conversations/" + selected.Conversation.ID + "/messages"
@@ -320,7 +323,7 @@ func TestBenchmarkCommandPreviewHTTPExplicitTaskReference(t *testing.T) {
 	if err != nil || len(page.Items) != 0 {
 		t.Fatalf("revoked reference stored a message: %+v %v", page, err)
 	}
-	after, err := store.BenchmarkProgress(ctx, "user:session", selectedTask)
+	after, err := store.BenchmarkProgress(ctx, businessFixturePrincipal(t, store), selectedTask)
 	if err != nil || after.PlanRevision != 1 || len(after.Cases) != 1 || after.Cases[0].Phase != "queued" {
 		t.Fatalf("preview changed benchmark task: %+v %v", after, err)
 	}

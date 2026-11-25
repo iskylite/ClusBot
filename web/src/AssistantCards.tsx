@@ -1,6 +1,6 @@
-import {lazy,Suspense,useEffect,useId,useRef,useState,type ReactNode} from 'react'
+import {lazy,Suspense,useCallback,useEffect,useId,useRef,useState,type ReactNode} from 'react'
 import {ArrowDownToLine,Check,GitBranch,Info,KeyRound,Layers,PanelRight,Pencil,Server,Settings2,ShieldAlert,Star,X,Zap} from 'lucide-react'
-import {api,APIError} from './api'
+import {api} from './api'
 import {AssistantRoleBinding,type BindingRole} from './AssistantRoleBinding'
 import {DiscoveryPanel,type DiscoveryStatus} from './DiscoveryPanel'
 import {AssistantProviderCredentials} from './AssistantProviderCredentials'
@@ -8,7 +8,8 @@ import {AssistantRecommendation} from './AssistantRecommendation'
 import {OperationEvidenceCard} from './OperationEvidenceCard'
 import type {CatalogModel} from './ModelSettings'
 import {displayDate} from './GeneralPreferences'
-import {assistantDetails,isAssistantItem,parseSurfaces,previewText,trustedForm,type AssistantCardItem,type DetailRow,type Surface,type RoleBindingPrefill,type ProviderCredentialsPrefill} from './assistantSurface'
+import {assistantDetails,isAssistantItem,parseSurfaces,previewText,trustedForm,sendSurfaceAction,type AssistantCardItem,type DetailRow,type DiscoveryConversationSeed,type Surface,type SurfaceAction,type AssistantReply,type RoleBindingPrefill,type ProviderCredentialsPrefill} from './assistantSurface'
+import {AssistantSurfaceView} from './AssistantSurfaceView'
 import './assistant-cards.css'
 
 const OperationsAssistantCard=lazy(()=>import('./OperationsPage').then(module=>({
@@ -16,35 +17,6 @@ const OperationsAssistantCard=lazy(()=>import('./OperationsPage').then(module=>(
     module.supportsOperationsAssistantCard(tool,result)?<module.OperationsAssistantCard tool={tool} result={result} navigate={navigate}/>:<>{fallback}</>,
 })))
 const operationsTools=new Set(['get_cluster_inventory','get_cluster_trends','get_token_usage_stats','get_incident_workflow','get_incident_step_logs'])
-
-function SurfaceView({surface,expanded,detailsID,toggle,canToggle,confirmation,expires}:{surface:Surface;expanded:boolean;detailsID:string;toggle:()=>void;canToggle:boolean;confirmation?:boolean;expires?:number}) {
-  function firstText(id:string):string|undefined {
-    const node=surface.nodes.get(id)!
-    if(node.component==='Text')return id
-    if(node.component==='Button')return
-    for(const child of 'children' in node?node.children:[node.child]) {
-      const match=firstText(child)
-      if(match)return match
-    }
-  }
-  const headingID=firstText('root')
-  function render(id:string):React.ReactNode {
-    const node=surface.nodes.get(id)!
-    if(node.component==='Text')return id===headingID?<div key={id} className="assistant-card-title">
-      <h3>{confirmation&&<ShieldAlert size={15} aria-hidden="true"/>}{node.text}</h3>
-      {confirmation&&expires!==undefined&&<span className="assistant-expiry">有效至 {displayDate(expires,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>}
-    </div>:<p key={id}>{node.text}</p>
-    if(node.component==='Button') {
-      const label=surface.nodes.get(node.child)
-      return <button key={id} type="button" className="text-button assistant-detail-toggle" aria-expanded={expanded} aria-controls={detailsID} disabled={!canToggle} onClick={toggle}>
-        {expanded?'收起详情':label?.component==='Text'?label.text:'展开详情'}
-      </button>
-    }
-    if(node.component==='Card')return <div key={id} className="assistant-surface-card">{render(node.child)}</div>
-    return <div key={id} className={node.component==='Row'?'assistant-surface-row':'assistant-surface-column'}>{node.children.map(render)}</div>
-  }
-  return <>{render('root')}</>
-}
 
 function LocalDetails({items,navigate}:{items:DetailRow[];navigate:(path:string)=>void}) {
   return <ul className="assistant-details">{items.map((item,index)=><li key={index}>
@@ -236,14 +208,20 @@ function RoleBindingPrefillCard({prefill,navigate}:{prefill:RoleBindingPrefill;n
   </>
 }
 
-function DiscoveryResult({initial}:{initial:DiscoveryStatus}){
+export function DiscoveryResult({initial,initialSurfaces,navigate,principalID,conversationID,conversationReadOnly,openConversation}:{
+  initial?:DiscoveryStatus;initialSurfaces?:Surface[];navigate:(path:string)=>void;principalID?:string;conversationID?:string;conversationReadOnly?:boolean;openConversation?:(seed:DiscoveryConversationSeed)=>void
+}){
   const [status,setStatus]=useState(initial)
   const [error,setError]=useState('')
-  function refresh(){
+  const refresh=useCallback(()=>{
     api<DiscoveryStatus>('/domain/discovery/setup-status').then(value=>{setStatus(value);setError('')})
       .catch(()=>setError('发现计划暂时无法刷新。'))
-  }
-  return <>{error&&<p role="alert" className="error">{error}</p>}<DiscoveryPanel status={status} refresh={refresh}/></>
+  },[])
+  useEffect(()=>{if(!initial)refresh()},[initial,refresh])
+  return <>{error&&<p role="alert" className="error">{error}</p>}<DiscoveryPanel status={status??{state:'source_unavailable'}} refresh={refresh}
+    principalID={principalID} conversationID={conversationID} conversationReadOnly={conversationReadOnly} initialSurfaces={initialSurfaces} openConversation={openConversation}
+    renderConfirmation={(item,onSettled,confirm)=><AssistantCard item={item} navigate={navigate} conversationReadOnly={conversationReadOnly}
+      onConfirmationSettled={onSettled} confirmDiscovery={confirm}/>}/></>
 }
 
 function operationsLink(tool:string, result:unknown) {
@@ -255,11 +233,14 @@ function operationsLink(tool:string, result:unknown) {
   return '/operations'+(params.size?'?'+params:'')
 }
 
-export function AssistantCard({item,navigate,canManageModels=false,modelConcurrency,openTask}:{item:AssistantCardItem;navigate:(path:string)=>void;canManageModels?:boolean;modelConcurrency?:number;openTask?:(taskID:string,trigger:HTMLButtonElement)=>void}) {
+export function AssistantCard({item,navigate,canManageModels=false,modelConcurrency,openTask,principalID,conversationID,conversationReadOnly,openDiscoveryConversation,onConfirmationSettled,confirmDiscovery}:{item:AssistantCardItem;navigate:(path:string)=>void;canManageModels?:boolean;modelConcurrency?:number;openTask?:(taskID:string,trigger:HTMLButtonElement)=>void;principalID?:string;conversationID?:string;conversationReadOnly?:boolean;openDiscoveryConversation?:(seed:DiscoveryConversationSeed)=>void;onConfirmationSettled?:(item?:AssistantReply)=>void;confirmDiscovery?:(previewID:string)=>Promise<AssistantReply>}) {
   const [current,setCurrent]=useState(item)
   const [expanded,setExpanded]=useState(false)
   const [pending,setPending]=useState(false)
   const [outcome,setOutcome]=useState('')
+  const [agentError,setAgentError]=useState('')
+  const [agentPending,setAgentPending]=useState(false)
+  const agentLock=useRef(false)
   const [expired,setExpired]=useState(false)
   const lock=useRef(false)
   const mounted=useRef(true)
@@ -274,23 +255,39 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
     return()=>window.clearTimeout(timer)
   },[preview])
   async function decide(confirm:boolean) {
-    if(!preview||lock.current||expired)return
+    if(!preview||conversationReadOnly||lock.current||expired)return
     if(Date.now()>=preview.expires_at_unix_ms){setExpired(true);return}
+    const scopedAdmission=preview.input.tool==='admit_discovery_candidate'
+    if(confirm&&scopedAdmission&&!confirmDiscovery)return
     if(confirm&&!previewText({input:preview.input,...(preview.target===undefined?{}:{target:preview.target})}).safe)return
     lock.current=true;setPending(true);setOutcome('')
     try {
       if(confirm) {
-        const result=await api<unknown>('/assistant/confirm',{confirmation_id:preview.confirmation_id})
-        if(!isAssistantItem(result) || Array.isArray(result) || result.state!=='completed')throw new Error('未收到有效操作回执，请核对目标状态')
-        if(mounted.current){setCurrent(result);setExpanded(false)}
+        const result=scopedAdmission?await confirmDiscovery!(preview.confirmation_id):await api<unknown>('/assistant/confirm',{confirmation_id:preview.confirmation_id})
+        if(!isAssistantItem(result) || Array.isArray(result) || result.state!=='completed'||result.tool!==preview.input.tool)
+          throw new Error('未收到与本次操作匹配的回执，请核对目标状态')
+        if(mounted.current){setCurrent(result);setExpanded(false);onConfirmationSettled?.(result)}
       } else {
         await api('/assistant/confirm/'+encodeURIComponent(preview.confirmation_id),undefined,'DELETE')
-        if(mounted.current)setOutcome('已取消')
+        if(mounted.current){setOutcome('已取消');onConfirmationSettled?.()}
       }
     } catch(error) {
-      if(mounted.current)setOutcome(error instanceof APIError?error.message:'未收到操作回执，请核对目标状态后重新预览')
+      if(mounted.current)setOutcome(error instanceof Error?error.message:'未收到操作回执，请先核对原请求。')
     } finally {
       if(mounted.current){setPending(false);setExpired(true)}
+    }
+  }
+  async function dispatchSurface(action:SurfaceAction) {
+    if(!conversationID||conversationReadOnly||agentLock.current)return
+    agentLock.current=true;setAgentPending(true);setAgentError('')
+    try {
+      const receipt=await sendSurfaceAction(api,conversationID,action,crypto.randomUUID())
+      if(mounted.current){setCurrent(receipt);setExpanded(false)}
+    } catch(error) {
+      if(mounted.current)setAgentError(error instanceof Error?error.message:'暂未收到操作回执，请重新核对。')
+    } finally {
+      agentLock.current=false
+      if(mounted.current)setAgentPending(false)
     }
   }
   if(Array.isArray(current))return <article className="assistant-card">
@@ -301,14 +298,16 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
   </article>
   const surfaces='surface' in current?parseSurfaces(current.surface):undefined
   const details=current.state==='completed'?assistantDetails(current.tool,current.result):[]
-  const hasToggle=surfaces?.some(surface=>[...surface.nodes.values()].some(node=>node.component==='Button'))
+  const hasToggle=surfaces?.some(surface=>[...surface.nodes.values()].some(node=>node.component==='Button'&&node.action.event.name==='toggle_details'))
   const operation=preview?.input.tool
   const ownPause=operation==='pause_task'
+  const discoveryAdmission=operation==='admit_discovery_candidate'
   const confirmationLabel=operation==='admin_pause_task'||ownPause?'确认暂停':
     operation==='accept_task'||operation==='admin_accept_task'?'确认验收':
-    operation==='set_default_model'?'确认切换':'确认操作'
+    operation==='set_default_model'?'确认切换':discoveryAdmission?'确认纳管':'确认操作'
   const taskNotice=operation==='admin_pause_task'||ownPause?'暂停请求会阻止后续派发，已派发的作业仍须核对。':
-    operation==='admin_accept_task'||operation==='accept_task'?'验收将记录本地结果。':''
+    operation==='admin_accept_task'||operation==='accept_task'?'验收将记录本地结果。':
+    discoveryAdmission?'确认后才将候选写入资产台账。':''
   const request=preview?previewText({input:preview.input,...(preview.target===undefined?{}:{target:preview.target})}):undefined
   const params=preview?.input.params as {owner?:unknown;id?:unknown}|undefined
   const inputBody=preview?.input.body as {artifact_id?:unknown}|undefined
@@ -335,11 +334,8 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
   const operations=current.state==='completed'?operationsLink(current.tool,current.result):undefined
   if(current.state==='completed'&&current.tool==='get_discovery_setup_status'&&current.result&&typeof current.result==='object'&&
     'state' in current.result&&typeof current.result.state==='string'){
-    if(current.result.state==='source_unavailable')return <section className="assistant-card" aria-label="资产发现与定时计划">
-      <div className="assistant-card-title"><h3>资产发现与定时计划</h3></div>
-      <p role="status">当前没有可用的发现来源。</p>
-    </section>
-    return <DiscoveryResult initial={current.result as DiscoveryStatus}/>
+    return <DiscoveryResult initial={current.result as DiscoveryStatus} navigate={navigate} principalID={principalID} conversationID={conversationID} conversationReadOnly={conversationReadOnly}
+      openConversation={openDiscoveryConversation}/>
   }
   if(current.state==='completed'&&current.tool==='propose_operation_options'){
     return <AssistantRecommendation result={current.result}/>
@@ -350,6 +346,11 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
   if(current.state==='completed'&&current.tool==='get_current_model_routing'){
     return <RoutingCard result={current.result} navigate={navigate} canManageModels={canManageModels} modelConcurrency={modelConcurrency}/>
   }
+  if(current.state==='completed'&&current.tool==='admit_discovery_candidate'&&current.outcome==='admitted'){
+    const receipt=current.result as {asset:string;check_task_id?:string}
+    return <article className="assistant-card"><h3>资产已纳管</h3><p role="status">{receipt.asset}</p>
+      {receipt.check_task_id&&<p>已登记核查任务，尚不代表检查通过。</p>}</article>
+  }
   const card=<article className={'assistant-card'+(preview?' assistant-card-confirmation':'')}>
     {preview&&(crossPause||acceptance)?<div className="assistant-card-title">
       <h3>{crossPause?'跨账号任务暂停确认':(taskTitle?taskTitle+' · ':'')+'独立验收'}</h3>
@@ -357,9 +358,10 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
     </div>:preview&&ownPause?<div className="assistant-card-title">
       <h3><ShieldAlert size={15} aria-hidden="true"/>{taskTitle?taskTitle+' · ':''}暂停后续派发</h3>
       <span className="assistant-expiry" title={'有效至 '+displayDate(preview.expires_at_unix_ms,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}>{expired?'已失效':'待确认执行'}</span>
-    </div>:surfaces?surfaces.map((surface,index)=><SurfaceView key={surface.id} surface={surface} expanded={expanded} detailsID={detailsID} canToggle={details.length>0} toggle={()=>setExpanded(value=>!value)} confirmation={Boolean(preview)&&index===0} expires={preview?.expires_at_unix_ms}/>):
+    </div>:surfaces?surfaces.map((surface,index)=><AssistantSurfaceView key={surface.id} surface={surface} expanded={expanded} detailsID={detailsID} canToggle={details.length>0} toggle={()=>setExpanded(value=>!value)} confirmation={Boolean(preview)&&index===0} expires={preview?.expires_at_unix_ms} busy={agentPending} onAgentAction={conversationID&&!conversationReadOnly&&!preview?dispatchSurface:undefined}/>):
       <div className="assistant-card-title"><h3>{preview&&<ShieldAlert size={15} aria-hidden="true"/>}{current.state==='completed'?'工具已返回结果':preview?'请核对操作后决定是否确认':'此操作需要在设置中完成'}</h3>
         {preview&&<span className="assistant-expiry">有效至 {displayDate(preview.expires_at_unix_ms,{hour:'2-digit',minute:'2-digit',second:'2-digit'})}</span>}</div>}
+    {agentError&&<p className="error" role="alert">{agentError}</p>}
     {current.state==='completed'&&<>
       {operations&&<button type="button" className="outline" onClick={()=>navigate(operations)}>在运维工作台查看</button>}
       {details.length>0&&!hasToggle&&<button type="button" className="text-button assistant-detail-toggle" aria-expanded={expanded} aria-controls={detailsID} onClick={()=>setExpanded(value=>!value)}>{expanded?'收起详情':'展开详情'}</button>}
@@ -379,8 +381,8 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
       {outcome?<p role="status">{outcome}</p>:expired?<p role="status">确认已失效，请重新预览。</p>:
         <footer>{reportLink&&<a className="outline" href={reportLink} download><ArrowDownToLine size={13}/>下载报告</a>}
           {ownTaskID&&openTask&&<button type="button" className="outline assistant-open-task" onClick={event=>openTask(ownTaskID,event.currentTarget)}><PanelRight size={13} aria-hidden="true"/>打开详情抽屉</button>}
-          <button type="button" className="outline" disabled={pending} onClick={()=>void decide(false)}><X size={13} aria-hidden="true"/>取消</button>
-          <button type="button" className="primary" disabled={pending||!request.safe} onClick={()=>void decide(true)}><Check size={13} aria-hidden="true"/>{pending?'正在处理…':confirmationLabel}</button></footer>}
+          <button type="button" className="outline" disabled={pending||conversationReadOnly} onClick={()=>void decide(false)}><X size={13} aria-hidden="true"/>取消</button>
+          <button type="button" className="primary" disabled={pending||!request.safe||conversationReadOnly||discoveryAdmission&&!confirmDiscovery} onClick={()=>void decide(true)}><Check size={13} aria-hidden="true"/>{pending?'正在处理…':confirmationLabel}</button></footer>}
     </>}
     {current.state==='form_required'&&(form?<button type="button" className="outline" onClick={()=>navigate(form)}>打开设置</button>:<p className="muted">当前版本暂无可用的设置入口。</p>)}
   </article>

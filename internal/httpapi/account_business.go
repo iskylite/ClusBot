@@ -42,14 +42,14 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 			return
 		}
 		if s.AdminTaskStores == nil {
-			fail(w, 503, "server_mode_unavailable", "全站任务管理尚未配置")
+			fail(w, 503, "account_feature_unavailable", "全站任务管理尚未配置")
 			return
 		}
 		// 注入已认证超管主体到上下文，确保 scope=mine/others 与通知列表严格基于服务端身份过滤。
 		instance.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account)))
 		return
 	}
-	if route == "GET /api/v1/domain/discovery/setup-status" && (!account.IsSuperadmin || s.DiscoverySource == nil) {
+	if route == "GET /api/v1/domain/discovery/setup-status" && !account.IsSuperadmin {
 		instance.ServeHTTP(w, r)
 		return
 	}
@@ -79,11 +79,11 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 		return
 	}
 	if !accountPersonalRoute(route) {
-		fail(w, 503, "server_mode_unavailable", "此功能在多人模式下尚不可用")
+		fail(w, 503, "account_feature_unavailable", "账号服务尚未接入此功能")
 		return
 	}
 	if s.PersonalAPI == nil {
-		fail(w, 503, "server_mode_unavailable", "服务器业务服务尚未配置")
+		fail(w, 503, "account_feature_unavailable", "服务器业务服务尚未配置")
 		return
 	}
 	handler, err := s.PersonalAPI(account.PrincipalID)
@@ -110,6 +110,9 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 func accountPersonalRoute(route string) bool {
 	switch route {
 	case "GET /api/v1/preferences", "PUT /api/v1/preferences", "GET /api/v1/settings/data/storage",
+		"POST /api/v1/a2ui/discovery-candidates", "GET /api/v1/conversations/{id}/a2ui/discovery-candidates", "POST /api/v1/conversations/{id}/a2ui/actions",
+		"GET /api/v1/conversations/{id}/a2ui/actions/{key}",
+		"POST /api/v1/conversations/{id}/a2ui/actions/{key}/confirm",
 		"GET /api/v1/domain/snapshot", "GET /api/v1/domain/cluster-trends", "GET /api/v1/domain/cluster-inventory",
 		"GET /api/v1/domain/benchmarks/{id}", "GET /api/v1/domain/benchmarks/{id}/report",
 		"POST /api/v1/domain/benchmarks/{id}/dispatch-control", "GET /api/v1/domain/benchmarks/{id}/dispatch-control",
@@ -133,6 +136,8 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/experience-candidates", "POST /api/v1/experience-candidates/from-acceptance",
 		"POST /api/v1/experience-candidates/from-correction", "POST /api/v1/experience-candidates/{id}/review",
 		"GET /api/v1/experience-evaluations", "POST /api/v1/experience-evaluations",
+		"GET /api/v1/skill-proposals", "POST /api/v1/skill-proposals",
+		"POST /api/v1/skill-proposals/{id}/replay", "POST /api/v1/skill-proposals/{id}/approve", "POST /api/v1/skill-proposals/{id}/rollback",
 		"GET /api/v1/capabilities/bindings", "POST /api/v1/capabilities/bindings",
 		"GET /api/v1/tasks", "POST /api/v1/tasks", "GET /api/v1/tasks/{id}",
 		"GET /api/v1/tasks/{id}/runs", "GET /api/v1/tasks/{id}/runs/{run_id}", "GET /api/v1/tasks/{id}/manifest",

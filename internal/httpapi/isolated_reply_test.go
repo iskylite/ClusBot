@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -74,7 +73,8 @@ func TestIsolatedReplyPinnedAcrossRestartAndNoHistoryEgress(t *testing.T) {
 			s.Close()
 		}
 	}()
-	s.SetConnectionCredentialKey("a1-token")
+	businessFixturePrincipal(t, s)
+	s.SetConnectionCredentialKey("fixture-connection-key")
 	settings := &model.Settings{Store: s}
 	if _, err := settings.Initialize(ctx, work.ModelSettings{ModelID: "default-model", Protocol: model.ProtocolResponses, BaseURL: fake.URL, KeyRef: "env:CLUSBOT_UNUSED_DEFAULT_FIXTURE"}); err != nil {
 		t.Fatal(err)
@@ -139,8 +139,8 @@ func TestIsolatedReplyPinnedAcrossRestartAndNoHistoryEgress(t *testing.T) {
 	}
 
 	serverFor := func() *a1Server {
-		h := Server{Store: s, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-		a := &a1Server{store: s, ts: httptest.NewServer(h.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}}))}
+		h := Server{Store: s, Settings: settings, Hosts: []string{"127.0.0.1"}}
+		a := &a1Server{store: s, ts: httptest.NewServer(businessFixtureHandler(t, h))}
 		a.cookie = a.login()
 		t.Cleanup(a.ts.Close)
 		return a
@@ -183,7 +183,7 @@ func TestIsolatedReplyPinnedAcrossRestartAndNoHistoryEgress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.SetConnectionCredentialKey("a1-token")
+	s.SetConnectionCredentialKey("fixture-connection-key")
 	settings = &model.Settings{Store: s}
 	if err := s.Recover(); err != nil {
 		t.Fatal(err)

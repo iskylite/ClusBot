@@ -17,14 +17,29 @@ export type Account = {
   last_login_at?: number
 }
 
-export type Session = {
-  authenticated: boolean
-  mode: 'local' | 'server'
-  user?: Account
-  capabilities?: { manage_users: boolean }
+export type AuthenticatedSession = { authenticated: true; user: Account }
+export type Session = { authenticated: false } | AuthenticatedSession
+
+export function decodeAccountSession(value: unknown): Session {
+  const invalid = () => new Error('无法核对账号会话，请重新检查。')
+  if (!value || typeof value !== 'object') throw invalid()
+  const { authenticated, user } = value as { authenticated?: unknown; user?: unknown }
+  if (authenticated === false) return { authenticated: false }
+  if (authenticated !== true || !user || typeof user !== 'object') throw invalid()
+  const account = user as Partial<Account>
+  if (typeof account.principal_id !== 'string' || !account.principal_id.trim() ||
+      typeof account.username !== 'string' || !account.username.trim() ||
+      typeof account.display_name !== 'string' || typeof account.avatar !== 'string' ||
+      account.status !== 'active' || typeof account.is_superadmin !== 'boolean' ||
+      typeof account.must_change_password !== 'boolean') throw invalid()
+  return { authenticated: true, user: account as Account }
 }
 
 type AccountSection = 'profile' | 'password' | 'users'
+
+class AccountRequestError extends Error {
+  constructor(message: string, readonly code: unknown) { super(message) }
+}
 
 // A 401 from a password change means the current password was incorrect; it
 // does not invalidate the session. Keep account-form errors local to the form.
@@ -39,7 +54,7 @@ async function accountRequest<T>(path: string, data?: unknown, method = data ===
     if (response.status === 401 && !['/session', '/bootstrap', '/me/password'].includes(path)) {
       window.dispatchEvent(new Event('clusbot:logout'))
     }
-    throw new Error(body?.message || '请求未完成，请稍后重试')
+    throw new AccountRequestError(body?.message || '请求未完成，请稍后重试', body?.code)
   }
   return response.status === 204 ? undefined as T : response.json()
 }
@@ -49,7 +64,7 @@ const passwordValid = (value: string) => {
   const bytes = new TextEncoder().encode(value).length
   return bytes >= 12 && bytes <= 1024
 }
-const usernamePattern = '[A-Za-z0-9][A-Za-z0-9._-]{2,63}'
+const usernamePattern = '[A-Za-z0-9][A-Za-z0-9._\\-]{2,63}'
 const singleCharAvatar = (value: string) => Array.from(value.trim())[0] || ''
 export const avatarText = (account?: { avatar?: string; display_name?: string; username?: string }) =>
   singleCharAvatar(account?.avatar || '') || singleCharAvatar(account?.display_name || '') || singleCharAvatar(account?.username || '') || '?'
@@ -84,7 +99,7 @@ function Feedback({ error, notice }: { error?: string; notice?: string }) {
   return <>{error && <FeedbackCallout tone="error" compact role="alert" message={error}/>}{notice && <FeedbackCallout tone="success" compact role="status" message={notice}/>}</>
 }
 
-export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }) {
+export function AccountLogin({ onLogin }: { onLogin: (session: AuthenticatedSession) => void }) {
   const [bootstrapRequired, setBootstrapRequired] = useState<boolean>()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -98,6 +113,7 @@ export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }
     let active = true
     setError('')
     accountRequest<{ required: boolean }>('/bootstrap').then(value => {
+      if (typeof value?.required !== 'boolean') throw new Error('无法核对首次设置状态，请重试。')
       if (active) setBootstrapRequired(value.required)
     }).catch(error => { if (active) setError(errorMessage(error)) })
     return () => { active = false }
@@ -118,12 +134,18 @@ export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }
         setBootstrapRequired(false)
       }
       await accountRequest('/session', { username: username.trim(), password })
-      const session = await accountRequest<Session>('/session')
-      if (!session.authenticated || !session.user) throw new Error('登录未完成，请重新登录。')
+      const session = decodeAccountSession(await accountRequest<unknown>('/session'))
+      if (!session.authenticated) throw new Error('登录未完成，请重新登录。')
       onLogin(session)
     } catch (error) {
-      setError(errorMessage(error))
-      if (created) setNotice('超级管理员已创建，请使用刚设置的密码登录。')
+      if (!created && bootstrapRequired && error instanceof AccountRequestError && error.code === 'bootstrap_complete') {
+        setBootstrapRequired(false)
+        setNotice('首次设置已完成，请使用已有账号登录。')
+      } else {
+        setError(errorMessage(error))
+        if (created) setNotice('超级管理员已创建，请使用刚设置的密码登录。')
+      }
+      setPassword(''); setConfirmation('')
     } finally { setBusy(false) }
   }
 
@@ -133,7 +155,7 @@ export function ServerLogin({ onLogin }: { onLogin: (session: Session) => void }
 
   return <main className="acct-login-shell">
     <form className={'acct-login-card' + (bootstrapRequired ? ' acct-bootstrap-card' : '')} onSubmit={submit} method="post" action={bootstrapRequired ? '/api/v1/bootstrap' : '/api/v1/session'}>
-      <Brand title={bootstrapRequired ? '首次部署 · 创建首位超级管理员' : 'ClusBot · 账号认证'} subtitle={bootstrapRequired ? '创建成功后将关闭初始化入口，无需安装码' : '使用账号与密码登录 ClusBot 个人助手'}/>
+      <Brand title={bootstrapRequired ? '首次设置 · 创建首位超级管理员' : 'ClusBot · 账号认证'} subtitle={bootstrapRequired ? '只需创建一次，此后使用账号与密码登录。' : '使用账号与密码登录 ClusBot 个人助手'}/>
       <label className="acct-field"><span>{bootstrapRequired ? '超级管理员用户名' : '用户名'}</span>
         <input name="username" autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} required maxLength={64} pattern={bootstrapRequired ? usernamePattern : undefined} title={bootstrapRequired ? '3–64 位字母、数字或 ._-，首位须为字母或数字' : undefined} disabled={busy}/>
       </label>

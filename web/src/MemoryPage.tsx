@@ -2,12 +2,13 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { ArrowLeft, Bookmark, Check, ChevronRight, ExternalLink, LoaderCircle, Pin, Plus, Search, Trash2 } from 'lucide-react'
 import { api, type Memory, type MemoryKind, type MemorySource } from './api'
 import {discardMemoryDraft,readMemoryDraft,writeMemoryDraft,type MemoryFields} from './memoryDrafts'
+import {accountDraftKey} from './draftStorage'
 
 const date = new Intl.DateTimeFormat('zh-CN',{month:'long',day:'numeric'})
 const category: Record<MemoryKind,string> = {preference:'偏好',fact:'个人事项'}
 const message = (error:unknown) => error instanceof Error ? error.message : '操作未完成'
 
-export function MemoryPage({selected,sourceId,navigate}:{selected?:string;sourceId?:string;navigate:(path:string)=>void}) {
+export function MemoryPage({principalID,selected,sourceId,navigate}:{principalID:string;selected?:string;sourceId?:string;navigate:(path:string)=>void}) {
   const [items,setItems]=useState<Memory[]>()
   const [source,setSource]=useState<MemorySource>()
   const [query,setQuery]=useState('')
@@ -17,7 +18,7 @@ export function MemoryPage({selected,sourceId,navigate}:{selected?:string;source
   const [notice,setNotice]=useState('')
   const fresh=selected==='new'
   const item=selected ? items?.find(entry=>entry.id===selected) : items?.[0]
-  const draftKey=fresh?'new/'+(sourceId??''):item?.id??selected??''
+  const draftKey=accountDraftKey(principalID,fresh?'new/'+(sourceId??''):item?.id??selected??'')
   const filtered=items?.filter(entry=>(!kind || entry.kind===kind) && (entry.title+'\n'+entry.content).toLowerCase().includes(query.trim().toLowerCase()))
 
   async function reload() {

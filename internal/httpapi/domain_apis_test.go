@@ -61,12 +61,12 @@ func TestAccountProfileRoleGuardMaterialPreviewAndWorkflowLogs(t *testing.T) {
 
 	var srv Server
 	srv = Server{
-		Store:      store,
-		Settings:   settings,
-		ServerMode: true,
-		Origin:     "https://ops.example",
-		Hosts:      []string{"ops.example"},
-		Token:      "legacy-token",
+		Store:    store,
+		Settings: settings,
+
+		Origin: "https://ops.example",
+		Hosts:  []string{"ops.example"},
+
 		AdminTaskStores: func() map[string]*work.Store {
 			mu.Lock()
 			defer mu.Unlock()

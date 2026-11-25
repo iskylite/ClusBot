@@ -137,11 +137,12 @@ func TestExperienceEvaluationFreezesSourcesAndSeparatesPolicies(t *testing.T) {
 	if len(report.SuiteDigest) != 64 {
 		t.Fatalf("missing suite_sha256 in report: %+v", report)
 	}
-	proposal, err := s.ProposeSkill(ctx, scope, goal, report)
-	if err != nil || proposal.Status != "pending" || proposal.Skill.Active ||
-		!reflect.DeepEqual(proposal.Evidence.Gains, []string{"weekly"}) ||
-		len(proposal.Sources) != 1 || proposal.Sources[0].CandidateID != reference.ID {
-		t.Fatalf("evaluation report did not yield a reviewable proposal: %+v, %v", proposal, err)
+	run, err := s.RunExperienceEvaluation(ctx, suite, cfg, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProposeSkillWithOptions(ctx, scope, goal, report, SkillProposalOptions{EvaluationRunID: run.ID}); !errors.Is(err, ErrSkillProposal) || !strings.Contains(err.Error(), "无经验") {
+		t.Fatalf("an improvement only over a bad current example does not beat the plain baseline: %v", err)
 	}
 	variant, err := snapshotEvaluationCases(ctx, path, ExperienceEvaluationSuite{Cases: []ExperienceEvaluationCase{
 		{ID: "case-variant", Goal: strings.ToLower(goal), Scope: scope},

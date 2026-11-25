@@ -1,4 +1,4 @@
-import {clearDrafts,readDraft,writeDraft} from './draftStorage'
+import {accountDraftPrefix,clearDrafts,readDraft,writeDraft} from './draftStorage'
 import {useCallback,useSyncExternalStore} from 'react'
 import type {DeliveryUpdate,Material} from './api'
 import type {ReadDraft} from './TaskRead'
@@ -6,7 +6,7 @@ import type {ReadDraft} from './TaskRead'
 export type TaskReference={taskID:string;title:string;planRevision?:number;passive:boolean;purpose?:'revision'}
 export type IsolatedReplyRequest={mode:'only_this_message';profile_id:string;profile_revision:number;confirm_current_text_egress:true;client_request_id:string;text:string}
 export type PendingAdmission={key:string;text:string;createdAt:number}
-type Request = {key:string;scope:string;delivery:DeliveryUpdate;strategy?:'role_routing'|'deterministic_only';awaitingAdmission?:boolean}
+type Request = {key:string;scope:string;delivery:DeliveryUpdate;strategy?:'role_routing'|'deterministic_only'}
 type Draft = {
   text:string
   benchmarkPlan?:string
@@ -21,7 +21,7 @@ type Draft = {
   request?:Request
 }
 
-const prefix='clusbot.composer.v1.'
+const prefix=accountDraftPrefix+'composer.'
 const empty:Draft={text:'',materials:[]}
 const drafts=new Map<string,Draft>()
 const listeners=new Map<string,Set<()=>void>>()
@@ -89,11 +89,6 @@ export function finishDraftRequest(key:string,requestID:string) {
   if(read(key).request?.key===requestID)write(key,empty)
 }
 
-export function awaitDraftAdmission(key:string,requestID:string) {
-  const draft=read(key)
-  if(draft.request?.key===requestID)write(key,{...draft,request:{...draft.request,awaitingAdmission:true}})
-}
-
 export function releaseDraftRequest(key:string,requestID?:string) {
   const draft=read(key)
   if(draft.request && (requestID===undefined || draft.request.key===requestID))write(key,{...draft,request:undefined})
@@ -118,7 +113,7 @@ export function hasPinnedIsolatedRequest(key:string,requestID:string) {
 
 export function draftGeneration() {return generation}
 
-const admissionPrefix='clusbot.admissions.v1.'
+const admissionPrefix=accountDraftPrefix+'admission.'
 const emptyAdmissions:PendingAdmission[]=[]
 const pendingAdmissions=new Map<string,PendingAdmission[]>()
 const admissionListeners=new Map<string,Set<()=>void>>()

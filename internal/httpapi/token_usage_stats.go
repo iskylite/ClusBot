@@ -61,7 +61,7 @@ func (s Server) tokenUsageStats(w http.ResponseWriter, r *http.Request) {
 
 	stores := []*work.Store{s.Store}
 	account, hasAccount := accountFromContext(r)
-	if r.URL.Query().Get("scope") == "all" && s.ServerMode && hasAccount && account.IsSuperadmin && s.AdminTaskStores != nil {
+	if r.URL.Query().Get("scope") == "all" && hasAccount && account.IsSuperadmin && s.AdminTaskStores != nil {
 		stores = nil
 		for _, st := range s.AdminTaskStores() {
 			if st != nil {

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 
 	"clusbot/internal/model"
 	"clusbot/internal/work"
@@ -245,8 +244,8 @@ func TestAssistantModelBatchProposalUsesExistingGates(t *testing.T) {
 	if _, err := settings.Initialize(t.Context(), work.ModelSettings{BaseURL: provider.URL, ModelID: "fixture", Protocol: model.ProtocolResponses, KeyRef: "env:CLUSBOT_BATCH_MODEL_KEY"}); err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	a := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	a := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer a.close()
 	a.cookie = a.login()
 	code, response := a.post("/api/v1/assistant/interpret", `{"text":"查看任务，并整理记录"}`)

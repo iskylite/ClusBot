@@ -19,6 +19,7 @@ import { ExperienceCandidatesPage } from './ExperienceCandidatesPage'
 import { SkillProposalsPage } from './SkillProposalsPage'
 import {MessageHistory,useMessageAnchor} from './MessageHistory'
 import {clearMemoryDrafts} from './memoryDrafts'
+import {accountDraftKey} from './draftStorage'
 import { ConnectionsPage } from './ConnectionsPage'
 import { ReadEvidence, TaskReadPicker, readRequest } from './TaskRead'
 import { beginDraftRequest, changeComposerDraft, clearComposerDrafts, draftGeneration, enqueuePendingAdmission, finishDraftRequest, hasOtherDraftMaterial, releaseDraftRequest, removePendingAdmission, restoreRevisionDraft, useComposerDraft, usePendingAdmissions, type TaskReference } from './composerDrafts'
@@ -28,12 +29,13 @@ import {useConversationTasks,type TaskLink} from './ConversationTasks'
 import {BenchmarkConversation,type RevisionPreview} from './BenchmarkConversation'
 import {ChatTaskDrawer} from './ChatTaskDrawer'
 import {ConversationConfiguration} from './ConversationConfiguration'
-import {IsolatedReplyComposer,isolatedDraftKey} from './IsolatedReplyComposer'
+import {IsolatedReplyComposer} from './IsolatedReplyComposer'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
-import {AssistantCard} from './AssistantCards'
-import {assistantReplyCards,isAssistantItem,type AssistantItem} from './assistantSurface'
+import {AssistantCard,DiscoveryResult} from './AssistantCards'
+import {DiscoveryConfirmationRecovery} from './DiscoveryPanel'
+import {assistantReplyCards,isAssistantItem,type AssistantItem,type DiscoveryConversationSeed} from './assistantSurface'
 import {ReplyStrategy,useComposerOptions,useComposerSuggestions,type ReplyModel} from './ComposerUI'
-import {AccountPage, avatarText, ForcedPasswordChange, ServerLogin, type Account, type Session} from './AccountUI'
+import {AccountLogin, AccountPage, avatarText, decodeAccountSession, ForcedPasswordChange, type Account, type Session} from './AccountUI'
 import {applyPreferences, displayDate, GeneralPreferencesPage, uiLanguage, useTaskNotifications, type Preferences} from './GeneralPreferences'
 import {PreferencesController} from './preferencesController'
 import {SettingsDiagnostics} from './SettingsDiagnostics'
@@ -60,10 +62,6 @@ const VisionContext = createContext(false)
 const time = (value: number) => displayDate(value, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 const versionTime={format:(value:number)=>displayDate(value,{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'})}
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : '操作未完成'
-
-function Brand() {
-  return <div className="brand"><img src={clusbotIcon} width={28} height={28} alt=""/><span>ClusBot</span></div>
-}
 
 type CoreRoleStatus = {
   role: string
@@ -106,14 +104,14 @@ function App() {
   const logout = useCallback(() => {
     clearComposerDrafts()
     clearMemoryDrafts()
-    setSession(previous => previous ? {mode:previous.mode,authenticated:false} : previous)
+    setSession({authenticated:false})
     const root = document.documentElement
     root.lang = 'zh-CN'
     for (const field of ['appearance','reduceMotion','timezone','sendShortcut']) delete root.dataset[field]
   }, [])
   const readSession = useCallback(() => {
     setError('')
-    return api<Session>('/session').then(setSession).catch(e => setError(errorMessage(e)))
+    return api<unknown>('/session').then(decodeAccountSession).then(setSession).catch(e => setError(errorMessage(e)))
   }, [])
   useEffect(() => {
     void readSession()
@@ -122,33 +120,10 @@ function App() {
   }, [logout,readSession])
   if (error) return <div className="login-shell"><p role="alert">{error}</p><button onClick={() => void readSession()}>重试</button></div>
   if (!session) return <div className="login-shell"><LoaderCircle className="spin" aria-label="正在加载"/></div>
-  if (!session.authenticated) return session.mode === 'server' ? <ServerLogin onLogin={setSession}/> : <Login enter={() => void readSession()}/>
-  if (session.user?.must_change_password) return <ForcedPasswordChange account={session.user} onLogout={logout}/>
-  return <Workspace key={session.user?.principal_id ?? 'local'} session={session} logout={logout}
-    onAccountChange={user=>setSession(previous=>previous ? {...previous,user} : previous)}/>
-}
-
-function Login({enter}: {enter: () => void}) {
-  const [token, setToken] = useState('')
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState('')
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (pending) return
-    setPending(true)
-    setError('')
-    try { await api('/session', {token:token.trim()}); enter() }
-    catch (e) {setError(errorMessage(e))}
-    finally {setPending(false)}
-  }
-  return <div className="login-shell"><form className="login-card" onSubmit={submit}>
-    <Brand/><h1>打开你的工作台</h1>
-    <label htmlFor="access-token">本机访问口令</label>
-    <input id="access-token" type="password" autoComplete="current-password" value={token} onChange={e => setToken(e.target.value)} required/>
-    <p className="muted">口令保存在启动日志所示的 access-token 文件中。</p>
-    {error && <p className="error" role="alert">{error}</p>}
-    <button className="primary" disabled={pending}>{pending ? '正在登录…' : '进入工作台'}</button>
-  </form></div>
+  if (!session.authenticated) return <AccountLogin onLogin={setSession}/>
+  if (session.user.must_change_password) return <ForcedPasswordChange account={session.user} onLogout={logout}/>
+  return <Workspace key={session.user.principal_id} user={session.user} logout={logout}
+    onAccountChange={user=>setSession(previous=>previous?.authenticated&&previous.user.principal_id===user.principal_id ? {...previous,user} : previous)}/>
 }
 
 function workRoute(next:string,scope:string,search:string) {
@@ -182,7 +157,7 @@ const overviewGroupTitles:Record<OverviewGroup,string>={waiting:'需要你决定
 type OverviewPages=Partial<Record<OverviewGroup,string[]>>
 type ChatToolbarView='materials'|'operations'|'trends'
 
-function Workspace({session,logout,onAccountChange}: {session:Session; logout:()=>void; onAccountChange:(account:Account)=>void}) {
+function Workspace({user,logout,onAccountChange}: {user:Account; logout:()=>void; onAccountChange:(account:Account)=>void}) {
   const [route,setRoute]=useState(location.pathname+location.search+location.hash)
   const [pathAndQuery,hash='']=route.split('#')
   const [path,query='']=pathAndQuery.split('?')
@@ -214,7 +189,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
       load:()=>api<Preferences>('/preferences'),
       save:value=>api<Preferences>('/preferences',value,'PUT'),
       isConflict:error=>error instanceof APIError&&error.status===409,
-    },storage,'clusbot:preferences:'+encodeURIComponent(session.user?.principal_id??'local'))
+    },storage,'clusbot:preferences:'+encodeURIComponent(user.principal_id))
   })
   const [preferenceState,setPreferenceState]=useState(()=>preferencesController.snapshot())
   const preferences=preferenceState.value
@@ -226,6 +201,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   const currentItemsTrigger=useRef<HTMLButtonElement>(null)
   const currentItemsPopover=useRef<HTMLElement>(null)
   const [sidebarTask,setSidebarTask]=useState<{id:string;trigger:HTMLButtonElement}>()
+  const [discoverySeed,setDiscoverySeed]=useState<DiscoveryConversationSeed>()
   const [chatToolbarView,setChatToolbarView]=useState<ChatToolbarView>()
   const [chatToolbarActions,setChatToolbarActions]=useState<HTMLDivElement|null>(null)
   const clearSidebarTask=useCallback(()=>setSidebarTask(undefined),[])
@@ -234,9 +210,8 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
   const [modelStatusAttempt,setModelStatusAttempt]=useState(0)
   const [modelNoticeLifecycle,setModelNoticeLifecycle]=useState<'none'|'active'|'resolved'|'dismissed'>('none')
   const prevModelUnavailable=useRef(false)
-  const multiuser=session.mode==='server'
-  const superadmin=Boolean(session.user?.is_superadmin)
-  const canManageModels=!multiuser||superadmin
+  const superadmin=user.is_superadmin
+  const canManageModels=superadmin
   const english=uiLanguage(preferences?.language)==='en-US'
   const t=(zh:string,en:string)=>english?en:zh
 
@@ -288,6 +263,10 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
     return()=>{active=false}
   },[route,openRoute])
   const navigate=useCallback((next:string)=>openRoute(workRoute(next,scope,search)),[openRoute,scope,search])
+  const openDiscoveryConversation=useCallback((seed:DiscoveryConversationSeed)=>{
+    setDiscoverySeed(seed)
+    openRoute('/chat/'+encodeURIComponent(seed.conversationID),true)
+  },[openRoute])
   const returnToChat=()=>navigate(lastChat.current)
   const setSearch=(value:string)=>openRoute(isHistory?taskHistoryRoute('/tasks',scope,value,historyStatus):workRoute(path,scope,value),true)
   const navigateFromOverview=(next:string)=>{
@@ -516,7 +495,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
     const query=value.toLocaleLowerCase()
     const view=({
       '任务管理':superadmin?'/team-tasks':'/tasks','任务清单':superadmin?'/team-tasks':'/tasks','运维趋势':'/operations','工作总览':'/overview','成果':'/artifacts','个人记忆':'/memory',
-      ...(session.user?{'账号与安全':'/account'}:{}),
+      '账号与安全':'/account',
     } as Record<string,string>)[query]
     if(view){navigate(view);return}
     if(query==='资产发现'){
@@ -564,14 +543,14 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
       }}>
     {menu && <button className="scrim app-scrim" onClick={() => setMenu(false)} aria-label={t('关闭导航','Close navigation')}/>}
     <WorkspaceSidebar menu={menu} collapsed={sidebarCollapsed} section={section} settingsArea={settingsArea}
-      personalTaskItems={personalTaskItems} allTaskCount={allTaskCount} superadmin={superadmin} user={session.user}
+      personalTaskItems={personalTaskItems} allTaskCount={allTaskCount} superadmin={superadmin} user={user}
       t={t} taskReasonIcons={taskReasonIcons} taskStatusIcons={taskStatusIcons}
       onToggleCollapsed={()=>setSidebarCollapsed(value=>!value)} onReturnToChat={returnToChat}
       onNavigate={navigate} onOpenTask={openSidebarTask}/>
     <header className="unified-toolbar">
       <div className="toolbar-title"><button type="button" className="icon-button app-mobile-nav" aria-label={t('打开导航','Open navigation')} aria-controls="workspace-sidebar" aria-expanded={menu} onClick={()=>setMenu(!menu)}><PanelLeft size={14}/></button>{sidebarCollapsed&&<button type="button" className="icon-button app-desktop-expand sidebar-collapse" aria-label={t('展开侧栏','Expand sidebar')} title={t('展开侧栏','Expand sidebar')} aria-expanded={false} onClick={()=>setSidebarCollapsed(false)}><PanelLeft size={15}/></button>}<strong>{sectionTitle}</strong>
         {settingsArea&&<Breadcrumb>{settingsTabs.find(item=>item.id===settingsTab)?.text}</Breadcrumb>}
-        {section==='account'&&session.user&&<Breadcrumb>{superadmin&&hash==='users'?t('用户管理','User management'):t('本人账号','My account')}</Breadcrumb>}
+        {section==='account'&&<Breadcrumb>{superadmin&&hash==='users'?t('用户管理','User management'):t('本人账号','My account')}</Breadcrumb>}
         {section==='chat'&&<><Breadcrumb conversation>{chatBreadcrumb}</Breadcrumb>
           {hasCurrentItems&&<button className="toolbar-changes" type="button" onClick={event=>toggleCurrentItems(event.currentTarget)} aria-expanded={currentItemsOpen} aria-controls={currentItemsOpen?'current-items-popover':undefined}>
             <i aria-hidden="true"/>{t('当前事项','Current tasks')} {personalTaskItems.length}<ChevronDown size={10} aria-hidden="true"/>
@@ -632,13 +611,13 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
               pagination={{previous,next:next?()=>changeOverviewPage(group,next):undefined,pending:pagePending}}/>
           })}
         </div>}
-        {!isHistory&&<Composer draftKey="new:overview" inputRef={compose} placeholder="接下来，需要我帮你做什么？" label="交给助手" initialScope={scope} assign onSend={submitTask} onReceipt={onTask}/>}
+        {!isHistory&&<Composer draftKey={accountDraftKey(user.principal_id,'new:overview')} inputRef={compose} placeholder="接下来，需要我帮你做什么？" label="交给助手" initialScope={scope} assign onSend={submitTask} onReceipt={onTask}/>}
       </main>
       {focused && <aside className="detail-pane overview-detail" aria-label="工作详情">
-        <TaskDetail key={focused.id} taskID={focused.id} compact onChange={()=>{void refresh();if(isHistory)void loadHistory()}} navigate={navigateFromOverview} contextWindow={settings?.effective_context_tokens}/>
+        <TaskDetail key={focused.id} taskID={focused.id} principalID={user.principal_id} compact onChange={()=>{void refresh();if(isHistory)void loadHistory()}} navigate={navigateFromOverview} contextWindow={settings?.effective_context_tokens}/>
       </aside>}
     </>}
-    {section==='tasks' && id && <TaskDetail key={id} taskID={id} onChange={refresh} navigate={navigate} headingRef={focusNewTaskHeading} contextWindow={settings?.effective_context_tokens}
+    {section==='tasks' && id && <TaskDetail key={id} taskID={id} principalID={user.principal_id} onChange={refresh} navigate={navigate} headingRef={focusNewTaskHeading} contextWindow={settings?.effective_context_tokens}
       historyBack={historyView?taskHistoryRoute('/tasks',scope,search,historyStatus):undefined}
       selectedRun={selectedRun} selectRun={runID=>{
         const next=new URLSearchParams(query)
@@ -646,8 +625,9 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
         else next.delete('run')
         openRoute(next.size?path+'?'+next.toString():path)
       }}/>}
-    {section==='chat' && <Chat key={id || 'new'} id={id} navigate={navigate} assistantManage={canManageModels} modelConcurrency={settings?.model_concurrency} account={session.user} sidebarTask={sidebarTask} onSidebarTaskOpened={clearSidebarTask}
+    {section==='chat' && <Chat key={id || 'new'} id={id} navigate={navigate} assistantManage={canManageModels} modelConcurrency={settings?.model_concurrency} account={user} sidebarTask={sidebarTask} onSidebarTaskOpened={clearSidebarTask}
       toolbarActions={chatToolbarActions} onToolbarView={setChatToolbarView}
+      discoverySeed={discoverySeed?.conversationID===id?discoverySeed:undefined} openDiscoveryConversation={openDiscoveryConversation}
       activity={superadmin&&teamActivity?<Suspense fallback={<p className="muted">{t('正在加载…','Loading…')}</p>}><TaskNotices limit={4} onOpen={(owner,id)=>navigate('/team-tasks?'+new URLSearchParams({owner,task:id}))}/></Suspense>:undefined}
       modelNotice={(() => {
         const coreRoleLabel = (role?: string) => {
@@ -707,7 +687,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
         return undefined
       })()}/> }
     {section==='artifacts' && <Artifacts key={JSON.stringify([id,scope,artifactTask])} selected={id} scope={scope} taskID={artifactTask} navigate={navigate}/>}
-    {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage selected={id} sourceId={source} navigate={navigate}/>)}
+    {section==='memory' && (id==='skill-proposals' ? <SkillProposalsPage navigate={navigate} onChange={()=>void refresh()}/> : id==='candidates' ? <ExperienceCandidatesPage navigate={navigate}/> : <MemoryPage principalID={user.principal_id} selected={id} sourceId={source} navigate={navigate}/>)}
     {settingsArea&&<div className="settings-toolbar">
       <nav className="settings-tabs" aria-label={t('设置分类','Settings categories')}>
         {settingsTabs.map(item=><button type="button" key={item.id} aria-current={settingsTab===item.id?'page':undefined} onClick={()=>navigate(item.path)}>{item.text}</button>)}
@@ -723,14 +703,14 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
     {section==='settings'&&(
       settingsTab==='diagnostics'?<main className="main app-wide settings-diagnostics">
           <h1 className="settings-sr-only">{t('数据与诊断','Data and diagnostics')}</h1>
-          <SettingsDiagnostics workspacePath={multiuser?undefined:settings?.workspace_path} multiuser={multiuser} english={english}/>
+          <SettingsDiagnostics english={english}/>
         </main> : settingsTab==='model'||settingsTab==='skills'?<Suspense fallback={loadingPage}><SettingsPage key={settingsTab+':'+(params.get('provider')??'')+':'+(params.get('model')??'')} view={settingsTab} onSaved={value=>{setSettings(value);setModelStatusAttempt(attempt=>attempt+1)}} openConnections={()=>navigate('/connections')} openProposals={()=>navigate('/memory/skill-proposals')}/></Suspense> :
         <main className="main app-wide general-settings">
           <GeneralPreferencesPage view={settingsTab==='execution'?'execution':'general'} modelConcurrency={settings?.model_concurrency} state={preferenceState}
-            onChange={(key,value)=>preferencesController.update(key,value)} onRetry={()=>preferencesController.retry()} onResolve={keep=>preferencesController.resolveConflicts(keep)} multiuser={multiuser}/>
+            onChange={(key,value)=>preferencesController.update(key,value)} onRetry={()=>preferencesController.retry()} onResolve={keep=>preferencesController.resolveConflicts(keep)}/>
         </main>
     )}
-    {section==='account'&&session.user&&<AccountPage key={hash} account={session.user} onAccountChange={onAccountChange} onLogout={logout} onNavigate={navigate} initialSection={hash==='password'?'password':hash==='users'?'users':hash==='profile'?'profile':undefined}/>}
+    {section==='account'&&<AccountPage key={hash} account={user} onAccountChange={onAccountChange} onLogout={logout} onNavigate={navigate} initialSection={hash==='password'?'password':hash==='users'?'users':hash==='profile'?'profile':undefined}/>}
     {section==='operations'&&<Suspense fallback={loadingPage}><OperationsPage key={query} isAdmin={superadmin} initialIncident={params.get('incident')??undefined} initialRange={viewRange}/></Suspense>}
     {((section==='tasks'&&!id&&!isHistory)||section==='team-tasks')&&<Suspense fallback={loadingPage}>
       <TeamTasksPage key={section+':'+query} mode={section==='team-tasks'&&superadmin?'admin':'personal'} navigate={navigate}
@@ -868,13 +848,7 @@ function Composer({draftKey,previewMaterials,placeholder,label,onSend,onReceipt,
   const [capturing,setCapturing]=useState(false)
   const pendingAdmissions=usePendingAdmissions(draftKey)
   const pendingAdmissionKeys=pendingAdmissions.map(item=>item.key).join(',')
-  const legacyAdmissionKey=draft.request?.awaitingAdmission ? draft.request.key : undefined
   const submitting=pending
-  useEffect(()=>{
-    if(!legacyAdmissionKey)return
-    enqueuePendingAdmission(draftKey,{key:legacyAdmissionKey,text:draft.text,createdAt:Date.now()})
-    finishDraftRequest(draftKey,legacyAdmissionKey)
-  },[draftKey,legacyAdmissionKey,draft.text])
   useEffect(()=>{onAdmissionChange?.(pendingAdmissions.length>0)},[pendingAdmissions.length,onAdmissionChange])
   const retrySubmit=useEffectEvent(()=>void submit(undefined,true))
   useEffect(()=>{
@@ -1281,7 +1255,7 @@ function useDetail(path: string | undefined, onChange?: () => void) {
   return {data,live,reasoning,liveReset,error,reload,reconnecting:active&&reconnecting}
 }
 
-function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversationBusy,onReference,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;compact?:boolean;fromChat?:boolean;sourceConversationID?:string;sourceConversationBusy?:boolean;onReference?:(task:TaskReference)=>void;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
+function TaskDetail({taskID,principalID,compact,fromChat,sourceConversationID,sourceConversationBusy,onReference,onChange,navigate,historyBack,selectedRun,selectRun,headingRef,contextWindow}:{taskID:string;principalID:string;compact?:boolean;fromChat?:boolean;sourceConversationID?:string;sourceConversationBusy?:boolean;onReference?:(task:TaskReference)=>void;onChange:()=>void;navigate:(path:string)=>void;historyBack?:string;selectedRun?:string;selectRun?:(runID:string)=>void;headingRef?:React.Ref<HTMLHeadingElement>;contextWindow?:number}) {
   const {data,live,liveReset,error,reload,reconnecting}=useDetail('/tasks/'+taskID,onChange)
   const rememberMessage=useCallback((id:number)=>navigate('/memory/new/'+id),[navigate])
   const {progress:benchmark,unavailable:nonBenchmark,checking:checkingBenchmark,error:benchmarkError,refresh:refreshBenchmark}=useBenchmarkProgress(taskID)
@@ -1451,7 +1425,7 @@ function TaskDetail({taskID,compact,fromChat,sourceConversationID,sourceConversa
       </section>
       <div className="mobile-outcome">{artifactActions}{preview&&artifact&&!busy&&<FormattedText text={artifact.content || ''} framed/>}{action}{history}</div>
       {(actionError||error) && <p className="error" role="alert">{actionError||error}</p>}
-      {nonBenchmark&&<Composer draftKey={'task:'+task.id} placeholder={question?'补充助手需要的信息…':'补充这项工作的要求…'} label={question?'发送补充信息':'发送补充要求'} task={task} inputRef={followUp} disabled={composerBlocked}
+      {nonBenchmark&&<Composer draftKey={accountDraftKey(principalID,'task:'+task.id)} placeholder={question?'补充助手需要的信息…':'补充这项工作的要求…'} label={question?'发送补充信息':'发送补充要求'} task={task} inputRef={followUp} disabled={composerBlocked}
         disabledReason={archived?'恢复交流后可发送':readUnconfirmed?'请先确认读取结果':writing?'写入待处理，草稿可继续编辑':busy?'本轮处理中，草稿可继续编辑':'事项已停止'}
         onSend={(text,key,_scope,attachments,delivery)=>api('/conversations/'+task.conversation_id+'/messages',{text,client_message_id:key,attachment_ids:attachments,...delivery})}
         onReceipt={async()=>{setAcceptanceError('');await reload();onChange()}}/>}
@@ -1469,9 +1443,10 @@ type ModelNoticeInfo = {
   onDismiss?: () => void
 }
 
-function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,activity,sidebarTask,onSidebarTaskOpened,toolbarActions,onToolbarView}:{
-  id?:string;navigate:(path:string)=>void;modelNotice?:ModelNoticeInfo;assistantManage:boolean;modelConcurrency?:number;account?:Account;activity?:React.ReactNode;
+function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,activity,sidebarTask,onSidebarTaskOpened,toolbarActions,onToolbarView,discoverySeed,openDiscoveryConversation}:{
+  id?:string;navigate:(path:string)=>void;modelNotice?:ModelNoticeInfo;assistantManage:boolean;modelConcurrency?:number;account:Account;activity?:React.ReactNode;
   sidebarTask?:{id:string;trigger:HTMLButtonElement};onSidebarTaskOpened:()=>void;toolbarActions:HTMLDivElement|null;onToolbarView:(view?:ChatToolbarView)=>void
+  discoverySeed?:DiscoveryConversationSeed;openDiscoveryConversation:(seed:DiscoveryConversationSeed)=>void
 }) {
   const {data,live,reasoning,liveReset,error,reload}=useDetail(id?'/conversations/'+id:undefined)
   const rememberMessage=useCallback((messageID:number)=>navigate('/memory/new/'+messageID),[navigate])
@@ -1492,12 +1467,13 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
   const [isolatedOpen,setIsolatedOpen]=useState(false)
   const [isolatedModel,setIsolatedModel]=useState<ReplyModel>()
   const [isolatedText,setIsolatedText]=useState<string>()
-  const {isolatedRequest}=useComposerDraft(isolatedDraftKey(id||'new'))
+  const isolatedKey=accountDraftKey(account.principal_id,'isolated:'+(id||'new'))
+  const {isolatedRequest}=useComposerDraft(isolatedKey)
   const returnToComposer=useRef(false)
   const [configEntry,setConfigEntry]=useState<string>()
   const closeConfig=()=>{setConfigEntry(undefined);chatInput.current?.focus()}
   const [selectedTask,setSelectedTask]=useState<string>()
-  const ordinaryDraftKey='chat:'+(id||'new')
+  const ordinaryDraftKey=accountDraftKey(account.principal_id,'chat:'+(id||'new'))
   const {taskReference,materials:draftMaterials}=useComposerDraft(ordinaryDraftKey)
   const pendingAdmissions=usePendingAdmissions(ordinaryDraftKey)
   const chatInput=useRef<HTMLTextAreaElement>(null)
@@ -1729,11 +1705,24 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
               archived={Boolean(conversation.archived)} onClose={closeConfig}/>:null
           if(!Array.isArray(card)&&card.state==='failed')return <p key={index} className="error" role="status">{card.message}</p>
           return <AssistantCard key={index} item={card} navigate={navigate} canManageModels={assistantManage} modelConcurrency={modelConcurrency}
+            principalID={account.principal_id} conversationID={id} conversationReadOnly={Boolean(id&&(!conversation||conversation.archived))}
+            openDiscoveryConversation={openDiscoveryConversation}
             openTask={(taskID,trigger)=>{taskTrigger.current=trigger;setSelectedTask(taskID)}}/>
         })}</div>
       </div>}
     </div>}
   })
+  if(discoverySeed){
+    const messages=data?.messages??[]
+    const anchor=messages.find(message=>message.role==='assistant'&&message.run_id===discoverySeed.runID)
+    localExchanges.unshift({
+      id:'discovery:'+discoverySeed.runID,afterMessageID:anchor?.id??Math.max(0,...messages.map(message=>message.id??0)),
+      content:<div className="message message-assistant"><div className="assistant-reply-cards">
+        <DiscoveryResult initialSurfaces={discoverySeed.surfaces} navigate={navigate}
+          principalID={account.principal_id} conversationID={id} conversationReadOnly={!conversation||Boolean(conversation.archived)}/>
+      </div></div>,
+    })
+  }
   const assistantModelNotice = (() => {
     if (composerAdmitting && modelNotice && modelNotice.kind !== 'resolved') {
       return (
@@ -1892,6 +1881,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
         <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
           <div className="chat-log-content" ref={chatContentRef}>
             {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
+            {id&&conversation?.id===id&&!conversation.archived&&<DiscoveryConfirmationRecovery principalID={account.principal_id} conversationID={id}/>}
             {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message"><MessageContent
               reference={item.taskRef?<MessageReference label={'@'+item.taskRef.title+' 只读引用'}/>:undefined}
               body={item.text||undefined}
@@ -2006,7 +1996,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
         if (id && path==='/chat/'+id) await reload()
         else navigate(path)
       }}/>
-      {isolatedOpen&&<IsolatedReplyComposer conversationID={id} blocked={busy||saving||Boolean(id&&!data)} initialModel={isolatedModel} initialText={isolatedText}
+      {isolatedOpen&&<IsolatedReplyComposer draftKey={isolatedKey} conversationID={id} blocked={busy||saving||Boolean(id&&!data)} initialModel={isolatedModel} initialText={isolatedText}
         archived={Boolean(conversation?.archived)} onClose={closeIsolated} onReceipt={(receipt,request)=>{
           if(isolatedText===request.text)changeComposerDraft(ordinaryDraftKey,previous=>previous.text===request.text?{text:''}:{})
           if(id)void reload();else if(receipt.conversation_id)navigate('/chat/'+receipt.conversation_id)
@@ -2017,7 +2007,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
       <ChatTaskDrawer key={selectedTask} taskID={selectedTask} onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}
         sourceConversationID={conversation?.archived?undefined:id} onReference={conversation?.archived?undefined:referenceTask}
         closeAction={<button type="button" className="icon-button" aria-label="关闭任务详情" ref={detailClose} onClick={()=>closeTaskDetail()}><X size={16} aria-hidden="true"/></button>}>
-        <TaskDetail taskID={selectedTask} compact fromChat onReference={conversation?.archived?undefined:referenceTask}
+        <TaskDetail taskID={selectedTask} principalID={account.principal_id} compact fromChat onReference={conversation?.archived?undefined:referenceTask}
           sourceConversationID={conversation?.archived?undefined:id} sourceConversationBusy={Boolean(!conversation?.archived&&busy)}
           onChange={()=>void reload()} navigate={path=>{closeTaskDetail();navigate(path)}}/>
       </ChatTaskDrawer>

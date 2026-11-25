@@ -98,7 +98,7 @@ var runtimeRetentionSchema string
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 136
+const databaseSchemaVersion = 138
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -221,22 +221,22 @@ type Run struct {
 
 type Message struct {
 	TaskRef            *MessageTaskRefView `json:"task_ref,omitempty"`
-	ID                 int64           `json:"id,omitempty"`
-	RunID              string          `json:"run_id,omitempty"`
-	AssetQueryTaskID   string          `json:"asset_query_task_id,omitempty"`
-	Role               string          `json:"role"`
-	Text               string          `json:"text"`
-	ContentUnavailable bool            `json:"content_unavailable,omitempty"`
-	Materials          []Material      `json:"materials,omitempty"`
-	ReplaceMaterials   bool            `json:"replace_materials,omitempty"`
-	MemoryRefs         []MemoryRef     `json:"memory_refs,omitempty"`
-	Incomplete         bool            `json:"incomplete,omitempty"`
-	RequiredInput      bool            `json:"-"`
-	Memories           []Memory        `json:"-"`
-	Experience         *ExperienceRef  `json:"-"`
-	Skill              *SkillVersion   `json:"-"`
-	Read               *TaskRead       `json:"-"`
-	Reads              []TaskRead      `json:"-"`
+	ID                 int64               `json:"id,omitempty"`
+	RunID              string              `json:"run_id,omitempty"`
+	AssetQueryTaskID   string              `json:"asset_query_task_id,omitempty"`
+	Role               string              `json:"role"`
+	Text               string              `json:"text"`
+	ContentUnavailable bool                `json:"content_unavailable,omitempty"`
+	Materials          []Material          `json:"materials,omitempty"`
+	ReplaceMaterials   bool                `json:"replace_materials,omitempty"`
+	MemoryRefs         []MemoryRef         `json:"memory_refs,omitempty"`
+	Incomplete         bool                `json:"incomplete,omitempty"`
+	RequiredInput      bool                `json:"-"`
+	Memories           []Memory            `json:"-"`
+	Experience         *ExperienceRef      `json:"-"`
+	Skill              *SkillVersion       `json:"-"`
+	Read               *TaskRead           `json:"-"`
+	Reads              []TaskRead          `json:"-"`
 }
 
 type Conversation struct {
@@ -628,6 +628,8 @@ func initializeDatabase(db *sql.DB) error {
 		{133, migrateCleanupRetiredPrototypeTablesAndRSI},
 		{134, migrateGovernanceAndMCPReadOnly},
 		{135, migrateRetireRedundantDomainPrototypeTables},
+		{136, migrateDiscoveryMCPContract},
+		{137, migrateAccountRSISkills},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -861,6 +863,12 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if err := migrateClusterTrendIndex(tx); err != nil {
+		return err
+	}
+	if err := migrateDiscoveryMCPContract(tx); err != nil {
+		return err
+	}
+	if err := migrateAccountRSISkills(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version=%d", databaseSchemaVersion)); err != nil {

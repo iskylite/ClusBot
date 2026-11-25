@@ -82,12 +82,12 @@ func TestCapabilityBindingAndMCPBenchmarkProvider(t *testing.T) {
 				}
 				return mcpclient.Result{Structured: json.RawMessage(`{}`)}, nil
 			case "task_status":
-				return mcpclient.Result{Structured: json.RawMessage(`{"job_id":"J-101","state":"completed","measurements":[{"target":"node-1","outcome":"ok"}]}`)}, nil
+				return mcpclient.Result{Structured: json.RawMessage(`{"task_id":"J-101","state":"COMPLETE","results":[{"task_id":"J-101","node":"node-1","event":"result","state":"succeeded","data":{"benchmark":"stream","metrics":{"Triad":370.2,"Unit":"GB/s"}}}]}`)}, nil
 			case "task_cancel":
 				if cancelConfirmed {
-					return mcpclient.Result{Structured: json.RawMessage(`{"confirmed":true}`)}, nil
+					return mcpclient.Result{Structured: json.RawMessage(`{"task_ids":["J-101"],"acknowledged":true,"confirmed":["engine:J-101"],"unconfirmed":[],"remote_exit_verified":false}`)}, nil
 				}
-				return mcpclient.Result{Structured: json.RawMessage(`{"confirmed":false,"status":"unconfirmed"}`)}, nil
+				return mcpclient.Result{Structured: json.RawMessage(`{"task_ids":["J-101"],"acknowledged":false,"confirmed":[],"unconfirmed":["engine:J-101"],"remote_exit_verified":false}`)}, nil
 			default:
 				return mcpclient.Result{IsError: true, Text: "unknown tool"}, nil
 			}
@@ -102,6 +102,7 @@ func TestCapabilityBindingAndMCPBenchmarkProvider(t *testing.T) {
 		},
 		IdempotencyKey: "op-key-1",
 		Case:           "node-bandwidth",
+		Parameters:     map[string]string{"benchmark": "stream"},
 		Targets:        []string{"node-1"},
 	}
 	if !provider.Supports(req.Binding) {

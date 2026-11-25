@@ -15,10 +15,16 @@ func TestRouterBenchmarkHintRejectsUnsafeTextAndTaskContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	const actor = "user:session"
+	const actor = "user:router-benchmark-fixture"
+	if err := s.BindAccountBusinessStore(ctx, actor); err != nil {
+		t.Fatal(err)
+	}
 	b := BenchmarkBinding{Connection: "bench-test", Revision: 1, Tool: "test", Validator: benchmarkValidatorV1}
 	g := DomainBenchmarkGrant{Connection: b.Connection, Revision: 1, Tool: b.Tool, ExpiresAt: now() + 60000}
 	if err := s.ImportDomainAssets(ctx, []DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture", Benchmark: []DomainBenchmarkGrant{g}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, "UPDATE authorizations SET subject=? WHERE subject='user:session'", actor); err != nil {
 		t.Fatal(err)
 	}
 	cases := []BenchmarkCase{{Key: "one", Binding: b, Targets: []string{"node-1"}, RequiredMetrics: map[string]string{"rate": "GB/s"}}}

@@ -12,7 +12,12 @@ import (
 )
 
 func TestSkillProposalPagesSupportDirectNavigation(t *testing.T) {
-	server := Server{Hosts: []string{"127.0.0.1"}}
+	store, err := work.Open(filepath.Join(t.TempDir(), "work.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}}
 	handler := server.Handler(fstest.MapFS{"index.html": {Data: []byte("personal agent")}})
 	for _, path := range []string{"/memory/candidates", "/memory/skill-proposals"} {
 		w := httptest.NewRecorder()
@@ -30,17 +35,10 @@ func TestPersonalAgentHasNoDomainRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	server := Server{Store: store, Token: "personal-fixture", Hosts: []string{"127.0.0.1"}}
-	handler := server.Handler(fstest.MapFS{"index.html": {Data: []byte("personal agent")}})
-	login := httptest.NewRequest("POST", "http://127.0.0.1/api/v1/session", strings.NewReader(`{"token":"personal-fixture"}`))
-	login.Header.Set("Origin", "http://127.0.0.1")
-	login.Header.Set("Content-Type", "application/json")
-	logged := httptest.NewRecorder()
-	handler.ServeHTTP(logged, login)
-	if logged.Code != 200 {
-		t.Fatalf("login: %d %s", logged.Code, logged.Body.String())
-	}
-	cookie := logged.Result().Cookies()[0]
+	server := Server{Store: store, Hosts: []string{"127.0.0.1"}}
+	businessFixturePrincipal(t, store)
+	handler := productionFixtureHandler(t, server, "http://127.0.0.1", fstest.MapFS{"index.html": {Data: []byte("personal agent")}})
+	cookie := businessFixtureLogin(t, handler, "http://127.0.0.1")
 	identifier := strings.Repeat("a", 32)
 	for _, tc := range []struct{ method, path string }{
 		{"GET", "/api/v1/monitors"},

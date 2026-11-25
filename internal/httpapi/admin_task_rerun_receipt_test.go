@@ -63,7 +63,7 @@ func TestAdminRerunReceiptWhenModelUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	server := Server{Store: store, ServerMode: true} // no model configured
+	server := Server{Store: store} // no model configured
 	request := func(requestID string, revision int) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(fmt.Sprintf(`{"client_request_id":%q,"revision":%d}`, requestID, revision)))
 		r.Header.Set("Content-Type", "application/json")

@@ -35,9 +35,6 @@ type adminTask struct {
 }
 
 func (s Server) registerAdminTasks(api *http.ServeMux) {
-	if !s.ServerMode {
-		return
-	}
 	const list = "GET /api/v1/admin/tasks"
 	const notices = "GET /api/v1/admin/task-notices"
 	const path = "/api/v1/admin/tasks/{owner}/{id}"
@@ -394,8 +391,8 @@ func (s Server) rerunCompletedTask(w http.ResponseWriter, r *http.Request, keyPr
 	key := keyPrefix + s.principal(r) + ":" + in.RequestID
 	run, err := s.Store.ReadCompletedTaskRerun(r.Context(), r.PathValue("id"), key, in.Revision)
 	if err == nil && run.ID == "" {
-		if !s.ModelAvailable(r.Context()) {
-			fail(w, http.StatusServiceUnavailable, "model_not_configured", "请先配置可用模型")
+		if !s.Settings.RoleAvailable(r.Context(), work.TaskWorkerModelRole) {
+			fail(w, http.StatusServiceUnavailable, "model_not_configured", "请先配置可用的事项执行模型")
 			return
 		}
 		run, err = s.Store.RerunCompletedTask(r.Context(), r.PathValue("id"), key, in.Revision)

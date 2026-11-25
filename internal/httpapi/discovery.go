@@ -54,7 +54,7 @@ func (s Server) discoverySetupStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	source := s.DiscoverySource
-	if account, ok := accountFromContext(r); s.ServerMode && (!ok || !account.IsSuperadmin) {
+	if account, ok := accountFromContext(r); !ok || !account.IsSuperadmin {
 		source = nil
 	}
 	out, err := s.Store.ReadDiscoverySetupStatus(r.Context(), s.principal(r), source, query.Get("source"), query.Get("scope"))

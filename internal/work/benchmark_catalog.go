@@ -193,11 +193,18 @@ func preflightBenchmarkTx(ctx context.Context, tx *sql.Tx, actor string, ref Ben
 	for _, c := range p.Cases {
 		entry := BenchmarkPreflightCase{Key: c.Key, Binding: c.Binding, Capabilities: []string{},
 			Blockers: []BenchmarkPreflightIssue{}, Warnings: []BenchmarkPreflightIssue{}}
-		if provider == nil || !provider.Supports(c.Binding) {
+		selection, selectErr := selectBenchmarkProvider(ctx, tx, provider, c.Binding)
+		if selectErr != nil && !errors.Is(selectErr, ErrBenchmarkBinding) {
+			return BenchmarkPreflight{}, selectErr
+		}
+		if selectErr != nil {
 			entry.Blockers = append(entry.Blockers, BenchmarkPreflightIssue{Code: "binding_unavailable", Detail: "未配置与冻结版本匹配的测试连接或工具"})
 		} else {
+			if err := selection.validate(benchmarkCaseRequest(c, "benchmark:preflight")); err != nil {
+				entry.Blockers = append(entry.Blockers, BenchmarkPreflightIssue{Code: "invalid_provider_parameters", Detail: err.Error()})
+			}
 			entry.Capabilities = []string{"start", "lookup", "get"}
-			if _, ok := provider.(benchmarkCanceller); ok {
+			if selection.canStop {
 				entry.Capabilities = append(entry.Capabilities, "cancel")
 			} else {
 				entry.Warnings = append(entry.Warnings, BenchmarkPreflightIssue{Code: "cancel_unavailable", Detail: "适配器未声明远端取消；已发作业可能要等到终态"})

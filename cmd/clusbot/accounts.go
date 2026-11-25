@@ -23,13 +23,13 @@ func serveAccounts(db *work.Store, listen, origin string, printURL bool, configu
 	return serveAccountsAtOrigin(db, listen, origin, printURL, false, configure)
 }
 
-// The desktop process owns this loopback listener, including its chosen port.
-// Unlike a deployed server it has no HTTPS reverse proxy.
-func serveDesktopAccounts(db *work.Store, listen string, printURL bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
+// Both the local browser and App use the exact origin of the bound loopback
+// address. Unlike a deployed server, this listener has no HTTPS reverse proxy.
+func serveLoopbackAccounts(db *work.Store, listen string, printURL bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
 	return serveAccountsAtOrigin(db, listen, "", printURL, true, configure)
 }
 
-func serveAccountsAtOrigin(db *work.Store, listen, origin string, printURL, desktop bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
+func serveAccountsAtOrigin(db *work.Store, listen, origin string, printURL, loopback bool, configure func(context.Context, *httpapi.Server) (func(), error)) error {
 	required, err := db.BootstrapRequired(context.Background())
 	if err != nil {
 		return err
@@ -43,18 +43,18 @@ func serveAccountsAtOrigin(db *work.Store, listen, origin string, printURL, desk
 		return err
 	}
 	defer listener.Close()
-	if desktop {
-		addr, ok := listener.Addr().(*net.TCPAddr)
-		if !ok || !addr.IP.Equal(net.ParseIP("127.0.0.1")) {
-			return errors.New("桌面模式必须监听 127.0.0.1")
-		}
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || !addr.IP.IsLoopback() {
+		return errors.New("账号服务必须监听回环地址；对外访问请用 HTTPS 反向代理")
+	}
+	if loopback {
 		origin = "http://" + listener.Addr().String()
 	}
 	parsed, err := url.Parse(origin)
 	if err != nil {
 		return err
 	}
-	api := httpapi.Server{Store: db, ServerMode: true, Origin: origin, Hosts: []string{parsed.Host}}
+	api := httpapi.Server{Store: db, Origin: origin, Hosts: []string{parsed.Host}}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if configure != nil {

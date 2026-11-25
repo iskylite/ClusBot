@@ -120,7 +120,7 @@ FROM benchmark_runs b JOIN tasks t ON t.id=b.task_id WHERE b.task_id=? AND b.act
 	}
 	stamp := now()
 	if in.Action == "resume" {
-		if err := recheckBenchmarkTaskDispatch(tx, actor, task, provider, stamp); err != nil {
+		if err := recheckBenchmarkTaskDispatch(ctx, tx, actor, task, provider, stamp); err != nil {
 			return out, err
 		}
 	}
@@ -174,7 +174,7 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=? AND phase IN ('submitting',
 	return out, tx.Commit()
 }
 
-func recheckBenchmarkTaskDispatch(tx *sql.Tx, actor, task string, provider BenchmarkProvider, stamp int64) error {
+func recheckBenchmarkTaskDispatch(ctx context.Context, tx *sql.Tx, actor, task string, provider BenchmarkProvider, stamp int64) error {
 	rows, err := tx.Query(`SELECT b.case_key,b.case_spec,b.frozen_targets,b.authorization_refs,b.operation_id,`+benchmarkHasBoundWorkSQL+`
 FROM benchmark_cases b LEFT JOIN benchmark_dispatch_gates g ON g.step_id=b.step_id
 WHERE b.task_id=? AND b.phase='queued' AND coalesce(g.held,0)=0`, task)
@@ -232,8 +232,15 @@ WHERE b.task_id=? AND b.phase='queued' AND coalesce(g.held,0)=0`, task)
 				}
 			}
 		}
-		if c.Key == "" || c.Key != row.key || provider == nil || !provider.Supports(c.Binding) {
+		if c.Key == "" || c.Key != row.key {
 			return fmt.Errorf("%w：冻结的基准连接或测项不可用", ErrBenchmarkBinding)
+		}
+		selection, err := selectBenchmarkProvider(ctx, tx, provider, c.Binding)
+		if err != nil {
+			return err
+		}
+		if err := selection.validate(benchmarkCaseRequest(c, "benchmark:preflight")); err != nil {
+			return err
 		}
 		var targets []ticketTarget
 		var grants map[string]string

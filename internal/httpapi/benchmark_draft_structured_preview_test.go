@@ -14,7 +14,8 @@ func TestBenchmarkDraftStructuredPreview(t *testing.T) {
 	a := setupA1(t, filepath.Join(t.TempDir(), "draft-structured.sqlite"))
 	defer a.close()
 	ctx := t.Context()
-	const actor, key = "user:session", "pod7"
+	actor := businessFixturePrincipal(t, a.store)
+	const key = "pod7"
 	const draftURL = "/api/v1/domain/benchmark-profiles/" + key + "/draft"
 	const route = draftURL + "/preview-structured-edit"
 	newCase := func(key string, deps ...string) work.BenchmarkCase {

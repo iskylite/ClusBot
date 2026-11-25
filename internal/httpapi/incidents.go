@@ -7,10 +7,10 @@ import (
 	"clusbot/internal/work"
 )
 
-// The ticket worker and independent checker currently run only in local mode.
-func (s Server) localIncidentAction(w http.ResponseWriter, r *http.Request) bool {
-	if s.ServerMode {
-		fail(w, http.StatusForbidden, "incident_action_unavailable", "多人模式暂不支持此操作")
+// Incident writes still require runtime wiring and are not opened by the account router.
+func (s Server) validateIncidentAction(w http.ResponseWriter, r *http.Request) bool {
+	if s.instanceStore != nil {
+		fail(w, http.StatusForbidden, "incident_action_unavailable", "账号运行时尚未接入此操作")
 		return false
 	}
 	if !validIncidentID(r.PathValue("id")) {
@@ -21,7 +21,7 @@ func (s Server) localIncidentAction(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (s Server) incidentTicketOptions(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	after := r.URL.Query().Get("after")
@@ -44,7 +44,7 @@ func (s Server) incidentTicketOptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) previewIncidentTicket(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	if s.TicketProvider == nil {
@@ -67,7 +67,7 @@ func (s Server) previewIncidentTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) confirmIncidentTicket(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	var in struct {
@@ -89,7 +89,7 @@ func (s Server) confirmIncidentTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) previewIncidentRecheck(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	var in struct {
@@ -111,7 +111,7 @@ func (s Server) previewIncidentRecheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) confirmIncidentRecheck(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	var in struct {
@@ -260,8 +260,8 @@ func (s Server) listSelfHealPolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) upsertSelfHealPolicy(w http.ResponseWriter, r *http.Request) {
-	if s.ServerMode {
-		fail(w, http.StatusForbidden, "self_heal_unavailable", "多人模式暂不支持此操作")
+	if s.instanceStore != nil {
+		fail(w, http.StatusForbidden, "self_heal_unavailable", "账号运行时尚未接入此操作")
 		return
 	}
 	var in work.SelfHealPolicyInput
@@ -280,7 +280,7 @@ func (s Server) upsertSelfHealPolicy(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s Server) executeIncidentSelfHeal(w http.ResponseWriter, r *http.Request) {
-	if !s.localIncidentAction(w, r) {
+	if !s.validateIncidentAction(w, r) {
 		return
 	}
 	id := r.PathValue("id")
@@ -300,7 +300,7 @@ func (s Server) executeIncidentSelfHeal(w http.ResponseWriter, r *http.Request) 
 		fail(w, http.StatusForbidden, "self_heal_write_disabled", "非观察模式自动自愈写操作暂不允许通过直连 HTTP 接口触发，须经 Operation 网关与人工审批")
 		return
 	}
-	out, err := s.Store.ExecuteIncidentSelfHeal(r.Context(), s.principal(r), id, in.PolicyID, in.ObjectRef, s.TicketEffectChecker)
+	out, err := s.Store.ProposeIncidentSelfHeal(r.Context(), s.principal(r), id, in.PolicyID, in.ObjectRef)
 	if err != nil {
 		writeError(w, err)
 		return

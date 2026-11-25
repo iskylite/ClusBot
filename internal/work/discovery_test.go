@@ -53,7 +53,7 @@ func TestDiscoveryDueRestartAdmission(t *testing.T) {
 	if err != nil || !ok || replay.task != first.task || replay.generation <= first.generation {
 		t.Fatalf("recovery lost or recreated task %+v %v", replay, err)
 	}
-	observations := []DiscoveryObservation{{"SN-1", "192.0.2.1"}, {"SN-2", "192.0.2.1"}, {"", "192.0.2.2"}}
+	observations := []DiscoveryObservation{{Serial: "SN-1", Address: "192.0.2.1"}, {Serial: "SN-2", Address: "192.0.2.1"}, {Serial: "", Address: "192.0.2.2"}}
 	if err = s.settleDiscovery(ctx, first, observations, nil, now()); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestDiscoveryDueRestartAdmission(t *testing.T) {
 	if err != nil || !ok || next.task == first.task {
 		t.Fatalf("next tick %+v %v", next, err)
 	}
-	if err = s.settleDiscovery(ctx, next, []DiscoveryObservation{{"SN-1", "192.0.2.3"}, {"SN-2", "192.0.2.4"}}, nil, now()); err != nil {
+	if err = s.settleDiscovery(ctx, next, []DiscoveryObservation{{Serial: "SN-1", Address: "192.0.2.3"}, {Serial: "SN-2", Address: "192.0.2.4"}}, nil, now()); err != nil {
 		t.Fatal(err)
 	}
 	candidates, err = s.ListDiscoveryCandidates(ctx, actor)
@@ -155,7 +155,7 @@ func TestDiscoveryDueRestartAdmission(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("repeat tick: %+v %v", repeat, err)
 	}
-	if err = s.settleDiscovery(ctx, repeat, []DiscoveryObservation{{"SN-1", "192.0.2.3"}, {"SN-2", "192.0.2.4"}}, nil, now()); err != nil {
+	if err = s.settleDiscovery(ctx, repeat, []DiscoveryObservation{{Serial: "SN-1", Address: "192.0.2.3"}, {Serial: "SN-2", Address: "192.0.2.4"}}, nil, now()); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.db.QueryRow("SELECT count(*) FROM discovery_drift_checks").Scan(&driftChecks); err != nil || driftChecks != 2 {
@@ -230,7 +230,7 @@ func TestDiscoveryInterruptedCannotBecomeGenericRun(t *testing.T) {
 			} else if err := s.DisableDiscoveryPlan(ctx, actor, d.plan); err != nil {
 				t.Fatal(err)
 			}
-			if err := s.settleDiscovery(ctx, d, []DiscoveryObservation{{"fixture", "192.0.2.9"}}, nil, stamp+1); err != nil {
+			if err := s.settleDiscovery(ctx, d, []DiscoveryObservation{{Serial: "fixture", Address: "192.0.2.9"}}, nil, stamp+1); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.Close(); err != nil {

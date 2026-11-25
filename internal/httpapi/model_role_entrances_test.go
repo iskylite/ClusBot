@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -96,8 +95,8 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 		t.Fatal(err)
 	}
 	provider := &roleEntrancesBenchmark{allowResult: make(chan struct{})}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}, BenchmarkProvider: provider, BenchmarkEvents: events}
-	api := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}, BenchmarkProvider: provider, BenchmarkEvents: events}
+	api := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer api.close()
 	api.cookie = api.login()
 	if api.cookie == "" {
@@ -171,12 +170,13 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 		t.Fatalf("wrong model per user entry: got %v want %v", got, want)
 	}
 
-	const actor = "user:session"
+	actor := businessFixturePrincipal(t, store)
 	binding := work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"}
 	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture-node", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture-node", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := store.PublishBenchmarkProfile(ctx, actor, work.BenchmarkProfile{Key: "entrances", Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Targets: []string{"node-1"}, Binding: binding, RequiredMetrics: map[string]string{"rate": "GB/s"}, NeedsRawEvidence: true}}}); err != nil {
 		t.Fatal(err)
 	}

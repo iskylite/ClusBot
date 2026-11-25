@@ -13,7 +13,7 @@ import (
 	"clusbot/internal/work"
 )
 
-func TestClusterInventoryHTTPLocalAuthentication(t *testing.T) {
+func TestClusterInventoryHTTPAccountAuthentication(t *testing.T) {
 	c, store := setupA2HTTP(t, filepath.Join(t.TempDir(), "local.db"))
 	defer c.close()
 	defer store.Close()
@@ -31,7 +31,8 @@ func TestClusterInventoryHTTPLocalAuthentication(t *testing.T) {
 }
 
 func TestClusterInventoryPODFilterRespectsAuthorization(t *testing.T) {
-	c, store := setupA2HTTP(t, filepath.Join(t.TempDir(), "pod-filter.db"))
+	dbPath := filepath.Join(t.TempDir(), "pod-filter.db")
+	c, store := setupA2HTTP(t, dbPath)
 	defer c.close()
 	defer store.Close()
 	entries := []work.DomainAssetEntry{
@@ -42,9 +43,10 @@ func TestClusterInventoryPODFilterRespectsAuthorization(t *testing.T) {
 		{ObjectRef: "private-node", Kind: "node", Identity: "Private Node", PodRef: "pod-visible"},
 		{ObjectRef: "hidden-parent-node", Kind: "node", Identity: "Hidden Parent Node", PodRef: "pod-hidden", Read: true},
 	}
-	if err := store.ImportDomainAssets(context.Background(), entries); err != nil {
+	if err := store.ImportDomainAssetsForAccount(context.Background(), businessFixturePrincipal(t, store), entries); err != nil {
 		t.Fatal(err)
 	}
+
 	code, first := c.do(c.request("GET", "/api/v1/domain/cluster-inventory?pod_ref=pod-visible&limit=1", "", true))
 	items, _ := first["items"].([]any)
 	if code != http.StatusOK || len(items) != 1 || items[0].(map[string]any)["object_ref"] != "visible-a" || items[0].(map[string]any)["pod_ref"] != "pod-visible" || first["next_cursor"] != "visible-a" {
@@ -111,7 +113,7 @@ func TestAssistantClusterInventoryAccountIsolation(t *testing.T) {
 	t.Cleanup(func() { _ = instance.Close() })
 	stores := make(map[string]*work.Store)
 	var srv Server
-	srv = Server{Store: instance, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"},
+	srv = Server{Store: instance, Origin: "https://ops.example", Hosts: []string{"ops.example"},
 		PersonalAPI: func(owner string) (http.Handler, error) {
 			if stores[owner] == nil {
 				return nil, fmt.Errorf("missing personal store")

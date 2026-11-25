@@ -107,12 +107,10 @@ type assistantModelView struct {
 
 func (s Server) assistantModels(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if s.ServerMode {
-		account, ok := accountFromContext(r)
-		if !ok || !account.IsSuperadmin {
-			fail(w, http.StatusForbidden, "forbidden", "只有超级管理员可管理实例设置")
-			return
-		}
+	account, ok := accountFromContext(r)
+	if !ok || !account.IsSuperadmin {
+		fail(w, http.StatusForbidden, "forbidden", "只有超级管理员可管理实例设置")
+		return
 	}
 	profiles, err := s.Settings.Profiles(r.Context())
 	if err != nil {

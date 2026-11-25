@@ -13,7 +13,7 @@ import (
 func TestAssistantTaskToolRoutesAndConfirmations(t *testing.T) {
 	// Check the executable route rather than only the catalog spelling. The
 	// admin routes are registered by the server-mode mux.
-	mux := (Server{ServerMode: true}).routes()
+	mux := (Server{}).routes()
 	seen := make(map[string]bool)
 	for _, tool := range assistantTaskTools() {
 		if tool.Name == "" || tool.Description == "" || seen[tool.Name] {
@@ -48,15 +48,14 @@ func TestAssistantTaskToolRoutesAndConfirmations(t *testing.T) {
 	}
 }
 
-func TestAssistantTaskToolAccountAndModeScope(t *testing.T) {
+func TestAssistantTaskToolAccountScope(t *testing.T) {
 	requestFor := func(account work.Account) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		return r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account))
 	}
 	regular := requestFor(work.Account{PrincipalID: "user:regular"})
 	admin := requestFor(work.Account{PrincipalID: "user:admin", IsSuperadmin: true})
-	server := Server{ServerMode: true}
-	local := Server{}
+	server := Server{}
 	for _, tool := range assistantTaskTools() {
 		adminOnly := strings.HasPrefix(tool.Path, "/api/v1/admin/")
 		localOnly := strings.HasPrefix(tool.Path, "/api/v1/loans")
@@ -65,9 +64,6 @@ func TestAssistantTaskToolAccountAndModeScope(t *testing.T) {
 		}
 		if got, want := server.assistantAllowed(admin, tool), !localOnly; got != want {
 			t.Errorf("admin availability for %s: got %v, want %v", tool.Name, got, want)
-		}
-		if got, want := local.assistantAllowed(regular, tool), !adminOnly; got != want {
-			t.Errorf("local availability for %s: got %v, want %v", tool.Name, got, want)
 		}
 	}
 }

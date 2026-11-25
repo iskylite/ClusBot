@@ -2,42 +2,32 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
-	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
-	"sync"
-	"syscall"
-	"time"
 
 	"clusbot/internal/httpapi"
 	"clusbot/internal/model"
 	"clusbot/internal/work"
-	"clusbot/web"
 
 	"gopkg.in/yaml.v3"
 )
 
 type config struct {
-	desktop bool
-	Server  struct {
+	Server struct {
 		Listen string `yaml:"listen"`
 		Mode   string `yaml:"mode"`
 		Origin string `yaml:"origin"`
 	} `yaml:"server"`
-	DataDir       string `yaml:"data_dir"`
-	WorkspaceRoot string `yaml:"workspace_root"`
-	Tickets       struct {
+	DataDir string `yaml:"data_dir"`
+	Tickets struct {
 		BaseURL             string `yaml:"base_url"`
 		HealthURL           string `yaml:"health_url"`
 		CredentialEnv       string `yaml:"credential_env"`
@@ -101,12 +91,10 @@ func run() error {
 	flags := flag.NewFlagSet("clusbot serve", flag.ContinueOnError)
 	configPath := flags.String("config", "", "YAML 配置文件")
 	listen := flags.String("listen", "", "覆盖监听地址")
-	mode := flags.String("mode", "", "运行模式：local、server 或 desktop")
+	mode := flags.String("mode", "", "监听方式：loopback（默认，本机浏览器或 App）、server（HTTPS 反代）")
 	origin := flags.String("origin", "", "服务器模式对外 HTTPS Origin")
 	dataDir := flags.String("data-dir", "", "覆盖数据目录")
-	workspaceRoot := flags.String("workspace-root", "", "工作区目录")
 	printURL := flags.Bool("print-url", false, "服务就绪后向标准输出写入本机 URL")
-	demo := flags.Bool("demo", false, "启用本地演示回复")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -115,7 +103,7 @@ func run() error {
 	}
 	var cfg config
 	cfg.Server.Listen = "127.0.0.1:8080"
-	cfg.Server.Mode = "local"
+	cfg.Server.Mode = "loopback"
 	cfg.DataDir = "./data"
 	cfg.Model.Provider = model.ProtocolChat
 	cfg.Model.BaseURL = "https://api.openai.com/v1"
@@ -137,10 +125,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		if cfg.WorkspaceRoot != "" && !filepath.IsAbs(cfg.WorkspaceRoot) {
-			cfg.WorkspaceRoot = filepath.Join(filepath.Dir(*configPath), cfg.WorkspaceRoot)
-		}
-		if !filepath.IsAbs(cfg.DataDir) {
+		if cfg.DataDir != "" && !filepath.IsAbs(cfg.DataDir) {
 			cfg.DataDir = filepath.Join(filepath.Dir(*configPath), cfg.DataDir)
 		}
 	}
@@ -153,40 +138,31 @@ func run() error {
 	if *origin != "" {
 		cfg.Server.Origin = *origin
 	}
-	if cfg.Server.Mode != "local" && cfg.Server.Mode != "server" && cfg.Server.Mode != "desktop" {
-		return errors.New("server.mode 必须为 local、server 或 desktop")
-	}
-	desktop := cfg.Server.Mode == "desktop"
-	cfg.desktop = desktop
-	if cfg.Server.Mode == "server" {
-		parsed, err := url.Parse(cfg.Server.Origin)
-		if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Hostname() == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return errors.New("server.origin 必须为对外 HTTPS Origin，例如 https://example.com")
+	switch cfg.Server.Mode {
+	case "server":
+		origin, err := publicHTTPSOrigin(cfg.Server.Origin)
+		if err != nil {
+			return err
 		}
-		cfg.Server.Origin = "https://" + parsed.Host
-		if *demo {
-			return errors.New("服务器模式不支持本机演示模式")
+		cfg.Server.Origin = origin
+	case "loopback":
+		if cfg.Server.Origin != "" {
+			return errors.New("只有 server 监听方式接受 server.origin")
 		}
+	default:
+		return errors.New("server.mode 必须为 loopback 或 server；不再支持旧的共享口令启动")
 	}
 	if *dataDir != "" {
 		cfg.DataDir = *dataDir
-	}
-	if *workspaceRoot != "" {
-		cfg.WorkspaceRoot = *workspaceRoot
-	}
-	if cfg.WorkspaceRoot == "" {
-		cfg.WorkspaceRoot = filepath.Join(cfg.DataDir, "workspace")
 	}
 	host, _, err := net.SplitHostPort(cfg.Server.Listen)
 	if err != nil {
 		return err
 	}
-	if host != "localhost" && (net.ParseIP(host) == nil || !net.ParseIP(host).IsLoopback()) {
-		return errors.New("首期服务仅监听本机地址")
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return errors.New("仅支持回环 IP 监听；对外服务请用 HTTPS 反向代理")
 	}
-	if desktop && host != "127.0.0.1" {
-		return errors.New("桌面模式必须监听 127.0.0.1")
-	}
+
 	if cfg.Runtime.MaxActiveRuns < 1 || cfg.Runtime.MaxActiveRuns > 2 {
 		return errors.New("max_active_runs 必须为 1 或 2")
 	}
@@ -209,253 +185,63 @@ func run() error {
 	if cfg.Model.Provider != "" && cfg.Model.Provider != model.ProtocolResponses && cfg.Model.Provider != model.ProtocolChat {
 		return errors.New("模型协议必须为 responses 或 chat_completions")
 	}
+	if cfg.Tickets.BaseURL != "" || cfg.Tickets.HealthURL != "" || cfg.Tickets.CredentialEnv != "" || cfg.Tickets.HealthCredentialEnv != "" {
+		return errors.New("账号服务尚不支持旧版 tickets.* 实例级工单配置；请保留该配置用于后续按账号绑定，不会启动旧的共享工单入口")
+	}
+	if cfg.Benchmark.EventSecretEnv != "" {
+		return errors.New("账号服务尚不支持 benchmark.event_secret_env 回调；不能在缺少账号归属时注册事件接收入口")
+	}
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err
 	}
-	if cfg.Server.Mode == "server" || desktop {
-		cfg.DataDir, err = filepath.EvalSymlinks(cfg.DataDir)
-		if err != nil {
-			return err
-		}
+	cfg.DataDir, err = filepath.EvalSymlinks(cfg.DataDir)
+	if err != nil {
+		return err
 	}
 	lock, err := work.LockDataDir(cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	databasePath := filepath.Join(cfg.DataDir, "clusbot.db")
-	var desktopExisting bool
-	if desktop {
-		desktopExisting, err = desktopPrepareData(cfg.DataDir)
-		if err != nil {
-			return err
-		}
-	}
-	db, err := work.Open(databasePath)
+
+	ctx := context.Background()
+	db, err := openAccountInstance(ctx, cfg.DataDir)
 	if err != nil {
 		return err
 	}
 	defer db.Close()
-	if desktop {
-		cfg.Server.Mode, err = desktopDataMode(context.Background(), db, desktopExisting, cfg.DataDir)
-		if err != nil {
-			return err
-		}
-	}
-	if err = db.EnsureAccountMode(context.Background(), cfg.Server.Mode == "server"); err != nil {
-		return err
-	}
-	if desktop && cfg.Server.Mode == "server" {
-		if err = desktopFinishInitialization(cfg.DataDir); err != nil {
-			return err
-		}
+	configure := func(ctx context.Context, api *httpapi.Server) (func(), error) {
+		return startAccountRuntime(ctx, api, cfg)
 	}
 	if cfg.Server.Mode == "server" {
-		if desktop {
-			return serveDesktopAccounts(db, cfg.Server.Listen, *printURL,
-				func(ctx context.Context, api *httpapi.Server) (func(), error) {
-					return startAccountRuntime(ctx, api, cfg)
-				})
-		}
-		return serveAccounts(db, cfg.Server.Listen, cfg.Server.Origin, *printURL,
-			func(ctx context.Context, api *httpapi.Server) (func(), error) {
-				return startAccountRuntime(ctx, api, cfg)
-			})
+		return serveAccounts(db, cfg.Server.Listen, cfg.Server.Origin, *printURL, configure)
 	}
-	tokenPath := filepath.Join(cfg.DataDir, "access-token")
-	token, err := accessToken(tokenPath)
-	if err != nil {
-		return err
-	}
-	db.SetConnectionCredentialKey(token)
-	settings := &model.Settings{
-		Store:           db,
-		BaseURLOverride: strings.TrimSpace(os.Getenv("CLUSBOT_MODEL_BASE_URL")),
-		ModelIDOverride: strings.TrimSpace(os.Getenv("CLUSBOT_MODEL_ID")),
-		Demo:            *demo,
-		MaxRequestBytes: cfg.Runtime.MaxModelRequestBytes,
-	}
-	initial, err := settings.Initialize(context.Background(), work.ModelSettings{
-		Protocol: cfg.Model.Provider, BaseURL: cfg.Model.BaseURL, ModelID: cfg.Model.ID, KeyRef: cfg.Model.KeyRef,
-	})
-	if err != nil {
-		return err
-	}
-	if err = db.OpenUploads(filepath.Join(cfg.DataDir, "uploads")); err != nil {
-		return err
-	}
-	workspacePath, err := filepath.Abs(cfg.WorkspaceRoot)
-	if err != nil {
-		return err
-	}
-	if err = db.OpenWorkspace(workspacePath); err != nil {
-		return err
-	}
-	if err = db.RecoverPublications(); err != nil {
-		return err
-	}
-	if err = db.Recover(); err != nil {
-		return err
-	}
-	// 运行时恢复（扫描持久工作/未决操作/等待）。
-	if _, err = db.RecoverRuntime(context.Background(), time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("运行时恢复失败：%w", err)
-	}
-	// 本地演示模式注入领域台账样例（幂等，仅 -demo 启用）。
-	if *demo {
-		if err = db.SeedDomainDemo(context.Background()); err != nil {
-			return fmt.Errorf("注入领域演示数据失败：%w", err)
-		}
-	}
-	if err = db.ExpireApprovals(context.Background()); err != nil {
-		return err
-	}
-	assets, err := fs.Sub(web.Assets, web.AssetDirectory)
-	if err != nil {
-		return err
-	}
-	listener, err := net.Listen("tcp", cfg.Server.Listen)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	tcp := listener.Addr().(*net.TCPAddr)
-	port := fmt.Sprint(tcp.Port)
-	address := net.JoinHostPort(tcp.IP.String(), port)
-	hosts := []string{address, net.JoinHostPort(host, port), net.JoinHostPort("localhost", port)}
-	var ticketProvider *work.TicketProvider
-	var ticketChecker work.EffectChecker
-	if cfg.Tickets.BaseURL != "" {
-		ticketProvider, err = work.NewTicketProvider(cfg.Tickets.BaseURL, "tickets", os.Getenv(cfg.Tickets.CredentialEnv))
-		if err != nil {
-			return err
-		}
-	}
-	if cfg.Tickets.HealthURL != "" {
-		if ticketProvider == nil {
-			return errors.New("配置工单健康验证前需要 tickets.base_url")
-		}
-		ticketChecker, err = work.NewTicketEffectChecker(ticketProvider, cfg.Tickets.HealthURL, os.Getenv(cfg.Tickets.HealthCredentialEnv))
-		if err != nil {
-			return err
-		}
-	}
-	var benchmarkProvider work.BenchmarkProvider
-	var benchmarkEvents *work.BenchmarkEventReceiver
-	if cfg.Benchmark.BaseURL != "" {
-		p, err := work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
-			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
-		if err != nil {
-			return err
-		}
-		if err := db.InstallBenchmarkProvider(context.Background(), p); err != nil {
-			return err
-		}
-		benchmarkProvider = p
-		if cfg.Benchmark.EventSecretEnv != "" {
-			benchmarkEvents, err = p.EventReceiver(os.Getenv(cfg.Benchmark.EventSecretEnv))
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	var discoverySource work.DiscoveryScanSource
-	if cfg.Discovery.BaseURL != "" {
-		p, err := work.NewHTTPDiscoverySource(cfg.Discovery.BaseURL, cfg.Discovery.Source, cfg.Discovery.Scopes, os.Getenv(cfg.Discovery.CredentialEnv))
-		if err != nil {
-			return err
-		}
-		if err = db.InstallDiscoverySource(context.Background(), p); err != nil {
-			return err
-		}
-		discoverySource = p
-	}
-
-	benchmarkProvider = db.DynamicBenchmarkProvider(benchmarkProvider)
-	discoverySource = db.DynamicDiscoverySource(discoverySource)
-	ticketChecker = db.DynamicEffectChecker(ticketChecker)
-
-	api := httpapi.Server{
-		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, TicketEffectChecker: ticketChecker, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
-		MaxPendingExplicitTasks: cfg.Runtime.MaxPendingExplicitTasks, ModelConcurrency: cfg.Runtime.MaxActiveRuns,
-	}
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-	// 运行时循环（推进 Timer/未决核对/确定性工作；模型不可用时确定性工作独立存活）。
-	modelAvailable := func() bool { return api.ModelAvailable(ctx) }
-	runtimeLoop := work.NewRuntimeLoop(db, modelAvailable)
-	var background sync.WaitGroup
-	// 注册资产验收状态查询处理器并启动本地嵌入执行器（消费确定性 work_unit）。
-	executor, err := db.EnableAssetAcceptanceQuery(ctx)
-	if err != nil {
-		return fmt.Errorf("启动领域查询执行器失败：%w", err)
-	}
-	background.Go(func() { runtimeLoop.Run(ctx, 250*time.Millisecond, 0) })
-	background.Go(func() { executor.Run(ctx, 100*time.Millisecond) })
-	server := &http.Server{Handler: api.Handler(assets), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, BaseContext: func(net.Listener) context.Context { return ctx }}
-	var serveErr error
-	done := make(chan error, 1)
-	go func() { done <- server.Serve(listener) }()
-	workers := db.Start(ctx, settings, cfg.Runtime.MaxActiveRuns, work.RunLimits{
-		ActiveTime:               time.Duration(cfg.Runtime.MaxRunSeconds) * time.Second,
-		ModelTimeout:             time.Duration(cfg.Runtime.ModelTimeoutSeconds) * time.Second,
-		OutputTokens:             cfg.Runtime.MaxOutputTokens,
-		ModelRunPriorityFairness: cfg.Runtime.ModelRunPriorityFairness,
-	})
-	approvalWorker := db.StartApprovalWorker(ctx)
-	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })
-	background.Go(func() { db.RunBenchmarks(ctx, benchmarkProvider) })
-	background.Go(func() { db.RunDiscovery(ctx, discoverySource) })
-
-	if ticketProvider != nil {
-		background.Go(func() { db.RunTicketOperations(ctx, ticketProvider, ticketChecker) })
-	}
-	tokenPath, _ = filepath.Abs(tokenPath)
-	slog.Info("ClusBot 已启动", "url", "http://"+address, "token_file", tokenPath, "model_mode", initial.Mode)
-	if *printURL {
-		fmt.Println("http://" + address)
-	}
-	select {
-	case <-ctx.Done():
-	case serveErr = <-done:
-		cancel()
-	}
-	shutdown, stop := context.WithTimeout(context.Background(), 5*time.Second)
-	defer stop()
-	if err = server.Shutdown(shutdown); err != nil {
-		server.Close()
-	}
-	workers.Wait()
-	approvalWorker.Wait()
-	background.Wait()
-	if errors.Is(serveErr, http.ErrServerClosed) {
-		return nil
-	}
-	return serveErr
+	return serveLoopbackAccounts(db, cfg.Server.Listen, *printURL, configure)
 }
 
-func accessToken(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err == nil {
-		token := strings.TrimSpace(string(data))
-		decoded, decodeErr := hex.DecodeString(token)
-		if decodeErr != nil || len(decoded) != 32 {
-			return "", errors.New("访问口令文件无效")
+func publicHTTPSOrigin(raw string) (string, error) {
+	invalid := errors.New("server.origin 必须为对外 HTTPS Origin，例如 https://example.com")
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.Opaque != "" ||
+		(u.EscapedPath() != "" && u.EscapedPath() != "/") || u.RawQuery != "" ||
+		u.ForceQuery || u.Fragment != "" || strings.Contains(raw, "#") || strings.HasSuffix(u.Host, ":") {
+		return "", invalid
+	}
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") && (!strings.HasPrefix(u.Host, "[") || net.ParseIP(host) == nil) {
+		return "", invalid
+	}
+	port := 443
+	if u.Port() != "" {
+		port, err = strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return "", invalid
 		}
-		if err = os.Chmod(path, 0600); err != nil {
-			return "", err
-		}
-		return token, nil
 	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
+	if port != 443 {
+		host = net.JoinHostPort(host, strconv.Itoa(port))
+	} else if strings.Contains(host, ":") {
+		host = "[" + host + "]"
 	}
-	var bytes [32]byte
-	rand.Read(bytes[:])
-	token := hex.EncodeToString(bytes[:])
-	if err = os.WriteFile(path, []byte(token+"\n"), 0600); err != nil {
-		return "", err
-	}
-	return token, nil
+	return "https://" + host, nil
 }

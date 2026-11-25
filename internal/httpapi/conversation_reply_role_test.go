@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
 
 	"clusbot/internal/model"
 	"clusbot/internal/work"
@@ -31,8 +30,8 @@ func TestConversationReplyRoleHTTPRequiresDistinctConsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	api := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("test")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	api := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer api.close()
 	api.cookie = api.login()
 	if api.cookie == "" {

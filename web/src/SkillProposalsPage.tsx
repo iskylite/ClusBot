@@ -12,10 +12,11 @@ const errorText = (error:unknown) => error instanceof Error?error.message:'操�
 const targetKey = (c:CaseContext) => JSON.stringify([c.scope_label,c.goal])
 const proposalVersion = (p:SkillProposal) => ({version:p.skill.version,revision:p.skill.revision,sha256:p.skill.sha256})
 const replayStatus:Record<string,string> = {timeout:'超时',output_limit:'输出超限',model_error:'模型请求失败',empty_output:'无输出'}
-const replayArmLabel = (arm:SkillReplayArm) => (arm==='base_skill'||arm==='current'?'原版 Skill':'提案 Skill')
+const replayArmLabel = (arm:SkillReplayArm) => arm==='none'?'不使用 Skill':arm==='base_skill'||arm==='current'?'原版 Skill':'提案 Skill'
+const approvedReplay = (p:SkillProposal) => p.replay?.contract==='isolated_holdout_paired' && p.replay.passed
 
 function ReplaySummary({report}:{report:SkillReplay}) {
-  const arms = (['base_skill','proposed_skill','current','candidate'] as const).filter(arm=>Boolean(report.metrics[arm]))
+  const arms = (['none','base_skill','proposed_skill','current','candidate'] as const).filter(arm=>Boolean(report.metrics[arm]))
   return <div>
     <p><strong>{report.passed?'正文重放通过':'正文重放未通过'}</strong> · {report.model_config.model}
       {report.suite_sha256 && <span className="muted"> · 基准集 {report.suite_sha256.slice(0,8)}</span>}</p>
@@ -28,6 +29,9 @@ function ReplaySummary({report}:{report:SkillReplay}) {
         输入 Token {tokens(metrics.input_tokens_known_total,metrics.input_usage_reported)}，输出 Token {tokens(metrics.output_tokens_known_total,metrics.output_usage_reported)}，
         请求耗时 {(metrics.duration_ms/1000).toFixed(1)} 秒。</p>
     })}
+    {Boolean(report.gains?.length) && <p>改善：{report.gains?.join('、')}</p>}
+    {Boolean(report.regressions?.length) && <p>退步或新增错误复用：{report.regressions?.join('、')}</p>}
+    {Boolean(report.incomplete?.length) && <p>未完成：{report.incomplete?.join('、')}</p>}
     <details><summary>逐项重放结果</summary>
       <ul>{report.results.map(result=><li key={result.case_id+'-'+result.policy}>
         {result.case_id} · {replayArmLabel(result.policy)} · {result.status==='completed'
@@ -38,22 +42,10 @@ function ReplaySummary({report}:{report:SkillReplay}) {
   </div>
 }
 
-function ReplayControls({proposal,busy,replay}:{proposal:SkillProposal;busy:boolean;replay:(suite?:unknown)=>Promise<void>}) {
+function ReplayControls({busy,replay}:{busy:boolean;replay:(suite:unknown)=>Promise<void>}) {
   const [file,setFile]=useState<File>()
   const [running,setRunning]=useState(false)
   const [error,setError]=useState('')
-  const canUseBoundSuite = Boolean(proposal.evaluation_run_id && proposal.suite_sha256)
-
-  async function runBound() {
-    if(!canUseBoundSuite||busy||running)return
-    setError('')
-    setRunning(true)
-    try {
-      await replay(undefined)
-    } catch(e) {setError(errorText(e))}
-    finally {setRunning(false)}
-  }
-
   async function run() {
     if(!file||busy||running)return
     setError('')
@@ -61,19 +53,17 @@ function ReplayControls({proposal,busy,replay}:{proposal:SkillProposal;busy:bool
     try {
       const suite=JSON.parse(await file.text()) as {cases?:CaseContext[];holdout_task_ids?:string[]}
       if(!Array.isArray(suite?.cases))throw new Error('请选择含用例的 JSON 文件。')
-      const cases=proposal.suite_sha256 ? suite.cases : suite.cases.filter(c=>c?.scope_label?.trim()===proposal.skill.scope_label)
-      if(cases.length===0)throw new Error('文件里没有与此提案范围匹配的用例。')
-      await replay({cases,holdout_task_ids:suite.holdout_task_ids})
+      if(suite.cases.length<2||suite.cases.length>12)throw new Error('独立留出集需要 2 到 12 个用例。')
+      await replay(suite)
     } catch(e) {setError(errorText(e))}
     finally {setRunning(false)}
   }
 
   return <div className="memory-form">
-    {canUseBoundSuite && <div><button className="outline" disabled={busy||running} onClick={()=>void runBound()}>用绑定基准集运行正文重放</button></div>}
-    <label>正文重放用例<input type="file" accept=".json,application/json" disabled={busy||running}
+    <label>独立留出集（不使用上面的训练评测基准集）<input type="file" accept=".json,application/json" disabled={busy||running}
       onChange={event=>{setFile(event.target.files?.[0]);setError('')}}/></label>
     <div><button className="outline" disabled={!file||busy||running} onClick={()=>void run()}>使用上传用例重放</button></div>
-    {running&&<p className="muted" role="status">正在重放原版和提案版…</p>}
+    {running&&<p className="muted" role="status">正在对比不使用 Skill、原版和提案版…</p>}
     {error&&<p className="error" role="alert">{error}</p>}
   </div>
 }
@@ -84,8 +74,6 @@ export function SkillProposalsPage({navigate,onChange}:{navigate:(path:string)=>
   const [report,setReport]=useState<Report>()
   const [evalRunId,setEvalRunId]=useState('')
   const [selected,setSelected]=useState('')
-  const [matchMode,setMatchMode]=useState<'goal_exact'|'scope_keywords'|'scope_all'>('goal_exact')
-  const [matchKeywords,setMatchKeywords]=useState('')
   const [synthesize,setSynthesize]=useState(false)
   const [suiteFile,setSuiteFile]=useState<File>()
   const [evaluating,setEvaluating]=useState(false)
@@ -127,25 +115,6 @@ export function SkillProposalsPage({navigate,onChange}:{navigate:(path:string)=>
     if(first)setSelected(targetKey(first))
   }
 
-  async function chooseReport(file?:File) {
-    setError('')
-    setEvalRunId('')
-    setReport(undefined)
-    setSelected('')
-    if(!file)return
-    try {
-      const value=JSON.parse(await file.text()) as Report
-      if(!Array.isArray(value.case_contexts)||!Array.isArray(value.results)||
-        !value.case_contexts.every(c=>c && typeof c.scope_label==='string' && typeof c.goal==='string' && typeof c.id==='string')||
-        !value.results.every(r=>r && typeof r.case_id==='string')) {
-        throw new Error('请使用含用例范围和目标的隔离评测报告。')
-      }
-      setReport(value)
-      const first=value.case_contexts.find(c=>c.scope_label)
-      if(first)setSelected(targetKey(first))
-    } catch(e) {setError(errorText(e))}
-  }
-
   async function act(path:string, input:unknown) {
     if(busy)return
     setError('')
@@ -162,38 +131,20 @@ export function SkillProposalsPage({navigate,onChange}:{navigate:(path:string)=>
 
   function propose() {
     const target=targets.find(c=>targetKey(c)===selected)
-    if(!target||!report)return
-    const keywords=matchMode==='scope_keywords'
-      ? matchKeywords.split(/[,，\n]+/).map(s=>s.trim()).filter(Boolean) : undefined
-    if(evalRunId) {
-      void act('/skill-proposals',{
-        scope_label:target.scope_label,
-        goal:target.goal,
-        evaluation_run_id:evalRunId,
-        match_mode:matchMode,
-        match_keywords:keywords,
-        synthesize,
-      })
-      return
-    }
-    const contexts=report.case_contexts.filter(c=>targetKey(c)===selected)
-    const ids=new Set(contexts.map(c=>c.id))
-    const results=report.results.filter(r=>ids.has(r.case_id)).map(({answer:_,...r})=>r)
+    if(!target||!evalRunId)return
     void act('/skill-proposals',{
       scope_label:target.scope_label,
       goal:target.goal,
-      report:{...report,case_contexts:contexts,results},
-      match_mode:matchMode,
-      match_keywords:keywords,
+      evaluation_run_id:evalRunId,
       synthesize,
     })
   }
 
   return <main className="main memory-list">
     <button type="button" className="text-button back" onClick={()=>navigate('/memory')}><ArrowLeft size={16}/>个人记忆</button>
-    <header className="page-heading"><h1>Skill 提案</h1></header>
+    <header className="page-heading"><h1>私有 Skill 提案</h1></header>
     <section className="work-goal memory-form">
-      <h2>在线三臂评测（推荐）</h2>
+      <h2>服务端三臂评测</h2>
       <label>评测基准集（JSON）<input type="file" accept=".json,application/json" disabled={busy||evaluating}
         onChange={event=>{setSuiteFile(event.target.files?.[0]);setError('')}}/></label>
       <div><button className="outline" disabled={!suiteFile||busy||evaluating} onClick={()=>void runServerEvaluation()}>运行服务端三臂评测</button></div>
@@ -205,29 +156,18 @@ export function SkillProposalsPage({navigate,onChange}:{navigate:(path:string)=>
           </button>
         </li>)}</ul>
       </details>}
-      <details><summary>或导入离线 CLI 评测报告</summary>
-        <label>离线评测报告<input type="file" accept=".json,application/json" disabled={busy}
-          onChange={event=>void chooseReport(event.target.files?.[0])}/></label>
-      </details>
       {targets.length>0 && <>
         <label>适用目标<select value={selected} disabled={busy} onChange={event=>setSelected(event.target.value)}>
           {targets.map(c=><option key={targetKey(c)} value={targetKey(c)}>{c.scope_label} · {c.goal}</option>)}
         </select></label>
-        <label>生效范围<select value={matchMode} disabled={busy} onChange={event=>setMatchMode(event.target.value as 'goal_exact'|'scope_keywords'|'scope_all')}>
-          <option value="goal_exact">仅匹配相同目标（默认）</option>
-          <option value="scope_keywords">同范围关键词匹配</option>
-          <option value="scope_all">同范围全部任务</option>
-        </select></label>
-        {matchMode==='scope_keywords' && <label>匹配关键词（逗号分隔）<input type="text" value={matchKeywords} disabled={busy}
-          placeholder="例如：巡检, 健康检查, pod7" onChange={event=>setMatchKeywords(event.target.value)}/></label>}
         <label><input type="checkbox" checked={synthesize} disabled={busy} onChange={event=>setSynthesize(event.target.checked)}/> 使用模型综合整理并去重草案</label>
       </>}
-      <div><button className="outline" disabled={!selected||busy} onClick={propose}>生成提案</button></div>
+      <div><button className="outline" disabled={!selected||!evalRunId||busy} onClick={propose}>生成提案</button></div>
     </section>
     {error && <p className="error" role="alert">{error}</p>}
     {items?.map(p=><section className="work-goal" key={p.id}>
       <h2>{p.skill.scope_label} · {p.goal}</h2>
-      <p className="muted">{p.status==='pending'&&!p.replay?.passed?'待重放通过':label[p.status]} · {p.base_version===null?'无基准版本':'基准 v'+p.base_version} → v{p.skill.version}
+      <p className="muted">{p.status==='pending'&&!approvedReplay(p)?'待重放通过':label[p.status]} · {p.base_version===null?'无基准版本':'基准 v'+p.base_version} → v{p.skill.version}
         {p.match_mode && ` · ${matchModeLabel[p.match_mode]??p.match_mode}`}
         {p.match_keywords?.length ? `（${p.match_keywords.join('、')}）` : ''}
         {p.draft_mode && ` · ${draftModeLabel[p.draft_mode]??p.draft_mode}`}
@@ -250,14 +190,14 @@ export function SkillProposalsPage({navigate,onChange}:{navigate:(path:string)=>
             : '/tasks/'+src.task_id+'#message-'+src.message_id)}>{src.artifact_id?'查看验收来源':'查看纠正来源'}</button>)}
       </div>}
       {p.replay&&<ReplaySummary report={p.replay}/>}
-      {p.status==='pending'&&<ReplayControls proposal={p} busy={busy} replay={suite=>act('/skill-proposals/'+p.id+'/replay',{...proposalVersion(p),suite})}/>}
+      {p.status==='pending'&&<ReplayControls busy={busy} replay={suite=>act('/skill-proposals/'+p.id+'/replay',{...proposalVersion(p),suite})}/>}
       <div className="task-actions">
-        {p.status==='pending' && p.replay?.passed && <button className="primary" disabled={busy} onClick={()=>void act('/skill-proposals/'+p.id+'/approve',
+        {p.status==='pending' && approvedReplay(p) && <button className="primary" disabled={busy} onClick={()=>void act('/skill-proposals/'+p.id+'/approve',
           {...proposalVersion(p),replay_id:p.replay?.id})}>确认生效 v{p.skill.version}</button>}
-        {p.skill.active && p.base_version!==null && <button className="outline" disabled={busy} onClick={()=>void act('/skills/'+p.skill.skill_id+'/activate',
-          {version:p.base_version,revision:p.skill.revision,sha256:p.base_sha256})}>回滚到 v{p.base_version}</button>}
-        {p.skill.active && p.base_version===null && <button className="outline" disabled={busy} onClick={()=>void act('/skills/'+p.skill.skill_id+'/disable',
-          {revision:p.skill.revision})}>停用 v{p.skill.version}</button>}
+        {p.skill.active && p.base_version!==null && <button className="outline" disabled={busy} onClick={()=>void act('/skill-proposals/'+p.id+'/rollback',
+          proposalVersion(p))}>回滚到私有 v{p.base_version}</button>}
+        {p.skill.active && <button className="outline" disabled={busy} onClick={()=>void act('/skill-proposals/'+p.id+'/rollback',
+          {...proposalVersion(p),disable:true})}>停用本账号私有版本</button>}
       </div>
     </section>)}
   </main>

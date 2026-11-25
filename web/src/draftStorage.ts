@@ -8,6 +8,14 @@ declare global {
   }
 }
 
+export const accountDraftPrefix='clusbot.account-draft.'
+
+// Include the principal before the resource so "new" drafts from one account
+// are never picked up by another, even after restoring a native snapshot.
+export function accountDraftKey(principalID:string,resource:string) {
+  return encodeURIComponent(principalID).replaceAll('.', '%2E')+'.'+resource
+}
+
 export function readDraft(key:string) {
   return window.clusbotDrafts ? window.clusbotDrafts[key] : sessionStorage.getItem(key)
 }

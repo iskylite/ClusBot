@@ -1,9 +1,9 @@
-import {clearDrafts,readDraft,writeDraft} from './draftStorage'
+import {accountDraftPrefix,clearDrafts,readDraft,writeDraft} from './draftStorage'
 import type {Memory,MemorySource} from './api'
 
 export type MemoryFields=Pick<Memory,'kind'|'title'|'content'|'pinned'>
 export type MemoryDraft={fields:MemoryFields;original?:Memory;source?:MemorySource}
-const prefix='clusbot.memory-draft.v1.'
+const prefix=accountDraftPrefix+'memory.'
 const drafts=new Map<string,MemoryDraft>()
 
 export function readMemoryDraft(key:string):MemoryDraft|undefined {

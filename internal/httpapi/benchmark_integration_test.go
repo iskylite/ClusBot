@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"clusbot/internal/model"
@@ -130,8 +129,8 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		if _, err := store.RecoverRuntime(ctx, time.Now().UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
-		server := Server{Store: store, Settings: settings, BenchmarkProvider: provider, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-		a := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("integration")}})), store: store}
+		server := Server{Store: store, Settings: settings, BenchmarkProvider: provider, Hosts: []string{"127.0.0.1"}}
+		a := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 		a.cookie = a.login()
 		if a.cookie == "" {
 			t.Fatal("cannot authenticate to local API")
@@ -166,9 +165,10 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		}
 	}
 	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := a.store.ImportDomainAssets(ctx, []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture-node", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := a.store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, a.store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture-node", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
 		t.Fatal(err)
 	}
+
 	cases := []work.BenchmarkCase{}
 	for _, key := range []string{"first", "second"} {
 		cases = append(cases, work.BenchmarkCase{Key: key, Targets: []string{"node-1"}, Binding: work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"},
@@ -449,7 +449,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	}
 	// The dedicated language interpretation is optional and only makes a
 	// proposal; a later explicit action owns the actual execution change.
-	suggestTask, err := a.store.SubmitBenchmarkRun(ctx, "user:session", work.BenchmarkRunRequest{RequestKey: "execution-natural-task", Profile: "full", Version: 1}, provider)
+	suggestTask, err := a.store.SubmitBenchmarkRun(ctx, businessFixturePrincipal(t, a.store), work.BenchmarkRunRequest{RequestKey: "execution-natural-task", Profile: "full", Version: 1}, provider)
 	if err != nil {
 		t.Fatal(err)
 	}

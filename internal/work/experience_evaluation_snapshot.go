@@ -71,7 +71,13 @@ func snapshotEvaluationCasesTx(ctx context.Context, tx *sql.Tx, suite Experience
 			if err != nil {
 				return nil, fmt.Errorf("用例 %q 的现行策略来源不可用: %w", c.ID, err)
 			}
-			snapshot.CurrentSources = []ExperienceEvaluationSource{{ArtifactID: source.String, AcceptanceRevision: int(revision.Int64), Digest: hash.String}}
+			if snapshot.Current != nil {
+				var taskID string
+				if err := tx.QueryRowContext(ctx, "SELECT task_id FROM artifacts WHERE id=?", source.String).Scan(&taskID); err != nil {
+					return nil, err
+				}
+				snapshot.CurrentSources = []ExperienceEvaluationSource{{TaskID: taskID, ArtifactID: source.String, AcceptanceRevision: int(revision.Int64), Digest: hash.String}}
+			}
 		}
 		snapshot.CandidateText, snapshot.CandidateSources, err = evaluationCandidates(ctx, tx, c, string(excluded))
 		if err != nil {

@@ -170,7 +170,7 @@ func benchmarkAdmissionCandidateTx(ctx context.Context, tx *sql.Tx, actor string
 	var authorizations []any
 	stamp := now()
 	for _, c := range profile.Cases {
-		_, grants, err := freezeBenchmarkCase(tx, actor, c, provider, stamp)
+		_, grants, err := freezeBenchmarkCase(ctx, tx, actor, c, provider, stamp)
 		if err != nil {
 			return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
 		}

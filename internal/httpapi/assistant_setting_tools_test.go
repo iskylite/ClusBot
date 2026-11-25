@@ -81,8 +81,8 @@ func TestAssistantSettingProjectionsOmitCredentialsAndPrivateContext(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, Token: "a1-token", Hosts: []string{"127.0.0.1"}}
-	api := &a1Server{ts: httptest.NewServer(server.Handler(fstest.MapFS{"index.html": {Data: []byte("fixture")}})), store: store}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
+	api := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer api.ts.Close()
 	api.cookie = api.login()
 	if api.cookie == "" {
@@ -178,7 +178,7 @@ func TestAssistantModelProjectionRespectsServerAccountPermissions(t *testing.T) 
 	if _, err := settings.Initialize(ctx, work.ModelSettings{BaseURL: "http://127.0.0.1:1", ModelID: "member-visible-model", Protocol: model.ProtocolResponses, KeyRef: "env:ASSISTANT_MISSING_KEY"}); err != nil {
 		t.Fatal(err)
 	}
-	server := Server{Store: store, Settings: settings, ServerMode: true, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
+	server := Server{Store: store, Settings: settings, Origin: "https://ops.example", Hosts: []string{"ops.example"}}
 	personalStores := make(map[string]*work.Store)
 	server.PersonalAPI = func(principal string) (http.Handler, error) {
 		personal := personalStores[principal]

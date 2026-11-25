@@ -4,9 +4,56 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// Standalone runtime fixtures predate the HTTP account boundary. Keep their
+// synthetic actor here, never in the operator's production importer.
+func (s *Store) ImportDomainAssets(ctx context.Context, entries []DomainAssetEntry) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = importDomainAssets(ctx, tx, "user:session", entries); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func TestImportDomainAssetsForAccountRequiresMatchingBusinessOwner(t *testing.T) {
+	ctx := t.Context()
+	store, err := Open(filepath.Join(t.TempDir(), "assets.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner := "user:" + strings.Repeat("a", 32)
+	entries := []DomainAssetEntry{{ObjectRef: "account-node", Kind: "node", Identity: "fixture", Read: true}}
+	if err := store.ImportDomainAssetsForAccount(ctx, owner, entries); !errors.Is(err, ErrAuthorizationDenied) {
+		t.Fatalf("unbound instance accepted account import: %v", err)
+	}
+	if err := store.BindAccountBusinessStore(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	for _, actor := range []string{"user:session", "user:" + strings.Repeat("b", 32)} {
+		if err := store.ImportDomainAssetsForAccount(ctx, actor, entries); !errors.Is(err, ErrAuthorizationDenied) {
+			t.Fatalf("owner mismatch accepted account import: %v", err)
+		}
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT count(*) FROM ops_assets`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("denied imports left rows: %d, %v", count, err)
+	}
+	if err := store.ImportDomainAssetsForAccount(ctx, owner, entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow(`SELECT count(*) FROM authorizations WHERE subject=? AND owner=? AND object_ref=?`, owner, owner, entries[0].ObjectRef).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("matching owner did not get the intended grant: %d, %v", count, err)
+	}
+}
 
 func TestImportDomainAssetsExplicitPODMembership(t *testing.T) {
 	store, err := Open(filepath.Join(t.TempDir(), "pod-import.db"))

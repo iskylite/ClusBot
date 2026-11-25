@@ -8,7 +8,7 @@ import (
 
 // domainSnapshot 返回 领域台账的只读快照（GET /api/v1/domain/snapshot）。
 //
-// 认证由 Handler 集中处理（!s.authenticated(r) 统一返回 401），这里不重复校验；
+// 认证由 Handler 集中校验账号会话，这里不重复校验；
 // 数据读取与 DTO 契约见 internal/work/runtime_domain_read.go。
 func (s Server) domainSnapshot(w http.ResponseWriter, r *http.Request) {
 	snapshot, err := s.Store.DomainSnapshot(r.Context())
@@ -36,7 +36,9 @@ func (s Server) syncFaultSegments(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Scope string `json:"scope"`
 	}
-	_ = decode(w, r, &in)
+	if !decode(w, r, &in) {
+		return
+	}
 	out, err := s.Store.SyncFaultSegmentsFromMCP(r.Context(), in.Scope)
 	if err != nil {
 		writeError(w, err)

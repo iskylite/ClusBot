@@ -9,8 +9,8 @@ import (
 
 func (s Server) submitIsolatedReply(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if !s.authenticated(r) {
-		fail(w, 401, "unauthorized", "需要本机登录")
+	if _, ok := accountFromContext(r); !ok {
+		fail(w, 401, "unauthorized", "请先登录")
 		return
 	}
 	var input work.IsolatedReplyInput

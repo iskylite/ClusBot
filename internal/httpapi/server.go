@@ -2,10 +2,7 @@ package httpapi
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,9 +23,7 @@ import (
 
 type Server struct {
 	Store                   *work.Store
-	Token                   string
 	Hosts                   []string
-	ServerMode              bool
 	Origin                  string
 	authLimiter             *authLimiter
 	PersonalAPI             func(string) (http.Handler, error)
@@ -65,17 +60,9 @@ type submission struct {
 }
 
 func (s Server) Handler(assets fs.FS) http.Handler {
-	// A server-mode database must never be exposed through the legacy shared
-	// token, even when another embedding accidentally changes its configuration.
-	if s.Store != nil {
-		if err := s.Store.EnsureAccountMode(context.Background(), s.ServerMode); err != nil {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				fail(w, http.StatusServiceUnavailable, "invalid_account_mode", "数据库与服务模式不兼容")
-			})
-		}
-	} else if s.ServerMode {
+	if s.Store == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			fail(w, http.StatusServiceUnavailable, "invalid_account_mode", "账号数据库不可用")
+			fail(w, http.StatusServiceUnavailable, "account_storage_unavailable", "账号数据库不可用")
 		})
 	}
 	s.authLimiter = newAuthLimiter()
@@ -83,6 +70,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 
 	fileServer := http.FileServerFS(assets)
 	bridge := &assistantBridge{pending: make(map[string]assistantPreview)}
+	discoveryA2UI := newDiscoveryA2UIRuntime()
 	bridge.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -102,48 +90,34 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 			jsonResponse(w, 200, map[string]string{"status": "ok"})
 			return
 		}
-		if !s.ServerMode && r.Method == "POST" && r.URL.Path == "/api/v1/provider/benchmark-events" {
-			s.benchmarkEvent(w, r)
-			return
-		}
 
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
-			r = r.WithContext(context.WithValue(r.Context(), assistantBridgeKey{}, bridge))
-			origin := "http://" + r.Host
-			if s.ServerMode {
-				origin = s.Origin
-			}
-			if r.Method != "GET" && r.Method != "HEAD" && (origin == "" || r.Header.Get("Origin") != origin) {
+			ctx := context.WithValue(r.Context(), assistantBridgeKey{}, bridge)
+			r = r.WithContext(context.WithValue(ctx, discoveryA2UIKey{}, discoveryA2UI))
+			if r.Method != "GET" && r.Method != "HEAD" && (s.Origin == "" || r.Header.Get("Origin") != s.Origin) {
 				fail(w, 403, "invalid_origin", "请求来源无效")
 				return
 			}
 			_, route := api.Handler(r)
 			accountRoute, publicRoute := serverAccountRoute(route)
-			if s.ServerMode {
-				if !publicRoute {
-					account, err := s.requestAccount(r)
-					if err != nil {
-						fail(w, 401, "unauthorized", "请先登录")
-						return
-					}
-					if account.MustChangePassword && route != "POST /api/v1/me/password" {
-						fail(w, 403, "password_change_required", "请先设置新密码")
-						return
-					}
-					r = r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account))
-					if !accountRoute {
-						s.serveAccountBusiness(w, r, route, account, api)
-						return
-					}
-				}
-			} else {
-				if accountRoute && r.URL.Path != "/api/v1/session" {
-					http.NotFound(w, r)
+			if !publicRoute {
+				account, err := s.requestAccount(r)
+				if errors.Is(err, work.ErrAccountDenied) {
+					fail(w, 401, "unauthorized", "请先登录")
 					return
 				}
-				if !publicRoute && r.URL.Path != "/api/v1/session" && !s.authenticated(r) {
-					fail(w, 401, "unauthorized", "请先登录")
+				if err != nil {
+					accountError(w, err)
+					return
+				}
+				if account.MustChangePassword && route != "POST /api/v1/me/password" {
+					fail(w, 403, "password_change_required", "请先设置新密码")
+					return
+				}
+				r = r.WithContext(context.WithValue(r.Context(), accountContextKey{}, account))
+				if !accountRoute {
+					s.serveAccountBusiness(w, r, route, account, api)
 					return
 				}
 			}
@@ -165,7 +139,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 		}
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
 		valid := r.URL.Path == "/" || r.URL.Path == "/overview" || r.URL.Path == "/operations" ||
-			(s.ServerMode && (r.URL.Path == "/account" || r.URL.Path == "/team-tasks")) || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
+			r.URL.Path == "/account" || r.URL.Path == "/team-tasks" || r.URL.Path == "/tasks" || r.URL.Path == "/chat" || r.URL.Path == "/artifacts" ||
 			r.URL.Path == "/memory" || r.URL.Path == "/memory/new" || r.URL.Path == "/memory/candidates" ||
 			r.URL.Path == "/memory/skill-proposals" || r.URL.Path == "/settings" ||
 			r.URL.Path == "/connections" || r.URL.Path == "/connections/new" ||
@@ -201,13 +175,7 @@ func (s Server) routes() *http.ServeMux {
 	s.registerClusterTrends(api)
 	s.registerClusterInventory(api)
 	api.HandleFunc("GET /api/v1/session", s.sessionStatus)
-	api.HandleFunc("POST /api/v1/session", func(w http.ResponseWriter, r *http.Request) {
-		if s.ServerMode {
-			s.accountLogin(w, r)
-		} else {
-			s.login(w, r)
-		}
-	})
+	api.HandleFunc("POST /api/v1/session", s.accountLogin)
 	api.HandleFunc("DELETE /api/v1/session", s.endSession)
 	api.HandleFunc("GET /api/v1/bootstrap", s.bootstrapStatus)
 	api.HandleFunc("POST /api/v1/bootstrap", s.bootstrap)
@@ -281,6 +249,7 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/skill-proposals", s.proposeSkill)
 	api.HandleFunc("POST /api/v1/skill-proposals/{id}/replay", s.replaySkillProposal)
 	api.HandleFunc("POST /api/v1/skill-proposals/{id}/approve", s.approveSkillProposal)
+	api.HandleFunc("POST /api/v1/skill-proposals/{id}/rollback", s.rollbackSkillProposal)
 	api.HandleFunc("GET /api/v1/skills", s.listSkills)
 	api.HandleFunc("POST /api/v1/skills", s.draftSkill)
 	api.HandleFunc("POST /api/v1/skills/import-preview", s.previewSkillDocument)
@@ -402,6 +371,11 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/conversations/{id}/cancel", s.cancelConversation)
 	api.HandleFunc("PATCH /api/v1/conversations/{id}", s.changeConversation)
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)
+	api.HandleFunc("POST /api/v1/a2ui/discovery-candidates", s.a2uiDiscoveryOpen)
+	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/discovery-candidates", s.a2uiDiscoveryList)
+	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/actions", s.a2uiDiscoveryAction)
+	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/actions/{key}", s.a2uiDiscoveryReadback)
+	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/actions/{key}/confirm", s.a2uiDiscoveryConfirm)
 	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false, false))
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview", s.benchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-execution-suggestions/{run}/confirm", s.confirmBenchmarkExecutionSuggestion)
@@ -465,45 +439,6 @@ func validID(id string) bool {
 // whether that conversation exists.
 func validConversationID(id string) bool {
 	return len(id) > 0 && len(id) <= 128 && strings.Trim(id, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-") == ""
-}
-
-func (s Server) signature(expiry string) string {
-	mac := hmac.New(sha256.New, []byte(s.Token))
-	mac.Write([]byte("session:" + expiry))
-	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
-}
-
-func (s Server) authenticated(r *http.Request) bool {
-	if s.ServerMode {
-		_, err := s.requestAccount(r)
-		return err == nil
-	}
-	c, err := r.Cookie("clusbot_session")
-	if err != nil {
-		return false
-	}
-	expiry, sig, ok := strings.Cut(c.Value, ".")
-	if !ok || !hmac.Equal([]byte(sig), []byte(s.signature(expiry))) {
-		return false
-	}
-	t, err := strconv.ParseInt(expiry, 10, 64)
-	return err == nil && time.Now().Unix() < t
-}
-
-func (s Server) login(w http.ResponseWriter, r *http.Request) {
-	var input struct {
-		Token string `json:"token"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	if !hmac.Equal([]byte(input.Token), []byte(s.Token)) {
-		fail(w, 401, "unauthorized", "访问口令不正确")
-		return
-	}
-	expiry := strconv.FormatInt(time.Now().Add(12*time.Hour).Unix(), 10)
-	http.SetCookie(w, &http.Cookie{Name: "clusbot_session", Value: expiry + "." + s.signature(expiry), Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 43200})
-	jsonResponse(w, 200, map[string]bool{"authenticated": true})
 }
 
 func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
@@ -719,9 +654,13 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 		}
 		// A1 持久受理：在可信主体与请求校验之后、模型分类之前提交 Inbox。
 		// 同键同请求返回原回执，同键异请求返回冲突；可经 GET /api/v1/admissions/{key} 查询。
-		modelAvailable := s.ModelAvailable(r.Context())
+		role, err := s.Store.ChatAdmissionRole(r.Context(), r.PathValue("id"), task, delivery)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		modelAvailable := s.Settings.RoleAvailable(r.Context(), role)
 		var admission work.AdmissionResult
-		var err error
 		if explicitNewTask {
 			admission, err = s.Store.AdmitExplicitTask(r.Context(), key, s.principal(r), in.Text, in.Scope, delivery, in.AttachmentIDs, modelAvailable, s.MaxPendingExplicitTasks)
 		} else {
@@ -747,13 +686,17 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 		}
 		// 模型不可用：输入已受理但等待分类，返回带原因回执（不提前 503）。
 		if admission.ModelPending {
+			if err := s.Store.DeferChatAdmissionForModel(r.Context(), key, role); err != nil {
+				writeError(w, err)
+				return
+			}
 			jsonResponse(w, 202, map[string]any{
 				"receipt_id":    admission.Receipt.ReceiptID,
 				"request_key":   admission.Receipt.RequestKey,
 				"state":         admission.Receipt.State,
 				"duplicate":     admission.Receipt.Duplicate,
 				"model_pending": true,
-				"reason":        "模型未配置或不可用，输入已受理，待模型可用后分类",
+				"reason":        work.ChatModelPendingReason(role),
 			})
 			return
 		}
@@ -764,6 +707,18 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 			run, err = s.Store.SubmitRoutedChat(r.Context(), key, in.Text, in.Scope, r.PathValue("id"), delivery, s.Settings.RouteSubmission, in.AttachmentIDs...)
 		}
 		if err != nil {
+			if errors.Is(err, work.ErrGeneralRouterRoleUnavailable) {
+				if err := s.Store.DeferChatAdmissionForModel(r.Context(), key, work.GeneralRouterModelRole); err != nil {
+					writeError(w, err)
+					return
+				}
+				jsonResponse(w, 202, map[string]any{
+					"receipt_id": admission.Receipt.ReceiptID, "request_key": key,
+					"state": "received", "model_pending": true, "duplicate": admission.Receipt.Duplicate,
+					"reason": work.ChatModelPendingReason(work.GeneralRouterModelRole),
+				})
+				return
+			}
 			if r.Context().Err() == nil && !errors.Is(err, work.ErrActive) {
 				if recordErr := s.Store.FailChatAdmission(r.Context(), key, err.Error()); recordErr != nil {
 					slog.Error("记录 Chat 受理失败", "error", recordErr)
@@ -778,29 +733,10 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 
 // principal 返回可信主体（来自会话认证，不由请求方自证）。
 func (s Server) principal(r *http.Request) string {
-	if s.ServerMode {
-		a, ok := accountFromContext(r)
-		if ok {
-			return a.PrincipalID
-		}
-		return "user:anonymous"
-	}
-	if s.authenticated(r) {
-		return "user:session"
+	if a, ok := accountFromContext(r); ok {
+		return a.PrincipalID
 	}
 	return "user:anonymous"
-}
-
-// modelAvailable 报告模型是否可用（不失败，仅用于受理时的挂起判断）。
-func (s Server) ModelAvailable(ctx context.Context) bool {
-	if s.Settings == nil {
-		return false
-	}
-	value, err := s.Settings.View(ctx)
-	if err == nil && value.Mode != "unconfigured" && value.Mode != "unavailable" {
-		return true
-	}
-	return s.Settings.CoreRoutingAvailable(ctx)
 }
 
 func writeSubmission(w http.ResponseWriter, run work.Run) {
@@ -1310,6 +1246,8 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 409, "publication_conflict", err.Error())
 	case errors.Is(err, work.ErrDeliveryPending), errors.Is(err, work.ErrDeliveryChanged), errors.Is(err, work.ErrWorkflowEvidence):
 		fail(w, 409, "delivery_incomplete", err.Error())
+	case errors.Is(err, work.ErrHealthCoverage):
+		fail(w, http.StatusConflict, "health_coverage_incomplete", "健康巡检覆盖或结果不完整，请核对目标节点及巡检回执后重试")
 	case errors.Is(err, work.ErrAuthorizationDenied):
 		fail(w, 403, "forbidden", err.Error())
 	case errors.Is(err, work.ErrConflict), errors.Is(err, work.ErrState), errors.Is(err, work.ErrReadCheckpoint):

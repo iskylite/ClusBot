@@ -3,14 +3,12 @@ import {api,APIError,type Receipt} from './api'
 import {changeComposerDraft,discardComposerDraft,hasPinnedIsolatedRequest,useComposerDraft,type IsolatedReplyRequest} from './composerDrafts'
 import type {ComposerOptions,ReplyModel} from './ComposerUI'
 
-export const isolatedDraftKey=(conversationID:string)=>'isolated:'+conversationID
 const profileKey=(profile:ReplyModel)=>profile.profile_id+':'+profile.revision
 const validID=(id?:string)=>Boolean(id&&/^[a-f\d]{32}$/.test(id))
 
-export function IsolatedReplyComposer({conversationID,blocked,archived,onClose,onReceipt,initialModel,initialText}:{
-  conversationID?:string;blocked:boolean;archived:boolean;onClose:()=>void;onReceipt:(receipt:Receipt,request:IsolatedReplyRequest)=>void;initialModel?:ReplyModel;initialText?:string
+export function IsolatedReplyComposer({draftKey,conversationID,blocked,archived,onClose,onReceipt,initialModel,initialText}:{
+  draftKey:string;conversationID?:string;blocked:boolean;archived:boolean;onClose:()=>void;onReceipt:(receipt:Receipt,request:IsolatedReplyRequest)=>void;initialModel?:ReplyModel;initialText?:string
 }){
-  const draftKey=isolatedDraftKey(conversationID||'new')
   const {text,isolatedRequest}=useComposerDraft(draftKey)
   const [profiles,setProfiles]=useState<ReplyModel[]>()
   const [profileError,setProfileError]=useState('')
