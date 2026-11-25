@@ -1,6 +1,6 @@
 package work
 
-// P5-10：长期运行、归档与后台预算。
+// 长期运行、归档与后台预算。
 //
 // 本文件实现长期等待、历史增长和后台整理不会吞掉交互与核对能力：
 //   - 为模型整理、索引、过期扫描、归档和清理设置独立可控预算，优先保障回执、
@@ -35,7 +35,7 @@ type BackgroundBudget struct {
 	UpdatedAt int64
 }
 
-// upsertBackgroundBudget 设置后台预算（P5-10.1）。
+// upsertBackgroundBudget 设置后台预算。
 // 为模型整理、索引、过期扫描、归档和清理设置独立可控预算，优先保障回执、
 // 核对、取消和续租。
 func upsertBackgroundBudget(tx *sql.Tx, b BackgroundBudget, now int64) error {
@@ -54,7 +54,7 @@ max_bytes=excluded.max_bytes,max_time_ms=excluded.max_time_ms,priority=excluded.
 	return err
 }
 
-// ensureCriticalNotBlocked 核对关键工作不阻塞（P5-10.1）。
+// ensureCriticalNotBlocked 核对关键工作不阻塞。
 // 优先保障回执、核对、取消和续租（critical 不被 background 阻塞）。
 func ensureCriticalNotBlocked(tx *sql.Tx, kind string, now int64) error {
 	var priority string
@@ -89,7 +89,7 @@ type RetentionPolicy struct {
 	UpdatedAt          int64
 }
 
-// upsertRetentionPolicy 设置保留策略（P5-10.3）。
+// upsertRetentionPolicy 设置保留策略。
 // 去重摘要/墓碑至少覆盖重投期和操作生命周期；未知保留期不擅自按短 TTL 清除。
 func upsertRetentionPolicy(tx *sql.Tx, p RetentionPolicy, now int64) error {
 	if p.ObjectKind == "" {
@@ -129,7 +129,7 @@ type ArchiveRecord struct {
 	CreatedAt               int64
 }
 
-// archiveObject 归档对象（P5-10.2）。
+// archiveObject 归档对象。
 // 归档 Task/Run/材料前检查未决责任、证据依赖、法定/业务留存和授权；活跃
 // 引用不被清除；清理不会删除尚需核对的 Job/Operation/借用/证据或让重复
 // 输入再次生效。
@@ -171,7 +171,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 // 后台工作（重启、幂等、进度水位及有界失败重试，避免全表长事务）
 // ---------------------------------------------------------------------------
 
-// ensureBackgroundWorkBounded 核对后台工作有界（P5-10.4）。
+// ensureBackgroundWorkBounded 核对后台工作有界。
 // 后台工作支持重启、幂等、进度水位及有界失败重试，避免全表长事务。
 func ensureBackgroundWorkBounded(workKind string, progressWatermark int64, maxRetries int) error {
 	// 有界失败重试（避免全表长事务）。

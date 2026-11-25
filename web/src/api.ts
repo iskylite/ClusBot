@@ -40,24 +40,38 @@ export type Material = {id:string;path:string;sha256:string;size:number;captured
 export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string; task_ref?:MessageTaskRef & {title?:string}; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
 export type MaterialFile = {path:string;size:number}
 export type SkillReplayMetrics = {
-  cases:number; completed:number; successful:number; success_rate:number
+  cases:number; completed:number; incomplete?:number; successful:number; success_rate:number
   wrong_reuse_checked:number; wrong_reuse_count:number
   input_tokens_known_total:number; input_usage_reported:number
   output_tokens_known_total:number; output_usage_reported:number; duration_ms:number
 }
+export type SkillReplayArm = 'base_skill'|'proposed_skill'|'current'|'candidate'
 export type SkillReplay = {
-  id:string; passed:boolean; model_config:{model:string}
-  metrics:Record<'current'|'candidate',SkillReplayMetrics>
-  results:{case_id:string;policy:'current'|'candidate';status:string;success:boolean;wrong_reuse:boolean|null}[]
+  id:string; passed:boolean; suite_sha256?:string; model_config:{model:string}
+  metrics:Partial<Record<SkillReplayArm,SkillReplayMetrics>>
+  results:{case_id:string;policy:SkillReplayArm;status:string;success:boolean;wrong_reuse:boolean|null}[]
 }
 export type SkillProposal = {
   id:string; goal:string; base_version:number|null; base_instructions?:string; base_sha256?:string
+  suite_sha256?:string; evaluation_run_id?:string; match_mode?:'goal_exact'|'scope_keywords'|'scope_all'
+  match_keywords?:string[]; draft_mode?:'template'|'synthesized'
   status:'pending'|'active'|'historical'|'stale'|'unavailable'
   skill:{skill_id:string;scope_label:string;version:number;revision:number;sha256:string;instructions:string;active:boolean}
   evidence:{gains?:string[];regressions?:string[];paired_cases:number;incomplete_pairs:number;current_successful:number;candidate_successful:number
     reuse_checked:number;current_wrong_reuse:number;candidate_wrong_reuse:number;token_pairs:number;candidate_token_delta:number}
   sources:{candidate_id:string;task_id?:string;artifact_id?:string;message_id?:number}[]
   replay?:SkillReplay
+}
+export type ExperienceEvaluationReport = {
+  version:number; suite_sha256?:string; snapshot_sha256:string; scoring:string
+  model_config:{model:string}
+  metrics:Record<string,SkillReplayMetrics>
+  case_contexts:{id:string;scope_label:string;goal:string}[]
+  results:{case_id:string;policy:string;status:string;success:boolean;wrong_reuse:boolean|null}[]
+}
+export type ExperienceEvaluationRun = {
+  id:string; suite_id:string; scope_label:string; goal:string; suite_sha256:string
+  report:ExperienceEvaluationReport; created_at:number
 }
 export type ExperienceCandidate = {
   id:string; task_id:string; kind:'accepted_result'|'user_correction'; scope_label:string
@@ -70,9 +84,21 @@ export type MemoryRef = {id:string;revision:number;title?:string;current_revisio
 export type MemorySource = {message_id:number;path:string;title:string;text?:string}
 export type Memory = {id:string;kind:MemoryKind;title:string;content:string;pinned:boolean;revision:number;updated_at:number;source?:MemorySource;source_deleted?:boolean}
 export type MCPConfig = {transport:'stdio'|'http';endpoint?:string;token_env?:string;command?:string;args?:string[];env?:string[]}
-export type MCPTool = {name:string;title?:string;description?:string;input_schema:unknown;output_schema?:unknown;schema_error?:string;version:string;allowed:boolean}
+export type MCPTool = {name:string;title?:string;description?:string;input_schema:unknown;output_schema?:unknown;schema_error?:string;version:string;allowed:boolean;read_only?:boolean}
 export type MCPConnection = {id:string;name:string;config:MCPConfig;enabled:boolean;revision:number;status:'untested'|'ready'|'failed';detail?:string;protocol?:string;checked_at?:number;tool_count:number;tools?:MCPTool[]}
 export type MCPResultReference = {id:string;bytes:number;sha256:string}
+export type CapabilityBinding = {
+  capability_id:string; capability_key:string; version:number; kind:'query'|'action'; target_kind?:string;
+  execution_mode:'sync'|'async'|'deterministic'; connection_id:string; connection_name:string; connection_revision:number;
+  start_tool:string; lookup_tool?:string; get_tool?:string; cancel_tool?:string;
+  idempotent?:string; supports_get?:string; supports_cancel?:string; verified_scope?:string; exposed_to_model:boolean; updated_at:number
+}
+export type CapabilityBindingInput = {
+  capability_key:string; version?:number; kind:'query'|'action'; target_kind?:string;
+  execution_mode?:'sync'|'async'|'deterministic'; connection_id:string;
+  start_tool:string; lookup_tool?:string; get_tool?:string; cancel_tool?:string;
+  idempotent?:string; supports_get?:string; supports_cancel?:string; verified_scope?:string; exposed_to_model?:boolean
+}
 export type MCPOutput = {text?:string;structured?:unknown;is_error:boolean;truncated:boolean;media_omitted:boolean;reference?:MCPResultReference;validation_error?:string}
 export type MCPResult = MCPOutput & {id:string;received_at:number}
 export type TaskReadRequest = {connection_id:string;revision:number;tool_name:string;tool_version:string;arguments:Record<string,unknown>}

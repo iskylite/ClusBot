@@ -1,6 +1,6 @@
 package work
 
-// P1-11：暂停、取消、恢复与关联新任务。
+// 暂停、取消、恢复与关联新任务。
 //
 // 本文件实现控制请求先持久化，状态和外部事实分开处理：
 //   - 控制记录包含请求键、决定者、目标 Task/合同、控制修订及请求类型；
@@ -14,9 +14,9 @@ package work
 //   - 终态后的重试/新要求建立 successor Task 并保留关联；更新旧 Resume/Retry
 //     行为与请求回执。
 //
-// 与旧控制路径的关系：本文件在 P1-02 的 control_records、P1-03 的状态机、
-// P1-07 的 Wait、P1-10 的收尾之上提供统一控制入口；旧 Resume/Retry 的正式
-// 切换在本项验收，但旧 API 仍由 P1-12 的兼容入口处理。
+// 与旧控制路径的关系：本文件在 的 control_records、的状态机、
+// 的 Wait、的收尾之上提供统一控制入口；旧 Resume/Retry 的正式
+// 切换在本项验收，但旧 API 仍由 的兼容入口处理。
 
 import (
 	"context"
@@ -40,7 +40,7 @@ type ControlRequest struct {
 	Detail         string
 }
 
-// recordControlRequest 先持久化控制请求（P1-11.1）。
+// recordControlRequest 先持久化控制请求。
 // 重复请求键相同内容返回原决定（幂等）；不同内容冲突。
 func recordControlRequest(tx *sql.Tx, req ControlRequest, controlRevision int, now int64) (ControlRecord, error) {
 	if req.RequestKey == "" || req.TaskID == "" || req.DecidedBy == "" {
@@ -73,7 +73,7 @@ type PauseResult struct {
 	FollowUp []string
 }
 
-// pauseTask 暂停任务（P1-11.2）。
+// pauseTask 暂停任务。
 // 阻止新领取/新派发，仍允许接收已发出的结果和必要核对；不会宣告外部工作停止。
 func pauseTask(tx *sql.Tx, req ControlRequest, guard TaskGuard, now int64) (PauseResult, error) {
 	// 先持久化控制请求。
@@ -115,7 +115,7 @@ type CancelResult struct {
 	FollowUp []string
 }
 
-// cancelTask 取消任务（P1-11.3）。
+// cancelTask 取消任务。
 // 进入收尾，逐项记录已发生、未发生、未知、占用和后续责任；未核对项不静默
 // 消失；取消不能自动回滚成果、设备状态或释放未知影响。
 func cancelTask(tx *sql.Tx, req ControlRequest, guard TaskGuard, now int64) (CancelResult, error) {
@@ -161,10 +161,10 @@ type ResumeResult struct {
 	FollowUp []string
 }
 
-// resumeTaskV3 恢复已暂停任务（P1-11.4）。
+// resumeRuntimeTask 恢复已暂停任务。
 // 恢复前核对当前合同、Wait、未决操作、权限及依赖；符合条件再排队，不能
 // 直接重放旧 Run 上下文。
-func resumeTaskV3(tx *sql.Tx, req ControlRequest, guard TaskGuard, now int64) (ResumeResult, error) {
+func resumeRuntimeTask(tx *sql.Tx, req ControlRequest, guard TaskGuard, now int64) (ResumeResult, error) {
 	// 先持久化控制请求。
 	if _, err := recordControlRequest(tx, req, guard.ExpectedStorageRevision+1, now); err != nil {
 		return ResumeResult{}, err
@@ -212,10 +212,16 @@ type SuccessorTask struct {
 	InheritedEvidence []string
 }
 
-// createSuccessorTask 在终态后建立关联新 Task（P1-11.5）。
+type SuccessorTemplate struct {
+	Goal     string
+	Scope    string
+	Criteria string
+}
+
+// createSuccessorTask 在终态后建立关联新 Task。
 // 不复活原任务：新 Task 有明确新 ID，保留与原任务的关联与先前证据。
 // 返回明确新 ID；重复请求键幂等（旧客户端重复提交不创建多个 successor）。
-func createSuccessorTask(tx *sql.Tx, predecessorID string, req ControlRequest, template ScheduleTemplate, now int64) (SuccessorTask, error) {
+func createSuccessorTask(tx *sql.Tx, predecessorID string, req ControlRequest, template SuccessorTemplate, now int64) (SuccessorTask, error) {
 	// 核对原任务确实处于终态（不复活）。
 	if err := ensureTaskNotTerminal(tx, predecessorID); err == nil {
 		return SuccessorTask{}, errors.New("原任务未终结，不能建立 successor")

@@ -261,7 +261,7 @@ FROM benchmark_runs r JOIN task_states t ON t.task_id=r.task_id WHERE r.task_id=
 			step = id()
 			ids[c.Key] = step
 			if err := insertStep(tx, Step{StepID: step, TaskID: task, ContractRevision: 1, DefinitionKey: c.Key,
-				DefinitionVersion: base, State: V3StepWaiting, Position: i + 1, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
+				DefinitionVersion: base, State: RuntimeStepWaiting, Position: i + 1, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
 				return BenchmarkRevision{}, err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_cases(step_id,task_id,case_key,frozen_targets,authorization_refs,phase,case_spec)

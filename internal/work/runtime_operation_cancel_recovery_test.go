@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestV31OperationDoesNotAliasDifferentBinding(t *testing.T) {
-	s, taskID := setupV3P307(t, "op-binding.db")
-	req := v3P307Operation(taskID, "O9")
+func TestOperationDoesNotAliasDifferentBinding(t *testing.T) {
+	s, taskID := setupOperationsStore(t, "op-binding.db")
+	req := operationFixture(taskID, "O9")
 	stamp := now()
 	tx, err := s.db.Begin()
 	if err != nil {

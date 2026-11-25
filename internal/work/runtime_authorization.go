@@ -1,6 +1,6 @@
 package work
 
-// P3-01：统一主体、范围授权与直接撤权。
+// 统一主体、范围授权与直接撤权。
 //
 // 本文件实现用户、外部服务、Worker 和策略执行主体使用同一授权语义：
 //   - 授权包含主体、动作、对象/范围、参数/时间限制、来源/策略版本、有效期、
@@ -46,7 +46,7 @@ type Principal struct {
 	CreatedAt      int64
 }
 
-// registerPrincipal 注册一个主体（P3-01 反例：主体不能互相冒用）。
+// registerPrincipal 注册一个主体。
 func registerPrincipal(tx *sql.Tx, p Principal, identity string, now int64) (Principal, error) {
 	if p.PrincipalID == "" || p.Kind == "" {
 		return Principal{}, errors.New("主体缺少身份或类型")
@@ -65,7 +65,7 @@ VALUES(?,?,?,?,?,?)`, p.PrincipalID, string(p.Kind), p.IdentityDigest, 1, p.Expi
 	return p, nil
 }
 
-// authenticatePrincipal 核对主体身份与类型（P3-01 反例：Worker 凭据、用户会话
+// authenticatePrincipal 核对主体身份与类型（反例：Worker 凭据、用户会话
 // 和外部事件主体不能互相冒用）。
 func authenticatePrincipal(q recordsQuerier, principalID string, kind PrincipalKind, identity string, now int64) (Principal, error) {
 	var p Principal
@@ -123,7 +123,7 @@ type Authorization struct {
 	UpdatedAt      int64
 }
 
-// grantAuthorization 授予一个授权（P3-01.1）。
+// grantAuthorization 授予一个授权。
 // 授权包含主体、动作、对象/范围、参数/时间限制、来源/策略版本、有效期、
 // 撤销和责任人；旧工具 allowed 不自动变成资产写权限。
 func grantAuthorization(tx *sql.Tx, a Authorization, now int64) (Authorization, error) {
@@ -166,7 +166,7 @@ type AuthorizationDecision struct {
 	InFlight     bool
 }
 
-// decideAuthorization 判定一次授权（P3-01.2）。
+// decideAuthorization 判定一次授权。
 // 读取、材料、模型外发、任务控制与动作派发分别判定；调用者不能用伪造
 // auth_ref 自证获准；每次判定记录（含拒绝）。
 func decideAuthorization(tx *sql.Tx, subject, action, objectRef, scopeLabel string, now int64, inFlight bool) (AuthorizationDecision, error) {
@@ -213,7 +213,7 @@ VALUES(?,?,?,?,?,?,?,?,?)`,
 // 撤销（直接撤权，同事务）
 // ---------------------------------------------------------------------------
 
-// revokeAuthorization 撤销一个授权（P3-01.3/P3-01.4）。
+// revokeAuthorization 撤销一个授权。
 // 撤销与授权版本/相关代际及可靠通知同事务；新的最终核验读取当前权威，不
 // 使用滞后索引或旧缓存；区分已撤销后的新核验和撤销前在途请求。
 func revokeAuthorization(tx *sql.Tx, authID, revokedBy string, now int64) error {
@@ -241,7 +241,7 @@ WHERE auth_id=? AND revoked_at=0`, now, revokedBy, now, authID)
 // ErrAuthorizationDenied 是授权拒绝的错误。
 var ErrAuthorizationDenied = errors.New("授权拒绝")
 
-// ensurePolicyScope 核对策略主体的明确范围（P3-01.5）。
+// ensurePolicyScope 核对策略主体的明确范围。
 // 策略主体只有明确范围，不继承用户所有权限；API 不返回未授权对象的标题/
 // 数量/敏感正文。
 func ensurePolicyScope(principal Principal, scope string) error {
@@ -251,7 +251,7 @@ func ensurePolicyScope(principal Principal, scope string) error {
 	return nil
 }
 
-// filterUnauthorized 过滤未授权对象（P3-01.5）。
+// filterUnauthorized 过滤未授权对象。
 // API 不返回未授权对象的标题/数量/敏感正文。
 func filterUnauthorized(tx *sql.Tx, subject, action string, objects []string, now int64) (allowed []string, err error) {
 	for _, obj := range objects {

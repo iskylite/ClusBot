@@ -77,7 +77,7 @@
 @media (max-width:700px) { .model-catalog { grid-template-columns:1fr; } .model-provider-panel, .model-catalog-panel { min-height:0; } .model-capabilities, .model-edit-grid { grid-template-columns:1fr; } .model-edit-grid.four { grid-template-columns:repeat(2,minmax(0,1fr)); } .model-button { min-height:38px; } .model-card-toggle { flex-wrap:wrap; } }
 
 /* Model and legacy settings share the same compact work area. */
-.workspace.v31-workspace .settings-page { gap:12px; padding-top:10px; }
+.workspace.app-workspace .settings-page { gap:12px; padding-top:10px; }
 .settings-page .model-catalog { grid-template-columns:320px minmax(0,1fr); min-height:max(420px,calc(100dvh - 152px)); }
 .settings-page .model-provider-panel, .settings-page .model-catalog-panel { min-height:100%; }
 .settings-page .model-provider-panel { padding:12px 14px; gap:8px; }

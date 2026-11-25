@@ -65,6 +65,9 @@ func (s *Store) automaticTaskTools(ctx context.Context, run Run) ([]taskTool, er
 	}
 	for _, option := range options {
 		tool := option.Tool
+		if !tool.ReadOnly || isToolDisallowedForReadOnly(tool) {
+			continue
+		}
 		alias := "mcp_" + digest(option.ConnectionID + "\x00" + tool.Name)[:48]
 		tools = append(tools, taskTool{
 			definition: TaskToolDefinition{

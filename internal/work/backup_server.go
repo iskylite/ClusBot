@@ -100,7 +100,7 @@ func verifyNoLegacyServerData(ctx context.Context, database, dataDir, workspaceD
 	err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM conversations) OR EXISTS(SELECT 1 FROM tasks)
 OR EXISTS(SELECT 1 FROM runs) OR EXISTS(SELECT 1 FROM messages) OR EXISTS(SELECT 1 FROM artifacts)
 OR EXISTS(SELECT 1 FROM publications) OR EXISTS(SELECT 1 FROM materials) OR EXISTS(SELECT 1 FROM uploads)
-OR EXISTS(SELECT 1 FROM memories) OR EXISTS(SELECT 1 FROM goals) OR EXISTS(SELECT 1 FROM task_acceptances)`).Scan(&legacy)
+OR EXISTS(SELECT 1 FROM memories) OR EXISTS(SELECT 1 FROM task_acceptances)`).Scan(&legacy)
 	// A stopped installation may still be on a schema older than preferences.
 	// If the table exists, its root-store row also has no account owner.
 	if err == nil && !legacy {
@@ -108,6 +108,13 @@ OR EXISTS(SELECT 1 FROM memories) OR EXISTS(SELECT 1 FROM goals) OR EXISTS(SELEC
 		err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='general_preferences')`).Scan(&hasPreferences)
 		if err == nil && hasPreferences {
 			err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM general_preferences)`).Scan(&legacy)
+		}
+	}
+	if err == nil && !legacy {
+		var hasGoals bool
+		err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='goals')`).Scan(&hasGoals)
+		if err == nil && hasGoals {
+			err = db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM goals)`).Scan(&legacy)
 		}
 	}
 	if err = errors.Join(err, db.Close()); err != nil {

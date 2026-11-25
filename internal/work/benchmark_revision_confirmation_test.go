@@ -97,7 +97,7 @@ func TestBenchmarkChatConfirmationUsesOnlyRecordedProposal(t *testing.T) {
 				t.Fatalf("missing durable pre-model boundary: %+v %v", status, err)
 			}
 			for _, count := range []int{1, 0} {
-				report, err := reopened.RecoverV3(ctx, now())
+				report, err := reopened.RecoverRuntime(ctx, now())
 				if err != nil || report.InterruptedBenchmarkPreviews != count {
 					t.Fatalf("restart recovery not idempotent: %+v %v", report, err)
 				}

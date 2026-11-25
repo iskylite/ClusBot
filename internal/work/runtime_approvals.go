@@ -1,6 +1,6 @@
 package work
 
-// P3-03：绑定具体动作的确认与人工接管。
+// 绑定具体动作的确认与人工接管。
 //
 // 本文件实现人工决定既具体可追溯，也不会变成绕过授权的通行证：
 //   - 确认绑定主体、动作、实际对象、参数摘要、合同/策略/资产版本、决定者
@@ -46,7 +46,7 @@ type Approval struct {
 // 请求确认（绑定主体/动作/对象/参数摘要/版本/决定者/期限）
 // ---------------------------------------------------------------------------
 
-// requestApproval 请求一个确认（P3-03.1/P3-03.5）。
+// requestApproval 请求一个确认。
 // 确认绑定主体、动作、实际对象、参数摘要、合同/策略/资产版本、决定者和期限；
 // 确认通过与实际派发分开；请求已收到或用户点过按钮不能直接修改 Operation 为成功。
 func requestApproval(tx *sql.Tx, a Approval, now int64) (Approval, error) {
@@ -78,7 +78,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 // 决定（重复点击只产生一次有效决定；过期/错对象/参数/无权确认拒绝）
 // ---------------------------------------------------------------------------
 
-// decideApproval 决定一个确认（P3-03 反例）。
+// decideApproval 决定一个确认。
 // 重复点击只产生一次有效决定；过期、错对象/参数、无权确认均拒绝。
 func decideApproval(tx *sql.Tx, requestKey, decision, decidedBy string, expectedVersions Approval, now int64) (Approval, error) {
 	// 重复点击：同请求键已有决定（只产生一次有效决定）。
@@ -162,7 +162,7 @@ type PendingApproval struct {
 	Reason     string
 }
 
-// listPendingApprovals 列出待决定事项（P3-03.2）。
+// listPendingApprovals 列出待决定事项。
 // 通过已有 Chat/责任入口返回待决定事项；满足有效自动策略的动作不逐次要求人工。
 func listPendingApprovals(q recordsQuerier, subject string, now int64) ([]PendingApproval, error) {
 	rows, err := q.Query(`SELECT approval_id,subject,action,object_ref FROM approvals
@@ -258,7 +258,7 @@ type ManualTakeover struct {
 	TakenAt                int64
 }
 
-// recordManualTakeover 记录人工接管（P3-03.4）。
+// recordManualTakeover 记录人工接管。
 // 人工接管未知效果须记录明确授权、接收人、未决操作、隔离措施、残余风险和
 // 后续责任；Task 不能凭普通取消确认丢弃未知外部效果；例外接管仍留证。
 func recordManualTakeover(tx *sql.Tx, t ManualTakeover, now int64) (ManualTakeover, error) {
@@ -288,19 +288,19 @@ VALUES(?,?,?,?,?,?,?,?,?)`,
 }
 
 // ---------------------------------------------------------------------------
-// 确认通过与实际派发分开（P3-03.5）
+// 确认通过与实际派发分开
 // ---------------------------------------------------------------------------
 
 // ErrApprovalNotDispatch 是确认通过不等于派发的错误。
 var ErrApprovalNotDispatch = errors.New("确认通过与实际派发分开")
 
-// confirmApprovedNotDispatch 核对确认通过与实际派发分开（P3-03.5）。
+// confirmApprovedNotDispatch 核对确认通过与实际派发分开。
 // 请求已收到或用户点过按钮不能直接修改 Operation 为成功。
 func confirmApprovedNotDispatch(approval Approval) error {
 	if approval.Decision != "approved" {
 		return fmt.Errorf("%w：确认未通过（%s）", ErrApprovalNotDispatch, approval.Decision)
 	}
-	// 确认通过不等于派发成功：派发需经能力接入与领域准入（P3-02）。
+	// 确认通过不等于派发成功：派发需经能力接入与领域准入。
 	return nil
 }
 

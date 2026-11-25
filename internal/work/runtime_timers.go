@@ -1,8 +1,8 @@
 package work
 
-// P1-08：持久 Timer、逾期扫描与时间边界。
+// 持久 Timer、逾期扫描与时间边界。
 //
-// 本文件实现 V3 §5.3 的持久计时器：控制面停机后仍能识别所有应处理的等待，
+// 本文件实现 §5.3 的持久计时器：控制面停机后仍能识别所有应处理的等待，
 // 避免旧计时器唤醒新工作。
 //   - Timer 绑定 wait_id 与版本，在同一等待创建/重设事务记录；
 //   - 扫描到期项时用条件更新标记已投递并创建唯一 Inbox 到期事件；处理事件
@@ -43,7 +43,7 @@ type Timer struct {
 // 创建（与等待创建/重设同事务）
 // ---------------------------------------------------------------------------
 
-// createTimer 在同一等待创建/重设事务内登记 Timer（P1-08.1）。
+// createTimer 在同一等待创建/重设事务内登记 Timer。
 // wait_id + wait_version 唯一：重设 Wait 后旧 Timer 因版本不匹配自然无效。
 func createTimer(tx *sql.Tx, t Timer) (Timer, error) {
 	if t.TimerID == "" || t.WaitID == "" {
@@ -86,7 +86,7 @@ type TimerScanResult struct {
 }
 
 // scanDueTimers 分批扫描到期 Timer，用条件更新标记已投递并创建唯一 Inbox
-// 到期事件（P1-08.2）。Inbox 只关闭纯计时等待；业务到期另行处理。
+// 到期事件。Inbox 只关闭纯计时等待；业务到期另行处理。
 // 控制面时间统一裁决（now 由控制面时钟提供，不用远端 Worker 墙钟）。
 func scanDueTimers(db *sql.DB, now int64, batchSize int, maxDuration time.Duration) (TimerScanResult, error) {
 	return scanTimers(db, now, batchSize, maxDuration, false)
@@ -182,7 +182,7 @@ AND (state='pending' OR (state='delivered' AND inbox_event_id=''))`,
 	received, err := receiveInbox(tx, InboxEvent{
 		Source: "timer", EventID: eventID, Principal: "system", Kind: "timer_due",
 		WaitID: t.WaitID, Summary: fmt.Sprintf("Timer %s 到期（wait %s v%d）", t.TimerID, t.WaitID, t.WaitVersion),
-		// 保留 V3 摘要口径，以便可重放既有事件。
+		// 保留 摘要口径，以便可重放既有事件。
 		PayloadDigest: digest(t.TimerID + t.WaitID), ReceivedAt: now,
 	})
 	if err != nil {
@@ -215,7 +215,7 @@ func recoverDueTimers(db *sql.DB, now int64, batchSize int) (TimerScanResult, er
 }
 
 // ---------------------------------------------------------------------------
-// Timeout 策略（P1-08.5）
+// Timeout 策略
 // ---------------------------------------------------------------------------
 
 // TimeoutAction 是超时的后续行为。
@@ -244,7 +244,7 @@ func timeoutAction(wait Wait) TimeoutAction {
 }
 
 // ---------------------------------------------------------------------------
-// 观测（P1-08.4）
+// 观测
 // ---------------------------------------------------------------------------
 
 // TimerBacklog 是 Timer 的运行时查询快照。

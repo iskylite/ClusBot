@@ -1,6 +1,6 @@
 package httpapi
 
-// V3 决策队列端点验收：待确认列表与批准动作走真实 approvals 表。
+// 决策队列端点验收：待确认列表与批准动作走真实 approvals 表。
 
 import (
 	"context"

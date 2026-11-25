@@ -17,7 +17,7 @@ func (discoveryFixture) ScanDiscovery(context.Context, string, string) ([]Discov
 	panic("drive the boundaries explicitly")
 }
 
-func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
+func TestDiscoveryDueRestartAdmission(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "discovery.sqlite")
 	s, err := Open(path)
@@ -147,12 +147,9 @@ func TestV31DiscoveryDueRestartAdmission(t *testing.T) {
 		t.Fatalf("invalid cursor: %v", err)
 	}
 
-	var driftChecks, goals int
+	var driftChecks int
 	if err = s.db.QueryRow("SELECT count(*) FROM discovery_drift_checks WHERE task_id IS NOT NULL").Scan(&driftChecks); err != nil || driftChecks != 2 {
 		t.Fatalf("known undelivered and delivered assets both require read-only checks: %d %v", driftChecks, err)
-	}
-	if err = s.db.QueryRow("SELECT count(*) FROM goals").Scan(&goals); err != nil || goals != 0 {
-		t.Fatalf("discovery should not create Goal: %d %v", goals, err)
 	}
 	repeat, ok, err := s.claimDiscovery(ctx, source, due+120000)
 	if err != nil || !ok {
@@ -243,7 +240,7 @@ func TestDiscoveryInterruptedCannotBecomeGenericRun(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := s.RecoverV3(ctx, stamp+5000); err != nil {
+			if _, err := s.RecoverRuntime(ctx, stamp+5000); err != nil {
 				t.Fatal(err)
 			}
 			before, err := s.Detail(d.task, true)

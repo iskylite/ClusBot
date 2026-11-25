@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestV31BenchmarkChatAtomicAndExplicit(t *testing.T) {
+func TestBenchmarkChatAtomicAndExplicit(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "chat-bench.sqlite"))
 	if err != nil {

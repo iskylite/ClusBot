@@ -207,7 +207,7 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 		if err != nil {
 			return d, false, err
 		}
-		if current.State == V3TaskPending {
+		if current.State == RuntimeTaskPending {
 			if _, err = transitionTaskState(tx, d.task, EventClaim, TaskGuard{Actor: "system", ExpectedStorageRevision: current.StorageRevision}, stamp); err != nil {
 				return d, false, err
 			}
@@ -324,8 +324,8 @@ ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec
 	}
 
 	if unknown {
-		if op.State == V3OperationDispatched || op.State == V3OperationRunning {
-			if _, err = transitionOperation(tx, d.operation, V3OperationReconcile, stamp); err != nil {
+		if op.State == RuntimeOperationDispatched || op.State == RuntimeOperationRunning {
+			if _, err = transitionOperation(tx, d.operation, RuntimeOperationReconcile, stamp); err != nil {
 				return err
 			}
 			if err = recordAudit(tx, AuditEvent{TaskID: d.task, StepID: d.step, DetailRef: d.operation, Event: "benchmark_pending_reconciliation",
@@ -342,8 +342,8 @@ ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec
 		if _, err = normalizeJobStart(tx, d.operation, confirmed, d.request.IdempotencyKey, "benchmark-v1", stamp); err != nil {
 			return err
 		}
-		if op.State == V3OperationDispatched {
-			if _, err = transitionOperation(tx, d.operation, V3OperationRunning, stamp); err != nil {
+		if op.State == RuntimeOperationDispatched {
+			if _, err = transitionOperation(tx, d.operation, RuntimeOperationRunning, stamp); err != nil {
 				return err
 			}
 		}
@@ -362,12 +362,12 @@ ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, d.spec
 	if err != nil {
 		return err
 	}
-	to, jobState := V3OperationSucceeded, "succeeded"
+	to, jobState := RuntimeOperationSucceeded, "succeeded"
 	switch result.State {
 	case "failed":
-		to, jobState = V3OperationFailed, "failed"
+		to, jobState = RuntimeOperationFailed, "failed"
 	case "cancelled":
-		to, jobState = V3OperationCancelled, "failed"
+		to, jobState = RuntimeOperationCancelled, "failed"
 	}
 	if _, err = transitionOperation(tx, d.operation, to, stamp); err != nil {
 		return err
@@ -402,11 +402,11 @@ func finishBenchmarkCase(tx *sql.Tx, d benchmarkDispatch, phase string, report a
 	if err != nil {
 		return err
 	}
-	stepState := V3StepFailed
+	stepState := RuntimeStepFailed
 	if phase == "verified" {
-		stepState = V3StepCompleted
+		stepState = RuntimeStepCompleted
 	} else if phase == "skipped" {
-		stepState = V3StepCancelled
+		stepState = RuntimeStepCancelled
 	}
 	if _, err = tx.Exec("UPDATE benchmark_cases SET phase=?,report=? WHERE step_id=?", phase, string(raw), d.step); err != nil {
 		return err
@@ -436,24 +436,24 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplet
 	if err != nil {
 		return err
 	}
-	if cur.State.IsTerminal() || (cur.State == V3TaskPaused && !stopping) {
+	if cur.State.IsTerminal() || (cur.State == RuntimeTaskPaused && !stopping) {
 		return nil
 	}
-	transition := func(event TaskEvent, result V3TaskState) error {
+	transition := func(event TaskEvent, result RuntimeTaskState) error {
 		_, e := transitionTaskState(tx, task, event, TaskGuard{ExpectedStorageRevision: cur.StorageRevision, Actor: "system", FinalState: result, AcceptanceEvidence: true}, stamp)
 		cur.StorageRevision++
 		return e
 	}
-	final, legacyTo, reason := V3TaskSucceeded, "completed", "已核实全部本次测量；性能达标单独记载"
+	final, reason := RuntimeTaskSucceeded, "已核实全部本次测量；性能达标单独记载"
 	if legacy == "cancelled" || stopping {
-		final, legacyTo, reason = V3TaskCancelled, "cancelled", "已停止；在途作业已完成对账"
-		if cur.State != V3TaskFinalizing {
+		final, reason = RuntimeTaskCancelled, "已停止；在途作业已完成对账"
+		if cur.State != RuntimeTaskFinalizing {
 			if err = transition(EventCancel, ""); err != nil {
 				return err
 			}
 		}
 	} else if bad || revision != 1 {
-		final, legacyTo, reason = V3TaskFailed, "interrupted", "存在缺失、未核实或未执行的必测项"
+		final, reason = RuntimeTaskFailed, "存在缺失、未核实或未执行的必测项"
 		if err = transition(EventFail, ""); err != nil {
 			return err
 		}
@@ -468,18 +468,17 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=t.id AND phase IN ('incomplet
 	if err = transition(EventFinalized, final); err != nil {
 		return err
 	}
-	_, err = tx.Exec(`UPDATE tasks SET status=?,status_reason='benchmark_result',reason=?,completed_at=?,revision=revision+1,updated_at=? WHERE id=?`, legacyTo, reason, stamp, stamp, task)
-	return err
+	return projectTaskFromRuntimeState(tx, task, final, "benchmark_result", reason, stamp)
 }
 
-type v31BenchReport struct {
+type benchReportJSON struct {
 	benchmarkAssessment
 	VerifiedMetrics map[string]map[string]benchmarkMetric `json:"verified_metrics"`
 	RawArtifactIDs  map[string]string                     `json:"raw_artifact_ids,omitempty"`
 	Comparison      *benchmarkComparison                  `json:"comparison,omitempty"`
 }
 
-func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (v31BenchReport, error) {
+func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (benchReportJSON, error) {
 	job := benchmarkJob{ConnectionID: d.spec.Binding.Connection, OperationID: d.operation, ProviderJobID: d.job, Generation: 1}
 	expected := make([]benchmarkRequirement, 0, len(d.spec.Targets))
 	targets := map[string]bool{}
@@ -495,7 +494,7 @@ func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (
 	observed := make([]benchmarkObservation, 0, len(r.Measurements))
 	total := 0
 	if len(r.Measurements) > 2048 {
-		return v31BenchReport{}, fmt.Errorf("%w：远端结果超出边界", ErrBenchmarkInput)
+		return benchReportJSON{}, fmt.Errorf("%w：远端结果超出边界", ErrBenchmarkInput)
 	}
 	for _, m := range r.Measurements {
 		if !targets[m.Target] {
@@ -513,7 +512,7 @@ func verifyBenchmarkJob(tx *sql.Tx, d benchmarkDispatch, r BenchmarkJobResult) (
 				artifactID := digest(toJSON([]string{d.operation, d.job, m.Target, raw.Ref, raw.SHA256}))
 				if _, err := tx.Exec(`INSERT INTO benchmark_evidence(artifact_id,step_id,target_ref,provider_ref,sha256,body) VALUES(?,?,?,?,?,?)
 ON CONFLICT(artifact_id) DO NOTHING`, artifactID, d.step, m.Target, raw.Ref, raw.SHA256, raw.Bytes); err != nil {
-					return v31BenchReport{}, err
+					return benchReportJSON{}, err
 				}
 				x.Raw = &benchmarkRawEvidence{Job: job, Target: m.Target, Check: d.spec.Key, Ref: artifactID, SHA256: raw.SHA256}
 			}
@@ -525,9 +524,9 @@ ON CONFLICT(artifact_id) DO NOTHING`, artifactID, d.step, m.Target, raw.Ref, raw
 	}
 	assessment, err := assessBenchmarkEvidence(expected, observed)
 	if err != nil {
-		return v31BenchReport{}, err
+		return benchReportJSON{}, err
 	}
-	out := v31BenchReport{benchmarkAssessment: assessment, VerifiedMetrics: map[string]map[string]benchmarkMetric{}, RawArtifactIDs: map[string]string{}}
+	out := benchReportJSON{benchmarkAssessment: assessment, VerifiedMetrics: map[string]map[string]benchmarkMetric{}, RawArtifactIDs: map[string]string{}}
 	verified := map[string]bool{}
 	for _, check := range assessment.Checks {
 		verified[check.Target] = check.Execution == "verified"

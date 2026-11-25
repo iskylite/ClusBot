@@ -132,6 +132,8 @@ func accountPersonalRoute(route string) bool {
 		"PATCH /api/v1/memories/{id}", "DELETE /api/v1/memories/{id}",
 		"GET /api/v1/experience-candidates", "POST /api/v1/experience-candidates/from-acceptance",
 		"POST /api/v1/experience-candidates/from-correction", "POST /api/v1/experience-candidates/{id}/review",
+		"GET /api/v1/experience-evaluations", "POST /api/v1/experience-evaluations",
+		"GET /api/v1/capabilities/bindings", "POST /api/v1/capabilities/bindings",
 		"GET /api/v1/tasks", "POST /api/v1/tasks", "GET /api/v1/tasks/{id}",
 		"GET /api/v1/tasks/{id}/runs", "GET /api/v1/tasks/{id}/runs/{run_id}", "GET /api/v1/tasks/{id}/manifest",
 		"PATCH /api/v1/tasks/{id}", "POST /api/v1/tasks/{id}/acceptance", "POST /api/v1/tasks/{id}/pause",
@@ -152,7 +154,6 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/runs/{id}/mcp-bindings", "GET /api/v1/tool-results/{id}/content",
 		"GET /api/v1/artifacts", "GET /api/v1/artifacts/{id}", "GET /api/v1/artifacts/{id}/content",
 		"POST /api/v1/workflows", "GET /api/v1/tasks/{id}/workflow",
-		"GET /api/v1/goals", "POST /api/v1/goals", "POST /api/v1/goals/{id}/stop",
 		"GET /api/v1/decisions", "GET /api/v1/approvals", "POST /api/v1/approvals/{id}/decision",
 		"GET /api/v1/attention", "GET /api/v1/attention/events", "GET /api/v1/attention/{id}":
 		return true

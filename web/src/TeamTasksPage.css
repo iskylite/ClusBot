@@ -1,4 +1,4 @@
-.workspace.v31-workspace > .team-tasks-page { grid-column: 2 / -1; gap: 12px; padding: 12px 24px 16px; }
+.workspace.app-workspace > .team-tasks-page { grid-column: 2 / -1; gap: 12px; padding: 12px 24px 16px; }
 .team-tasks-switches { display: flex; }
 .team-tasks-filters { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .team-segments { display: inline-flex; gap: 2px; max-width: 100%; padding: 3px; border-radius: 8px; background: var(--panel); overflow-x: auto; }
@@ -109,7 +109,7 @@
   .team-row-actions { flex-wrap: wrap; }
 }
 @media (max-width:650px) {
-  .workspace.v31-workspace > .team-tasks-page { gap: 12px; padding: 12px 15px 14px; }
+  .workspace.app-workspace > .team-tasks-page { gap: 12px; padding: 12px 15px 14px; }
   .team-filter-inputs, .team-search { width: 100%; }
   .team-search input { flex: 1; width: auto; min-height: 42px; }
   .team-owner-filter select, .team-button, .team-segments button { min-height: 40px; }

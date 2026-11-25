@@ -1,6 +1,6 @@
 package work
 
-// P4-18：硬件故障、工单和更换部件。
+// 硬件故障、工单和更换部件。
 //
 // 本文件实现人工维修跨日等待可持续跟踪，工单回执不替代设备验证：
 //   - 经领域维护接管创建/关联外部工单，记录责任人、对象/部件、故障证据和
@@ -45,7 +45,7 @@ type Ticket struct {
 	UpdatedAt           int64
 }
 
-// createTicket 创建工单（P4-18.1）。
+// createTicket 创建工单。
 // 经领域维护接管创建/关联外部工单，记录责任人、对象/部件、故障证据和外部
 // 状态版本；重复回调不重复新建工单（幂等）。
 func createTicket(tx *sql.Tx, t Ticket, now int64) (Ticket, error) {
@@ -109,7 +109,7 @@ FROM tickets WHERE ticket_id=?`, ticketID).
 // 工单长等待（Wait/事件/查询，不占模型和工作者）
 // ---------------------------------------------------------------------------
 
-// waitTicketUpdate 等待工单更新（P4-18.2）。
+// waitTicketUpdate 等待工单更新。
 // 工单长等待使用 Wait/事件/查询，不占模型和工作者。
 func waitTicketUpdate(tx *sql.Tx, ticketID string, waitKey string, now int64) error {
 	// 工单长等待使用 Wait（不占模型和工作者）。
@@ -124,15 +124,15 @@ func waitTicketUpdate(tx *sql.Tx, ticketID string, waitKey string, now int64) er
 // 部件更换（结束旧安装关系并建立新部件/关系，触发相关验收依赖失效）
 // ---------------------------------------------------------------------------
 
-// recordComponentReplacement 记录部件更换（P4-18.3）。
+// recordComponentReplacement 记录部件更换。
 // 部件更换结束旧安装关系并建立新部件/关系，触发相关验收依赖失效；
 // 新旧部件序列号和恢复后的历史引用正确。
 func recordComponentReplacement(tx *sql.Tx, nodeRef, oldComponentRef, newComponentRef, componentKind string, now int64) error {
-	// 结束旧安装关系并建立新部件/关系（复用 P4-02 的 replaceComponent）。
+	// 结束旧安装关系并建立新部件/关系（复用 的 replaceComponent）。
 	if _, err := replaceComponent(tx, nodeRef, oldComponentRef, newComponentRef, componentKind, now); err != nil {
 		return err
 	}
-	// 触发相关验收依赖失效（复用 P4-06 的 invalidateEvidenceDependency）。
+	// 触发相关验收依赖失效（复用 的 invalidateEvidenceDependency）。
 	if _, err := invalidateEvidenceDependency(tx, "component", oldComponentRef, "部件更换", now); err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func recordComponentReplacement(tx *sql.Tx, nodeRef, oldComponentRef, newCompone
 // 维修复核（工单关闭后查询实际效果并测试，验证后回待复核）
 // ---------------------------------------------------------------------------
 
-// verifyTicketRepair 维修复核（P4-18.4）。
+// verifyTicketRepair 维修复核。
 // 工单关闭后查询实际效果并测试，验证后回待复核；未恢复继续限制和后续责任；
 // 工单回执不替代设备验证（关闭工单但故障仍在时，资产不会被误恢复）。
 func verifyTicketRepair(tx *sql.Tx, ticketID string, effectVerified bool, testPassed bool, now int64) error {
@@ -160,7 +160,7 @@ func verifyTicketRepair(tx *sql.Tx, ticketID string, effectVerified bool, testPa
 		}
 		return fmt.Errorf("工单 %s 效果未验证或测试未通过（关闭工单但故障仍在时，资产不会被误恢复）", ticketID)
 	}
-	// 验证后回待复核（复用 P4-05 的 transitionAssetState）。
+	// 验证后回待复核（复用 的 transitionAssetState）。
 	if _, err := tx.Exec(`UPDATE tickets SET state='verified', verification_outcome='verified', updated_at=? WHERE ticket_id=?`,
 		now, ticketID); err != nil {
 		return err
@@ -178,7 +178,7 @@ func verifyTicketRepair(tx *sql.Tx, ticketID string, effectVerified bool, testPa
 // ErrLentAssetRepair 是借出资产维修的错误。
 var ErrLentAssetRepair = errors.New("借出期间只有专项授权维修可调用相关动作")
 
-// ensureLentAssetRepairAuthorized 核对借出资产维修授权（P4-18.5）。
+// ensureLentAssetRepairAuthorized 核对借出资产维修授权。
 // 借出期间只有专项授权维修可调用相关动作，维修记录不把资产变维护中或在役。
 func ensureLentAssetRepairAuthorized(tx *sql.Tx, objectRef string, subject string, now int64) error {
 	asset, err := readAsset(tx, objectRef)

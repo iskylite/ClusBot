@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1780" height="1140" viewBox="0 0 1780 1140" role="img" aria-labelledby="tt"><title id="tt">ClusBot 总体架构</title><style>text{font-family:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif;fill:#20303f}
+.hbig{font-size:42px;font-weight:800}.ssub{font-size:17px;fill:#5d6b7a}
+.lyl3{font-size:19px;font-weight:800;fill:#ffffff}
+.ch3{font-size:12.5px;font-weight:600;fill:#243243}
+.al{font-size:12.5px;fill:#6a7683}.al2{font-size:12px;fill:#9a6a24}
+.gov{font-size:16px;font-weight:800;fill:#a5342a}
+.lh{font-size:17px;font-weight:800;fill:#b7791f}.lp{font-size:13.5px;font-weight:700;fill:#8a5a1e}
+.note{font-size:13.5px;fill:#8a93a2}</style><rect width="1780" height="1140" fill="#ffffff"/>
+<defs>
+<marker id="mArr" markerWidth="11" markerHeight="11" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#41505f"/></marker>
+<marker id="mLoop" markerWidth="10" markerHeight="10" refX="7" refY="3.6" orient="auto"><path d="M0,0 L7,3.6 L0,7.2 Z" fill="#B96505"/></marker>
+<marker id="mGov" markerWidth="9" markerHeight="9" refX="6.5" refY="3.2" orient="auto"><path d="M0,0 L6.5,3.2 L0,6.4 Z" fill="#c0554f"/></marker></defs>
+<text x="56" y="58" class="hbig">ClusBot 总体架构</text>
+<text x="56" y="94" class="ssub">等距立体分层（用户 → 接入/内核 → 运行时/执行 → 领域 → 数据与知识）；右侧为有界 RSI 自改进回路，扎根在知识层。</text>
+<rect x="64" y="174" width="86" height="866" rx="10" fill="#fdeeec" stroke="#eec9c4"/>
+<text x="107" y="607" transform="rotate(-90 107 607)" text-anchor="middle" class="gov">治理横切　授权·审批·验收·审计·冻结评估器</text>
+<polygon points="1240,210 1276,174 1276,292 1240,328" fill="#2f8f6b" fill-opacity="0.55"/>
+<polygon points="200,210 1240,210 1276,174 236,174" fill="#2f8f6b" fill-opacity="0.30"/>
+<rect x="200" y="210" width="1040" height="118" rx="4" fill="#eaf6f2" stroke="#2f8f6b" stroke-width="1.4"/>
+<rect x="200" y="210" width="150" height="118" rx="4" fill="#2f8f6b" fill-opacity="0.16"/>
+<line x1="350" y1="210" x2="350" y2="328" stroke="#2f8f6b" stroke-width="1.2"/>
+<text x="275" y="265" class="lyl3" text-anchor="middle">用户</text>
+<text x="275" y="289" class="lyl3" text-anchor="middle">入口层</text>
+<rect x="366" y="246" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2f8f6b" stroke-width="1.4"/>
+<text x="468.25" y="274" class="ch3" text-anchor="middle">对话 / 工作台</text>
+<rect x="584.5" y="246" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2f8f6b" stroke-width="1.4"/>
+<text x="686.75" y="274" class="ch3" text-anchor="middle">集群运维</text>
+<rect x="803" y="246" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2f8f6b" stroke-width="1.4"/>
+<text x="905.25" y="274" class="ch3" text-anchor="middle">记忆与学习</text>
+<rect x="1021.5" y="246" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2f8f6b" stroke-width="1.4"/>
+<text x="1123.75" y="274" class="ch3" text-anchor="middle">设置 / 连接</text>
+<polygon points="1240,388 1276,352 1276,470 1240,506" fill="#2465C5" fill-opacity="0.55"/>
+<polygon points="200,388 1240,388 1276,352 236,352" fill="#2465C5" fill-opacity="0.30"/>
+<rect x="200" y="388" width="1040" height="118" rx="4" fill="#e9f1fc" stroke="#2465C5" stroke-width="1.4"/>
+<rect x="200" y="388" width="150" height="118" rx="4" fill="#2465C5" fill-opacity="0.16"/>
+<line x1="350" y1="388" x2="350" y2="506" stroke="#2465C5" stroke-width="1.2"/>
+<text x="275" y="443" class="lyl3" text-anchor="middle">接入 ·</text>
+<text x="275" y="467" class="lyl3" text-anchor="middle">内核层</text>
+<rect x="366" y="424" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2465C5" stroke-width="1.4"/>
+<text x="468.25" y="452" class="ch3" text-anchor="middle">HTTP API · 鉴权</text>
+<rect x="584.5" y="424" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2465C5" stroke-width="1.4"/>
+<text x="686.75" y="452" class="ch3" text-anchor="middle">Router 受理</text>
+<rect x="803" y="424" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2465C5" stroke-width="1.4"/>
+<text x="905.25" y="452" class="ch3" text-anchor="middle">Worker 执行·报告</text>
+<rect x="1021.5" y="424" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#2465C5" stroke-width="1.4"/>
+<text x="1123.75" y="452" class="ch3" text-anchor="middle">上下文 · A2UI</text>
+<polygon points="1240,566 1276,530 1276,648 1240,684" fill="#6b46b8" fill-opacity="0.55"/>
+<polygon points="200,566 1240,566 1276,530 236,530" fill="#6b46b8" fill-opacity="0.30"/>
+<rect x="200" y="566" width="1040" height="118" rx="4" fill="#efeafb" stroke="#6b46b8" stroke-width="1.4"/>
+<rect x="200" y="566" width="150" height="118" rx="4" fill="#6b46b8" fill-opacity="0.16"/>
+<line x1="350" y1="566" x2="350" y2="684" stroke="#6b46b8" stroke-width="1.2"/>
+<text x="275" y="621" class="lyl3" text-anchor="middle">运行时 ·</text>
+<text x="275" y="645" class="lyl3" text-anchor="middle">执行层</text>
+<rect x="366" y="602" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#6b46b8" stroke-width="1.4"/>
+<text x="504.66666666666663" y="630" class="ch3" text-anchor="middle">工作运行时（Go）</text>
+<rect x="657.3333333333333" y="602" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#6b46b8" stroke-width="1.4"/>
+<text x="795.9999999999999" y="630" class="ch3" text-anchor="middle">执行网关（MCP·CLI·HTTP）</text>
+<rect x="948.6666666666666" y="602" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#6b46b8" stroke-width="1.4"/>
+<text x="1087.3333333333333" y="630" class="ch3" text-anchor="middle">模型路由（按角色选模型）</text>
+<polygon points="1240,744 1276,708 1276,826 1240,862" fill="#B96505" fill-opacity="0.55"/>
+<polygon points="200,744 1240,744 1276,708 236,708" fill="#B96505" fill-opacity="0.30"/>
+<rect x="200" y="744" width="1040" height="118" rx="4" fill="#fdf1e4" stroke="#B96505" stroke-width="1.4"/>
+<rect x="200" y="744" width="150" height="118" rx="4" fill="#B96505" fill-opacity="0.16"/>
+<line x1="350" y1="744" x2="350" y2="862" stroke="#B96505" stroke-width="1.2"/>
+<text x="275" y="799" class="lyl3" text-anchor="middle">领域</text>
+<text x="275" y="823" class="lyl3" text-anchor="middle">服务层</text>
+<rect x="366" y="780" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#B96505" stroke-width="1.4"/>
+<text x="468.25" y="808" class="ch3" text-anchor="middle">资产 / 发现</text>
+<rect x="584.5" y="780" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#B96505" stroke-width="1.4"/>
+<text x="686.75" y="808" class="ch3" text-anchor="middle">基准</text>
+<rect x="803" y="780" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#B96505" stroke-width="1.4"/>
+<text x="905.25" y="808" class="ch3" text-anchor="middle">工单 / 监控</text>
+<rect x="1021.5" y="780" width="204.5" height="46" rx="23" fill="#ffffff" stroke="#B96505" stroke-width="1.4"/>
+<text x="1123.75" y="808" class="ch3" text-anchor="middle">证据与验收</text>
+<polygon points="1240,922 1276,886 1276,1004 1240,1040" fill="#5d6b7a" fill-opacity="0.55"/>
+<polygon points="200,922 1240,922 1276,886 236,886" fill="#5d6b7a" fill-opacity="0.30"/>
+<rect x="200" y="922" width="1040" height="118" rx="4" fill="#eef0f3" stroke="#5d6b7a" stroke-width="1.4"/>
+<rect x="200" y="922" width="150" height="118" rx="4" fill="#5d6b7a" fill-opacity="0.16"/>
+<line x1="350" y1="922" x2="350" y2="1040" stroke="#5d6b7a" stroke-width="1.2"/>
+<text x="275" y="977" class="lyl3" text-anchor="middle">数据 ·</text>
+<text x="275" y="1001" class="lyl3" text-anchor="middle">知识层</text>
+<rect x="366" y="958" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#5d6b7a" stroke-width="1.4"/>
+<text x="504.66666666666663" y="986" class="ch3" text-anchor="middle">SQLite（运行/技能/经验）</text>
+<rect x="657.3333333333333" y="958" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#5d6b7a" stroke-width="1.4"/>
+<text x="795.9999999999999" y="986" class="ch3" text-anchor="middle">工作区文件</text>
+<rect x="948.6666666666666" y="958" width="277.3333333333333" height="46" rx="23" fill="#ffffff" stroke="#5d6b7a" stroke-width="1.4"/>
+<text x="1087.3333333333333" y="986" class="ch3" text-anchor="middle">记忆 / 经验 / Skill</text>
+<line x1="803" y1="330" x2="803" y2="350" stroke="#41505f" stroke-width="2.3" marker-end="url(#mArr)"/>
+<text x="815" y="346" class="al">HTTP / 会话</text>
+<line x1="803" y1="508" x2="803" y2="528" stroke="#41505f" stroke-width="2.3" marker-end="url(#mArr)"/>
+<text x="815" y="524" class="al">派发任务 · 调度</text>
+<line x1="803" y1="686" x2="803" y2="706" stroke="#41505f" stroke-width="2.3" marker-end="url(#mArr)"/>
+<text x="815" y="702" class="al">调用领域服务</text>
+<line x1="803" y1="864" x2="803" y2="884" stroke="#41505f" stroke-width="2.3" marker-end="url(#mArr)"/>
+<text x="815" y="880" class="al">写入事实 / 证据</text>
+<line x1="152" y1="269" x2="196" y2="269" stroke="#c0554f" stroke-width="2.3" marker-end="url(#mGov)"/>
+<line x1="152" y1="447" x2="196" y2="447" stroke="#c0554f" stroke-width="2.3" marker-end="url(#mGov)"/>
+<line x1="152" y1="625" x2="196" y2="625" stroke="#c0554f" stroke-width="2.3" marker-end="url(#mGov)"/>
+<line x1="152" y1="803" x2="196" y2="803" stroke="#c0554f" stroke-width="2.3" marker-end="url(#mGov)"/>
+<line x1="152" y1="981" x2="196" y2="981" stroke="#c0554f" stroke-width="2.3" marker-end="url(#mGov)"/>
+<path d="M1240 1000 L1580 1000 L1580 470 L1254 470" fill="none" stroke="#c98a34" stroke-width="2.4" stroke-dasharray="8 6" stroke-opacity="0.55"/>
+<line x1="1240" y1="1000" x2="1572" y2="1000" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<text x="1246" y="992" class="al2">经验 / Skill 存取</text>
+<line x1="1580" y1="470" x2="1244" y2="470" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<text x="1300" y="462" class="al2">Skill 版本 → 上下文</text>
+<line x1="1240" y1="803" x2="1503" y2="803" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<text x="1252" y="795" class="al2">证据验收</text>
+<line x1="1503" y1="648" x2="1246" y2="648" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<text x="1256" y="640" class="al2">调用模型跑评测</text>
+<rect x="1505" y="900" width="150" height="40" rx="20" fill="#fff3e1" stroke="#e6c58c" stroke-width="1.4"/>
+<text x="1580" y="925" class="lp" text-anchor="middle">验收 / 纠正</text>
+<rect x="1505" y="770" width="150" height="40" rx="20" fill="#fff3e1" stroke="#e6c58c" stroke-width="1.4"/>
+<text x="1580" y="795" class="lp" text-anchor="middle">经验候选</text>
+<rect x="1505" y="630" width="150" height="40" rx="20" fill="#fff3e1" stroke="#e6c58c" stroke-width="1.4"/>
+<text x="1580" y="655" class="lp" text-anchor="middle">评测 + 重放</text>
+<rect x="1505" y="490" width="150" height="40" rx="20" fill="#fff3e1" stroke="#e6c58c" stroke-width="1.4"/>
+<text x="1580" y="515" class="lp" text-anchor="middle">Skill 版本</text>
+<line x1="1580" y1="900" x2="1580" y2="812" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<line x1="1580" y1="770" x2="1580" y2="672" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<line x1="1580" y1="630" x2="1580" y2="532" stroke="#B96505" stroke-width="2.3" marker-end="url(#mLoop)"/>
+<text x="1330" y="430" class="lh">自改进回路（有界 RSI）</text>
+<text x="56" y="1064" class="note">模型路由 = 为受理 / Worker / 报告等角色选择模型、协议、地址与预算（模型角色绑定）。</text>
+<text x="56" y="1090" class="note">回路：验收/纠正 → 经验候选 → 评测+重放 → Skill 版本；经验与 Skill 存于「数据·知识层」，评测调用「执行层·模型」，成品 Skill 回填「内核」上下文。</text></svg>

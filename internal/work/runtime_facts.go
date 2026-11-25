@@ -1,6 +1,6 @@
 package work
 
-// P4-03：观测、事实和关系的双时间历史。
+// 观测、事实和关系的双时间历史。
 //
 // 本文件实现区分现实生效时间与系统获知时间，冲突和迟到不破坏历史：
 //   - 原始 Observation 保存来源/采集时间/覆盖；规范声明保留值、单位、来源、
@@ -39,7 +39,7 @@ type Observation struct {
 	RecordedAt     int64
 }
 
-// recordObservation 记录原始 Observation（P4-03.1）。
+// recordObservation 记录原始 Observation。
 // 原始 Observation 保存来源/采集时间/覆盖。
 func recordObservation(tx *sql.Tx, o Observation, now int64) (Observation, error) {
 	if o.SourceRef == "" || o.SourceIdentity == "" || o.ObjectRef == "" || o.FieldKey == "" {
@@ -81,7 +81,7 @@ type Fact struct {
 	CreatedAt     int64
 }
 
-// assertFact 声明一个事实（P4-03.1/P4-03.3）。
+// assertFact 声明一个事实。
 // 规范声明保留值、单位、来源、有效时间和记录时间；更正新增修订并关闭原
 // 记录的适用区间，不覆盖历史。
 func assertFact(tx *sql.Tx, f Fact, now int64) (Fact, error) {
@@ -123,7 +123,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 // 权威来源选择（按字段与用途；冲突保留双方及判据）
 // ---------------------------------------------------------------------------
 
-// selectAuthoritativeFact 选择权威事实（P4-03.2）。
+// selectAuthoritativeFact 选择权威事实。
 // 按字段与用途选择权威来源，冲突保留双方及判据；不能按最后到达或相似度
 // 胜出；相互矛盾来源返回冲突/未知。
 func selectAuthoritativeFact(tx *sql.Tx, objectRef, fieldKey string, atTime int64) (Fact, error) {
@@ -180,7 +180,7 @@ FROM facts WHERE object_ref=? AND field_key=? AND valid_from<=? AND (valid_to=0 
 // 重复事件去重（依据来源身份/版本）
 // ---------------------------------------------------------------------------
 
-// deduplicateFactEvent 去重事实事件（P4-03.3）。
+// deduplicateFactEvent 去重事实事件。
 // 重复事件依据来源身份/版本去重；乱序旧事件不会覆盖当前新事实。
 func deduplicateFactEvent(tx *sql.Tx, f Fact, now int64) (duplicate bool, err error) {
 	// 同来源同字段同有效时间：重复（依据来源身份/版本去重）。
@@ -221,7 +221,7 @@ type Relation struct {
 	CreatedAt    int64
 }
 
-// assertRelation 声明一个关系（P4-03.4）。
+// assertRelation 声明一个关系。
 // 物理组成无环、单一父关系的有效区间不重叠；网络拓扑允许环，端口连线
 // 规范端点并支持双向查；并发插入重叠安装关系被约束。
 func assertRelation(tx *sql.Tx, r Relation, now int64) (Relation, error) {
@@ -293,7 +293,7 @@ func ensureNoPhysicalCycle(tx *sql.Tx, sourceRef, targetRef string) error {
 // 当前事实投影（可重建并带水位）
 // ---------------------------------------------------------------------------
 
-// rebuildFactProjection 重建当前事实投影（P4-03.5）。
+// rebuildFactProjection 重建当前事实投影。
 // 当前事实投影可重建并带水位，过期或缺失不被伪装为新鲜。
 func rebuildFactProjection(tx *sql.Tx, watermark int64, now int64) error {
 	// 重建投影（带水位）。

@@ -132,10 +132,10 @@ WHERE command_id=?`, stamp+5000, reason, key); err != nil {
 		}
 		return false, tx.Commit()
 	}
-	if cur.State == V3TaskPaused {
+	if cur.State == RuntimeTaskPaused {
 		return deferUntil("任务已暂停，等待用户恢复")
 	}
-	if cur.State != V3TaskWaiting && cur.State != V3TaskPending && cur.State != V3TaskRunning {
+	if cur.State != RuntimeTaskWaiting && cur.State != RuntimeTaskPending && cur.State != RuntimeTaskRunning {
 		return finish("任务不是可正常唤醒的进行态，不改变任务状态", false)
 	}
 	var legacy string
@@ -172,7 +172,7 @@ AND NOT EXISTS(SELECT 1 FROM waits WHERE task_id=? AND state='open' AND (step_id
 			return false, err
 		}
 	}
-	if openWait || cur.State != V3TaskWaiting {
+	if openWait || cur.State != RuntimeTaskWaiting {
 		return finish("时间条件已记账；不改变当前任务状态", false)
 	}
 	if _, err := transitionTaskState(tx, task, EventWaitResolved,

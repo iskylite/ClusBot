@@ -53,7 +53,7 @@ func (f *localIntegrationBenchmark) Get(_ context.Context, r work.BenchmarkJobRe
 
 func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 	ctx := t.Context()
-	path := filepath.Join(t.TempDir(), "v31-integration.sqlite")
+	path := filepath.Join(t.TempDir(), "domain-integration.sqlite")
 	const (
 		admission    = "/api/v1/domain/benchmark-admission/preview"
 		runs         = "/api/v1/domain/benchmarks/"
@@ -127,7 +127,7 @@ func TestLocalBenchmarkChatLifecycleAcrossRestart(t *testing.T) {
 		if err := store.Recover(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.RecoverV3(ctx, time.Now().UnixMilli()); err != nil {
+		if _, err := store.RecoverRuntime(ctx, time.Now().UnixMilli()); err != nil {
 			t.Fatal(err)
 		}
 		server := Server{Store: store, Settings: settings, BenchmarkProvider: provider, Token: "a1-token", Hosts: []string{"127.0.0.1"}}

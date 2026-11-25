@@ -1,16 +1,16 @@
 package work
 
-// P1-03：Task 状态机、完成判定与终态约束。
+// Task 状态机、完成判定与终态约束。
 //
-// 本文件实现 V3 §5.2 的事件/守卫/目标状态表：所有 Task 状态变更经一个
+// 本文件实现 §5.2 的事件/守卫/目标状态表：所有 Task 状态变更经一个
 // 可测试入口 transitionTaskState，每次变更校验预期版本，写入原因、输入、
 // 审计和需要的后续命令。完成由条件与收尾共同决定——模型返回完成、任一
 // Step 完成或工具回执成功均不能直接使 Task 成功；成功/失败/已取消不复活，
 // 后续工作创建有原任务关联的新 Task。
 //
-// 与旧执行器的关系：本状态机操作 P1-02 的 task_states 权威记录，不直接
-// 改写旧 tasks 五态；P1-13 统一切换启动路径后由它驱动调度。个人助手的
-// 成果保存与人工验收适配为当前 Task 的完成条件（P1-03.5），不把文件
+// 与旧执行器的关系：本状态机操作 的 task_states 权威记录，不直接
+// 改写旧 tasks 五态；统一切换启动路径后由它驱动调度。个人助手的
+// 成果保存与人工验收适配为当前 Task 的完成条件，不把文件
 // 发布表改成通用操作表。
 
 import (
@@ -47,9 +47,9 @@ const (
 // ---------------------------------------------------------------------------
 
 // TaskGuard 是状态变更前必须核对的守卫证据。守卫判定在事务内重新读取
-// 当前权威记录（P1-01.3：不依赖只读池之前的缓存结论）。
+// 当前权威记录。
 type TaskGuard struct {
-	FinalState V3TaskState // 可选的收尾终态，默认成功
+	FinalState RuntimeTaskState // 可选的收尾终态，默认成功
 	// ExpectedStorageRevision 是调用方持有的预期存储版本（乐观并发）。
 	ExpectedStorageRevision int
 	// HasRunnableSteps 是否仍有可运行 Step（EventNoRunnableStep 的守卫）。
@@ -74,8 +74,8 @@ type TaskGuard struct {
 
 // TaskTransition 是一次状态变更的结果。
 type TaskTransition struct {
-	From   V3TaskState
-	To     V3TaskState
+	From   RuntimeTaskState
+	To     RuntimeTaskState
 	Event  TaskEvent
 	Reason string
 	// FollowUp 是需要的后续命令（审计/核对/通知等，由调用方处理）。
@@ -96,7 +96,7 @@ func transitionTaskState(tx *sql.Tx, taskID string, event TaskEvent, guard TaskG
 	// 读取当前权威状态（同事务重新读取，不依赖缓存）。
 	current, err := readTaskState(tx, taskID)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 尚无 V3 状态：仅允许 EventCreate 建立。
+		// 尚无 状态：仅允许 EventCreate 建立。
 		if event != EventCreate {
 			return TaskTransition{}, fmt.Errorf("任务 %s 尚无 V3 状态，事件 %s 不允许", taskID, event)
 		}
@@ -135,7 +135,7 @@ func transitionTaskState(tx *sql.Tx, taskID string, event TaskEvent, guard TaskG
 	}
 	// EventCreate 时 current.State 为空，直接接受目标。
 	if current.State == "" {
-		if target != V3TaskPending && target != V3TaskWaiting {
+		if target != RuntimeTaskPending && target != RuntimeTaskWaiting {
 			return TaskTransition{
 				Event: event, Rejected: true,
 				Rejection: fmt.Sprintf("创建只能进入待执行或等待中，得到 %s", target),
@@ -179,51 +179,51 @@ func transitionTaskState(tx *sql.Tx, taskID string, event TaskEvent, guard TaskG
 
 // evaluateTransition 按 §5.2 表计算目标状态、原因与后续命令；
 // 守卫不满足时返回拒绝原因。
-func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to V3TaskState, reason string, followUp []string, reject string) {
+func evaluateTransition(from RuntimeTaskState, event TaskEvent, guard TaskGuard) (to RuntimeTaskState, reason string, followUp []string, reject string) {
 	switch event {
 	case EventCreate:
 		// 创建有效任务 → 待执行；依赖/事件/时间未满足 → 等待中。
 		if guard.HasOpenWaits {
-			return V3TaskWaiting, "创建并登记等待", nil, ""
+			return RuntimeTaskWaiting, "创建并登记等待", nil, ""
 		}
-		return V3TaskPending, "创建有效任务", nil, ""
+		return RuntimeTaskPending, "创建有效任务", nil, ""
 
 	case EventClaim:
 		// 领取成功 → 执行中（守卫：可运行、预算、权限满足）。
-		if from != V3TaskPending {
+		if from != RuntimeTaskPending {
 			return "", "", nil, fmt.Sprintf("领取要求待执行，当前 %s", from)
 		}
-		return V3TaskRunning, "领取成功", nil, ""
+		return RuntimeTaskRunning, "领取成功", nil, ""
 
 	case EventNoRunnableStep:
 		// 没有可继续的 Step → 等待中，持久保存 Wait。
-		if from != V3TaskRunning && from != V3TaskPending {
+		if from != RuntimeTaskRunning && from != RuntimeTaskPending {
 			return "", "", nil, fmt.Sprintf("无可运行步骤要求执行中/待执行，当前 %s", from)
 		}
 		if guard.HasRunnableSteps {
 			return "", "", nil, "仍有可运行步骤，不能进入等待"
 		}
-		return V3TaskWaiting, "没有可继续的步骤，登记等待", []string{"open_wait"}, ""
+		return RuntimeTaskWaiting, "没有可继续的步骤，登记等待", []string{"open_wait"}, ""
 
 	case EventWaitResolved:
 		// 等待条件满足 → 待执行，重新检查资格。
-		if from != V3TaskWaiting {
+		if from != RuntimeTaskWaiting {
 			return "", "", nil, fmt.Sprintf("唤醒要求等待中，当前 %s", from)
 		}
 		// 唤醒只生成需重新核对的就绪工作，不跳过当前合同/权限/未知操作检查。
-		return V3TaskPending, "等待条件满足，重新核对资格", []string{"recheck_eligibility"}, ""
+		return RuntimeTaskPending, "等待条件满足，重新核对资格", []string{"recheck_eligibility"}, ""
 
 	case EventPause:
 		// 有效暂停请求 → 已暂停，停止新领取和新派发。
-		if from != V3TaskPending && from != V3TaskRunning && from != V3TaskWaiting && from != V3TaskAcceptance {
+		if from != RuntimeTaskPending && from != RuntimeTaskRunning && from != RuntimeTaskWaiting && from != RuntimeTaskAcceptance {
 			return "", "", nil, fmt.Sprintf("暂停要求非终态进行态，当前 %s", from)
 		}
 		// 已派发操作继续核对，回执可入账但不自动继续任务。
-		return V3TaskPaused, "已暂停，停止新领取和新派发", []string{"reconcile_dispatched"}, ""
+		return RuntimeTaskPaused, "已暂停，停止新领取和新派发", []string{"reconcile_dispatched"}, ""
 
 	case EventResume:
 		// 恢复已暂停任务 → 先核对未决在途，再按当前修订/权限/资产/Wait 重评。
-		if from != V3TaskPaused {
+		if from != RuntimeTaskPaused {
 			return "", "", nil, fmt.Sprintf("恢复要求已暂停，当前 %s", from)
 		}
 		followUp := []string{"reconcile_pending"}
@@ -232,13 +232,13 @@ func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to 
 			followUp = append(followUp, "recheck_operations")
 		}
 		if guard.HasOpenWaits {
-			return V3TaskWaiting, "恢复重评：仍在等待", followUp, ""
+			return RuntimeTaskWaiting, "恢复重评：仍在等待", followUp, ""
 		}
-		return V3TaskPending, "恢复重评：满足条件，回到待执行", followUp, ""
+		return RuntimeTaskPending, "恢复重评：满足条件，回到待执行", followUp, ""
 
 	case EventStepsComplete:
 		// 必需 Step 完成且操作有明确结果 → 验收中。
-		if from != V3TaskRunning {
+		if from != RuntimeTaskRunning {
 			return "", "", nil, fmt.Sprintf("完成判定要求执行中，当前 %s", from)
 		}
 		// 模型返回完成、任一 Step 完成或工具回执成功均不能直接使 Task 成功：
@@ -247,24 +247,24 @@ func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to 
 			return "", "", nil, fmt.Sprintf("存在未决操作（%d）或未知效果（%d），不能进入验收",
 				guard.PendingOperations, guard.UnknownEffects)
 		}
-		return V3TaskAcceptance, "必需步骤完成，进入验收", nil, ""
+		return RuntimeTaskAcceptance, "必需步骤完成，进入验收", nil, ""
 
 	case EventAcceptanceFail:
 		// 验收未通过但允许继续 → 回待执行并记录新依据。
-		if from != V3TaskAcceptance {
+		if from != RuntimeTaskAcceptance {
 			return "", "", nil, fmt.Sprintf("验收未通过要求验收中，当前 %s", from)
 		}
-		return V3TaskPending, "验收未通过，允许继续，记录新依据", nil, ""
+		return RuntimeTaskPending, "验收未通过，允许继续，记录新依据", nil, ""
 
 	case EventAcceptancePass:
 		// 验收通过 → 收尾中。
-		if from != V3TaskAcceptance {
+		if from != RuntimeTaskAcceptance {
 			return "", "", nil, fmt.Sprintf("验收通过要求验收中，当前 %s", from)
 		}
 		if !guard.AcceptanceEvidence {
 			return "", "", nil, "验收证据无效，不能通过"
 		}
-		return V3TaskFinalizing, "验收通过，进入收尾", []string{"finalize_success"}, ""
+		return RuntimeTaskFinalizing, "验收通过，进入收尾", []string{"finalize_success"}, ""
 
 	case EventCancel, EventFail:
 		// 取消/最终失败 → 收尾中，核对全部在途操作、部分效果、占用与未完成事项。
@@ -283,11 +283,11 @@ func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to 
 		if event == EventFail {
 			reason = "判定最终失败，进入收尾"
 		}
-		return V3TaskFinalizing, reason, followUp, ""
+		return RuntimeTaskFinalizing, reason, followUp, ""
 
 	case EventFinalized:
 		// 收尾完成 → 仅运行时确认进入终态之一。
-		if from != V3TaskFinalizing {
+		if from != RuntimeTaskFinalizing {
 			return "", "", nil, fmt.Sprintf("收尾完成要求收尾中，当前 %s", from)
 		}
 		// 未知效果保持待核对及收尾中，除非明确授权的人工接管已记录。
@@ -296,19 +296,19 @@ func evaluateTransition(from V3TaskState, event TaskEvent, guard TaskGuard) (to 
 		}
 		// 目标终态由收尾结果决定；这里要求调用方给出明确终态。
 		// 成功/失败/已取消的区分由收尾记录决定，统一经 finalize 进入。
-		if guard.FinalState == V3TaskCancelled {
-			return V3TaskCancelled, "收尾完成，运行时确认取消", nil, ""
+		if guard.FinalState == RuntimeTaskCancelled {
+			return RuntimeTaskCancelled, "收尾完成，运行时确认取消", nil, ""
 		}
-		if guard.FinalState == V3TaskFailed {
-			return V3TaskFailed, "收尾完成，运行时确认失败", nil, ""
+		if guard.FinalState == RuntimeTaskFailed {
+			return RuntimeTaskFailed, "收尾完成，运行时确认失败", nil, ""
 		}
-		return V3TaskSucceeded, "收尾完成，运行时确认成功", nil, ""
+		return RuntimeTaskSucceeded, "收尾完成，运行时确认成功", nil, ""
 	}
 	return "", "", nil, fmt.Sprintf("未识别的事件 %q", event)
 }
 
 // ---------------------------------------------------------------------------
-// 终态约束与关联新 Task（P1-03.4）
+// 终态约束与关联新 Task
 // ---------------------------------------------------------------------------
 
 // ErrTaskTerminal 是终态后请求被拒的错误。
@@ -329,12 +329,12 @@ func ensureTaskNotTerminal(q recordsQuerier, taskID string) error {
 	return nil
 }
 
-// successorTaskDecision 判定终态后的后续请求（复用 P0-02 的判定）。
+// successorTaskDecision 判定终态后的后续请求（复用 的判定）。
 // 返回"创建关联新 Task"的决定与原任务关联；不复活原任务。
-func successorTaskDecision(q recordsQuerier, taskID string) (SuccessorDecision, V3TaskState, error) {
+func successorTaskDecision(q recordsQuerier, taskID string) (SuccessorDecision, RuntimeTaskState, error) {
 	state, err := readTaskState(q, taskID)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 无 V3 状态：按旧五态兼容（P1-12 的兼容入口处理）。
+		// 无 状态：按旧五态兼容。
 		return SuccessorResumeOriginal, "", nil
 	}
 	if err != nil {
@@ -344,7 +344,7 @@ func successorTaskDecision(q recordsQuerier, taskID string) (SuccessorDecision, 
 }
 
 // ---------------------------------------------------------------------------
-// 个人助手完成条件适配（P1-03.5）
+// 个人助手完成条件适配
 // ---------------------------------------------------------------------------
 
 // personalCompletionGuard 把个人助手的成果保存与人工验收适配为当前 Task
@@ -358,6 +358,41 @@ func personalCompletionGuard(q recordsQuerier, taskID string) (acceptanceEvidenc
 		return false, err
 	}
 	return accepted, nil
+}
+
+// projectTaskFromRuntimeState derives the tasks projection row from the
+// authoritative task_states state machine so both tables never drift.
+func projectTaskFromRuntimeState(tx *sql.Tx, taskID string, state RuntimeTaskState, statusReason, reason string, stamp int64) error {
+	if state == "" {
+		row, err := readTaskState(tx, taskID)
+		if err == nil {
+			state = row.State
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
+	legacy := "active"
+	var completedAt any
+	switch state {
+	case RuntimeTaskSucceeded:
+		legacy = "completed"
+		completedAt = stamp
+	case RuntimeTaskCancelled:
+		legacy = "cancelled"
+		completedAt = stamp
+	case RuntimeTaskFailed:
+		legacy = "interrupted"
+	case RuntimeTaskWaiting:
+		legacy = "waiting_user"
+	}
+	if state == "" {
+		_, err := tx.Exec(`UPDATE tasks SET status_reason=?,reason=?,revision=revision+1,updated_at=? WHERE id=?`,
+			statusReason, reason, stamp, taskID)
+		return err
+	}
+	_, err := tx.Exec(`UPDATE tasks SET status=?,status_reason=?,reason=?,completed_at=coalesce(?,completed_at),revision=revision+1,updated_at=? WHERE id=?`,
+		legacy, statusReason, reason, completedAt, stamp, taskID)
+	return err
 }
 
 // 确保 context 引用保留。

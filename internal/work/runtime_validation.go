@@ -1,6 +1,6 @@
 package work
 
-// P4-06：配置规范、验证证据与交付覆盖。
+// 配置规范、验证证据与交付覆盖。
 //
 // 本文件实现业务验收逐要求、逐实际对象核对，可定位缺项与失效原因：
 //   - 固定规范/规则版本、实际节点集合及对象组拓扑；参数测量定义与业务阈值
@@ -45,7 +45,7 @@ type ValidationRecord struct {
 	CreatedAt          int64
 }
 
-// recordValidation 记录验证（P4-06.2）。
+// recordValidation 记录验证。
 // 保存验证记录的输入条件、执行配置、样本范围、结果、来源和适用版本；
 // 不能仅存布尔通过；参数测量定义与业务阈值分离。
 func recordValidation(tx *sql.Tx, v ValidationRecord, now int64) (ValidationRecord, error) {
@@ -95,7 +95,7 @@ type AcceptanceCoverage struct {
 	UpdatedAt          int64
 }
 
-// recordAcceptanceCoverage 记录验收覆盖（P4-06.3）。
+// recordAcceptanceCoverage 记录验收覆盖。
 // 按要求 × 对象/组建立覆盖表；不适用项须有规范依据，未测/未知不能默认通过。
 func recordAcceptanceCoverage(tx *sql.Tx, c AcceptanceCoverage, now int64) (AcceptanceCoverage, error) {
 	if c.RequirementKey == "" || c.ObjectRef == "" {
@@ -166,7 +166,7 @@ type EvidenceDependency struct {
 	InvalidatedAt    int64
 }
 
-// invalidateEvidenceDependency 失效证据依赖（P4-06.4）。
+// invalidateEvidenceDependency 失效证据依赖。
 // 关系、部件、固件或规范变化时复查依赖，局部失效不抹掉无关结果；影响不明
 // 保留待复核。
 func invalidateEvidenceDependency(tx *sql.Tx, dependencyKind, targetRef string, reason string, now int64) (invalidated int, err error) {
@@ -219,7 +219,7 @@ type DeliveryRecord struct {
 	CreatedAt    int64
 }
 
-// recordDeliveryStage 记录交付阶段（P4-06.5）。
+// recordDeliveryStage 记录交付阶段。
 // 验收通过、准备交付和真实接收交接分别记录，最后才可决定在役。
 func recordDeliveryStage(tx *sql.Tx, d DeliveryRecord, now int64) (DeliveryRecord, error) {
 	if d.ObjectRef == "" || d.Stage == "" {
@@ -237,7 +237,7 @@ VALUES(?,?,?,?,?,?,?)`, d.DeliveryID, d.ObjectRef, d.Stage, d.RecordRef, d.Evide
 	return d, nil
 }
 
-// checkDeliveryComplete 核对交付完整（P4-06.5）。
+// checkDeliveryComplete 核对交付完整。
 // 验收通过、准备交付和真实接收交接分别记录，最后才可决定在役。
 func checkDeliveryComplete(q recordsQuerier, objectRef string) (complete bool, missing []string, err error) {
 	required := []string{"accepted", "ready", "handover"}

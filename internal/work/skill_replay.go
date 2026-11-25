@@ -10,6 +10,11 @@ import (
 	"time"
 )
 
+const (
+	skillReplayArmBase     = "base_skill"
+	skillReplayArmProposed = "proposed_skill"
+)
+
 var ErrSkillReplayRequired = errors.New("请先通过 Skill 正文重放，并确认该次评测结果")
 var ErrSkillReplayInput = errors.New("重放用例须属于提案范围和目标，并包含错误复用断言")
 
@@ -36,6 +41,15 @@ type SkillReplayReport struct {
 // ReplaySkillProposal compares the same task inputs with the two effective
 // Skill bodies. Only the replay report is written to the store.
 func (s *Store) ReplaySkillProposal(ctx context.Context, proposalID string, target SkillProposalVersion, suite ExperienceEvaluationSuite, cfg ExperienceEvaluationConfig, provider Provider) (SkillReplayReport, error) {
+	if len(suite.Cases) == 0 {
+		loaded, ok, err := s.loadProposalBoundSuite(ctx, proposalID)
+		if err != nil {
+			return SkillReplayReport{}, err
+		}
+		if ok {
+			suite = loaded
+		}
+	}
 	if err := validateEvaluation(suite, cfg); err != nil {
 		return SkillReplayReport{}, fmt.Errorf("%w：%v", ErrSkillReplayInput, err)
 	}
@@ -50,9 +64,9 @@ func (s *Store) ReplaySkillProposal(ctx context.Context, proposalID string, targ
 		pair := make([]ExperienceEvaluationResult, len(versions))
 		for offset := range versions {
 			arm := (index + offset) % len(versions)
-			policy := currentExperiencePolicy
+			policy := skillReplayArmBase
 			if arm == 1 {
-				policy = candidateExperiencePolicy
+				policy = skillReplayArmProposed
 			}
 			input := Message{Role: "user", Text: c.Prompt + "\n\n本次任务目标：\n" + strings.TrimSpace(c.Goal), Skill: versions[arm]}
 			result := ExperienceEvaluationResult{CaseID: c.ID, Policy: policy, Status: "not_run"}
@@ -72,15 +86,33 @@ func (s *Store) ReplaySkillProposal(ctx context.Context, proposalID string, targ
 			report.Results = append(report.Results, result)
 			report.Metrics[policy] = addEvaluationMetrics(report.Metrics[policy], result)
 		}
-		current, candidate := pair[0], pair[1]
-		newWrongReuse := current.WrongReuse != nil && candidate.WrongReuse != nil && !*current.WrongReuse && *candidate.WrongReuse
-		if current.Status != "completed" || candidate.Status != "completed" || (current.Success && !candidate.Success) || newWrongReuse {
+		baseRes, proposedRes := pair[0], pair[1]
+		newWrongReuse := baseRes.WrongReuse != nil && proposedRes.WrongReuse != nil && !*baseRes.WrongReuse && *proposedRes.WrongReuse
+		if baseRes.Status != "completed" || proposedRes.Status != "completed" || (baseRes.Success && !proposedRes.Success) || newWrongReuse {
 			report.Passed = false
 		}
 	}
-	report.Passed = report.Passed && report.Metrics[candidateExperiencePolicy].Successful > 0
+	report.Passed = report.Passed && report.Metrics[skillReplayArmProposed].Successful > 0
 	report.CompletedAt = now()
 	return report, s.saveSkillReplay(ctx, proposalID, report)
+}
+
+func (s *Store) loadProposalBoundSuite(ctx context.Context, proposalID string) (ExperienceEvaluationSuite, bool, error) {
+	var suiteJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT coalesce(s.suite_json,'') FROM skill_proposals p
+LEFT JOIN skill_evaluation_suites s ON s.suite_digest=p.suite_digest
+WHERE p.id=? AND p.suite_digest<>''`, proposalID).Scan(&suiteJSON)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && suiteJSON == "") {
+		return ExperienceEvaluationSuite{}, false, nil
+	}
+	if err != nil {
+		return ExperienceEvaluationSuite{}, false, err
+	}
+	var suite ExperienceEvaluationSuite
+	if err := json.Unmarshal([]byte(suiteJSON), &suite); err != nil {
+		return ExperienceEvaluationSuite{}, false, err
+	}
+	return suite, true, nil
 }
 
 func (s *Store) beginSkillReplay(ctx context.Context, proposalID string, target SkillProposalVersion, suite ExperienceEvaluationSuite, cfg ExperienceEvaluationConfig) (SkillReplayReport, [2]*SkillVersion, error) {
@@ -107,13 +139,13 @@ func (s *Store) beginSkillReplay(ctx context.Context, proposalID string, target 
 	}
 	reuseChecked := false
 	for _, c := range suite.Cases {
-		if strings.TrimSpace(c.Scope) != p.Skill.Scope || strings.TrimSpace(c.Goal) != p.Goal {
+		if strings.TrimSpace(c.Scope) != p.Skill.Scope || !skillProposalMatchesGoal(p.MatchMode, p.MatchKeywords, p.Goal, c.Goal) {
 			return report, versions, ErrSkillReplayInput
 		}
 		if c.TaskID != "" {
 			heldOut[c.TaskID] = true
 		}
-		reuseChecked = reuseChecked || len(c.Forbidden) > 0
+		reuseChecked = reuseChecked || len(c.Forbidden) > 0 || len(c.ForbiddenRegex) > 0
 	}
 	if !reuseChecked {
 		return report, versions, ErrSkillReplayInput
@@ -123,11 +155,14 @@ func (s *Store) beginSkillReplay(ctx context.Context, proposalID string, target 
 			return report, versions, fmt.Errorf("%w：留出任务被用作提案经验来源", ErrSkillReplayInput)
 		}
 	}
-	encodedSuite, err := json.Marshal(suite)
+	_, suiteHash, err := computeSuiteDigest(suite)
 	if err != nil {
 		return report, versions, err
 	}
-	report.SuiteDigest = digest(string(encodedSuite))
+	if p.SuiteDigest != "" && p.SuiteDigest != suiteHash {
+		return report, versions, fmt.Errorf("%w：重放用例须与评测阶段绑定的基准集一致", ErrSkillReplayInput)
+	}
+	report.SuiteDigest = suiteHash
 	var base string
 	if p.BaseVersion != nil {
 		base, err = applicableSkillInstructions(tx, p.Skill.SkillID, *p.BaseVersion, p.Goal)

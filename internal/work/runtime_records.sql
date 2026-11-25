@@ -1,22 +1,22 @@
--- P1-02：Task、Step、Run 与控制记录的持久结构（V3 §4.1、§5.1）。
+-- Task、Step、Run 与控制记录的持久结构（§4.1、§5.1）。
 --
 -- 本文件是 schema 48 新增的持久结构，与既有 schema.sql 一起构成完整结构。
--- 设计原则（P1-02）：
+-- 设计原则：
 --   - Task 九态、Step、依赖、work_units、控制记录、结果引用及基础审计；
 --     任务和所有原子消息写入同一 SQLite 文件。
---   - 使用 P0-02 的合同/控制/存储版本约定；Run 绑定 Task/Step/执行单元、
+--   - 使用 的合同/控制/存储版本约定；Run 绑定 Task/Step/执行单元、
 --     分配与执行代际，不以 Run 状态冒充 Task 状态。
 --   - 保留旧 ID、成果/验收与历史 run_bindings；迁移不明工作为需要核对的
 --     明确状态，记录迁移原因。
 --   - 不可变合同快照和控制记录；重复请求键相同内容返回原结果，不同内容冲突。
 --
--- 状态枚举的序列化与 P0-02 的 runtime_contract.go 完全一致，不各自发明。
+-- 状态枚举的序列化与 的 runtime_contract.go 完全一致，不各自发明。
 
--- Task 的 V3 九态权威记录。与既有 tasks 表并存：tasks 保留旧五态供
--- 兼容查询，task_states 是 V3 权威当前状态；P1-03 的状态机写这里。
+-- Task 的 九态权威记录。与既有 tasks 表并存：tasks 保留旧五态供
+-- 兼容查询，task_states 是 权威当前状态；的状态机写这里。
 CREATE TABLE IF NOT EXISTS task_states (
   task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-  -- V3 九态之一（runtime_contract.go 的序列化）。
+  -- 九态之一（runtime_contract.go 的序列化）。
   state TEXT NOT NULL CHECK(state IN
     ('pending','running','waiting','paused','acceptance','finalizing','succeeded','failed','cancelled')),
   reason TEXT NOT NULL DEFAULT '',
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS result_receipts (
 );
 
 -- 基础审计：贯通 input/task/step/run/wait/command/result 标识的审计记录。
--- 普通日志不能替代审计（P1-14 扩展为完整可观测性）。
+-- 普通日志不能替代审计。
 CREATE TABLE IF NOT EXISTS runtime_audit (
   audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
   -- 关联标识（可选，按事件类型填充）。

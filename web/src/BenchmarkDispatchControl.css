@@ -1,4 +1,4 @@
-.v31-workspace .benchmark-conversation-heading .benchmark-dispatch-button {
+.app-workspace .benchmark-conversation-heading .benchmark-dispatch-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -10,5 +10,5 @@
 }
 
 @media (pointer: coarse) {
-  .v31-workspace .benchmark-conversation-heading .benchmark-dispatch-button { min-height: 40px; }
+  .app-workspace .benchmark-conversation-heading .benchmark-dispatch-button { min-height: 40px; }
 }

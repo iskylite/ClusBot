@@ -142,7 +142,7 @@ func TestRuntimeTicketRecoveryDoesNotBlockBenchmarkOrBatchAdmissions(t *testing.
 	}
 	original := enqueue(recoveredKey, target(0))
 	must(s.advanceTicketOperations(ctx, provider, nil))
-	if o := state(original.OperationID); o.State != V3OperationReconcile || o.AttemptCount != 1 || originalPosts.Load() != 1 {
+	if o := state(original.OperationID); o.State != RuntimeOperationReconcile || o.AttemptCount != 1 || originalPosts.Load() != 1 {
 		t.Fatalf("accepted create must be retained for reconciliation: %+v", o)
 	}
 	bench := &benchmarkRestartLoadFake{byKey: map[string]string{}, live: map[string]string{}, finished: map[string]bool{}, lostKey: "sentinel-no-lost-benchmark"}
@@ -158,7 +158,7 @@ func TestRuntimeTicketRecoveryDoesNotBlockBenchmarkOrBatchAdmissions(t *testing.
 	reopened, err := Open(path)
 	must(err)
 	s = reopened
-	_, err = s.RecoverV3(ctx, now())
+	_, err = s.RecoverRuntime(ctx, now())
 	must(err)
 	var wg sync.WaitGroup
 	defer func() {
@@ -192,7 +192,7 @@ func TestRuntimeTicketRecoveryDoesNotBlockBenchmarkOrBatchAdmissions(t *testing.
 	if len(p.Cases) != 1 || p.Cases[0].Phase != "verified" || posts.Load() != 1 {
 		t.Fatalf("benchmark should be verified before releasing the ticket lookup: %+v, posts=%d", p, posts.Load())
 	}
-	if o := state(original.OperationID); o.State != V3OperationReconcile || o.AttemptCount != 1 {
+	if o := state(original.OperationID); o.State != RuntimeOperationReconcile || o.AttemptCount != 1 {
 		t.Fatalf("in-flight reconciliation lost its durable state: %+v", o)
 	}
 	close(lookupRelease)

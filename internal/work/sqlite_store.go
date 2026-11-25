@@ -1,6 +1,6 @@
 package work
 
-// P1-01 单写入口、只读连接池与 SQLite 配置。
+// 单写入口、只读连接池与 SQLite 配置。
 //
 // 本文件建立 SQLite 访问的基础设施：
 //   - 写连接保留单连接/单写职责（所有业务写事务收敛到同一控制面写入者）；
@@ -73,7 +73,7 @@ func readSettings(db *sql.DB) (SQLiteSettings, error) {
 // writerDB 包装唯一的写连接，保留单写职责并记录观测数据。
 type writerDB struct {
 	db *sql.DB
-	// 观测：写事务计数、累计时长、最大时长（P1-01.5）。
+	// 观测：写事务计数、累计时长、最大时长。
 	txCount    atomic.Int64
 	txTotalNS  atomic.Int64
 	txMaxNS    atomic.Int64
@@ -101,7 +101,7 @@ func configureWriter(db *sql.DB) (*writerDB, error) {
 		db.Close()
 		return nil, err
 	}
-	// 显式设置并读取实际 WAL 与 synchronous=FULL（P1-01.2）。
+	// 显式设置并读取实际 WAL 与 synchronous=FULL。
 	if _, err = db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		db.Close()
 		return nil, err
@@ -171,10 +171,10 @@ func (w *writerDB) observeTxDuration(d time.Duration) {
 // ---------------------------------------------------------------------------
 
 // readPool 是只读连接池：允许短只读查询并发，逐连接设置并验证只读约束、
-// 外键及忙等待（P1-01.1）。只读查询不得写入数据库。
+// 外键及忙等待。只读查询不得写入数据库。
 type readPool struct {
 	db *sql.DB
-	// 观测：长读计数（P1-01.5）。
+	// 观测：长读计数。
 	longReads atomic.Int64
 	reads     atomic.Int64
 }
@@ -203,7 +203,7 @@ func openReadPool(path string, maxConns int) (*readPool, error) {
 	return p, nil
 }
 
-// verify 验证只读池的约束真正生效（P1-01.1：不只是增大 SetMaxOpenConns）。
+// verify 验证只读池的约束真正生效。
 func (p *readPool) verify() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -239,7 +239,7 @@ func (p *readPool) verify() error {
 }
 
 // ---------------------------------------------------------------------------
-// 观测入口（P1-01.5）
+// 观测入口
 // ---------------------------------------------------------------------------
 
 // SQLiteMetrics 是写等待、事务时长、WAL 大小和长读的观测快照。

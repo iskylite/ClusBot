@@ -1,6 +1,6 @@
 package httpapi
 
-// V3 领域台账只读快照端点验收：
+// 领域台账只读快照端点验收：
 //   - 未登录 GET 返回 401（认证由 Handler 集中处理）；
 //   - 登录后返回 200，所有数组字段为 [] 而非 null，counts 与各数组长度一致；
 //   - SeedDomainDemo 幂等注入后，快照能读到资产与其余台账。
@@ -74,13 +74,13 @@ func (c *domainTestClient) get(path string, authed bool) (int, map[string]any) {
 
 var snapshotArrayFields = []string{
 	"assets", "facts", "relations", "components", "asset_transitions",
-	"acceptance_coverage", "object_types", "relation_types", "observations",
+	"acceptance_coverage", "observations",
 	"fault_segments", "self_heal_policies", "self_heal_executions",
 	"incidents", "hypotheses", "proposals", "tickets", "delivery_records",
 	"deployment_plans", "loans", "handovers", "loan_exceptions", "leases",
-	"workers", "authorizations", "domain_packages", "retention_policies",
-	"cleanup_queue", "capabilities", "capability_providers",
-	"capability_connections", "cases", "case_events", "operations",
+	"workers", "authorizations", "retention_policies",
+	"capabilities", "capability_providers",
+	"capability_connections", "operations",
 }
 
 func TestDomainSnapshotUnauthenticated(t *testing.T) {
@@ -117,6 +117,22 @@ func TestDomainSnapshotArraysAndCounts(t *testing.T) {
 			t.Fatalf("counts[%s]=%v 与数组长度 %d 不一致", field, counts[field], len(arr))
 		}
 	}
+	unwired, ok := out["unwired_sections"].([]any)
+	if !ok {
+		t.Fatalf("unwired_sections 缺失或类型错误: %T", out["unwired_sections"])
+	}
+	hasFacts, hasDelivery := false, false
+	for _, v := range unwired {
+		if v == "facts" {
+			hasFacts = true
+		}
+		if v == "delivery_stage_events" {
+			hasDelivery = true
+		}
+	}
+	if !hasFacts || !hasDelivery {
+		t.Fatalf("空库 unwired_sections 应包含 facts 和 delivery_stage_events，实际=%v", unwired)
+	}
 }
 
 func TestDomainSnapshotAfterSeed(t *testing.T) {
@@ -136,11 +152,11 @@ func TestDomainSnapshotAfterSeed(t *testing.T) {
 	if len(assets) == 0 {
 		t.Fatal("seed 后 assets 仍为空")
 	}
-	t.Logf("seed 后快照: assets=%d facts=%d incidents=%d tickets=%d loans=%d segments=%d deliveries=%d cases=%d operations=%d leases=%d",
+	t.Logf("seed 后快照: assets=%d facts=%d incidents=%d tickets=%d loans=%d segments=%d deliveries=%d operations=%d leases=%d",
 		len(assets), len(out["facts"].([]any)), len(out["incidents"].([]any)),
 		len(out["tickets"].([]any)), len(out["loans"].([]any)),
 		len(out["fault_segments"].([]any)), len(out["delivery_records"].([]any)),
-		len(out["cases"].([]any)), len(out["operations"].([]any)), len(out["leases"].([]any)))
+		len(out["operations"].([]any)), len(out["leases"].([]any)))
 	first, _ := assets[0].(map[string]any)
 	if first["object_ref"] == nil || first["object_ref"] == "" {
 		t.Fatalf("首条资产缺少 object_ref: %v", first)

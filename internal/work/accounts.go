@@ -67,6 +67,18 @@ var (
 	ErrServerDatabase    = errors.New("此数据库已启用多人服务器模式，不能使用本机共享口令模式启动")
 )
 
+// AccountIsActive returns true when the principal exists in accounts and has status='active'.
+func (s *Store) AccountIsActive(ctx context.Context, principalID string) bool {
+	if s == nil || s.db == nil || strings.TrimSpace(principalID) == "" {
+		return false
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM accounts WHERE principal_id=?`, principalID).Scan(&status); err != nil {
+		return false
+	}
+	return status == "active"
+}
+
 // EnsureAccountMode 防止多人数据库被意外切换回本机共享口令模式。
 func (s *Store) EnsureAccountMode(ctx context.Context, server bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)

@@ -72,8 +72,6 @@ func TestAssistantA2UIProjectsKnownReadResults(t *testing.T) {
 		{"get_discovery_observations", `{"source":"source-1","scope":"scope-1","items":[{"address":"192.0.2.2","secret":"hidden"}]}`, "192.0.2.2", "hidden", false},
 		{"get_task", `{"task":{"title":"清理文件","status":"active"},"messages":[{"text":"hidden"}]}`, "清理文件", "hidden", false},
 		{"list_tasks", `[{"title":"[链接](https://evil.example/test)","status":"active"}]`, "链接已省略", "evil.example", true},
-		{"list_goals", `[{"target":"巡检","status":"active","acceptance_criteria":"hidden"}]`, "巡检", "hidden", false},
-		{"list_goals", `[{"target":"巡检","status":"exhausted","acceptance_criteria":"hidden"}]`, "次数已用完", "hidden", false},
 		{"list_artifacts", `[{"name":"月报","accepted_at":123,"content":"hidden"}]`, "已验收", "hidden", false},
 		{"list_skills", `[{"scope_label":"审阅","version":3,"active":true,"instructions":"hidden"}]`, "版本 3", "hidden", false},
 		{"list_mcp_connections", `[{"name":"目录","revision":2,"enabled":true,"status":"ready","endpoint":"hidden"}]`, "已就绪", "hidden", false},

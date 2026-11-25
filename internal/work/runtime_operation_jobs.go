@@ -1,6 +1,6 @@
 package work
 
-// P3-09：异步 Job、回执、查询与事件关联。
+// 异步 Job、回执、查询与事件关联。
 //
 // 本文件实现外部长作业跨进程与会话持续跟踪，回执有可信来源与关联：
 //   - Start 同步结果/异步句柄分别规范化；保存 provider_job_id、查询键、
@@ -43,7 +43,7 @@ type OperationJob struct {
 // 规范化（Start 同步结果/异步句柄分别规范化）
 // ---------------------------------------------------------------------------
 
-// normalizeJobStart 规范化 Job 启动（P3-09.1）。
+// normalizeJobStart 规范化 Job 启动。
 // Start 同步结果/异步句柄分别规范化；保存 provider_job_id、查询键、状态保留
 // 契约和下一查询时间；首个响应丢失但可按原键查找时，找回原 Job，不创建新 Job。
 func normalizeJobStart(tx *sql.Tx, operationID, providerJobID, queryKey, retentionContract string, now int64) (OperationJob, error) {
@@ -103,7 +103,7 @@ type OperationReceipt struct {
 	State           string // received/applied/stale/quarantined
 }
 
-// receiveOperationReceipt 接收回执（P3-09.2/P3-09.3）。
+// receiveOperationReceipt 接收回执。
 // 回调认证后先入 Inbox，绑定 operation_id、attempt、目标、外部版本与代际；
 // 未知关联隔离；推送与轮询进入同一去重/核对路径；无可靠顺序不按到达时间
 // 覆盖，必要时 Get 当前状态。
@@ -204,7 +204,7 @@ type ApplyReceiptResult struct {
 	Reason    string
 }
 
-// applyOperationReceipt 应用回执（P3-09.3）。
+// applyOperationReceipt 应用回执。
 // 推送与轮询进入同一去重/核对路径；重复/旧代际回执留证而不重复推进；
 // 无可靠顺序不按到达时间覆盖，必要时 Get 当前状态。
 func applyOperationReceipt(tx *sql.Tx, receiptID string, currentGeneration int, now int64) (ApplyReceiptResult, error) {
@@ -300,7 +300,7 @@ ORDER BY external_version DESC LIMIT 1`, r.OperationID, r.AttemptID, r.TargetRef
 // 轮询（Wait/Timer 和有界退避，不占 Worker；重启按持久 Job ID 继续）
 // ---------------------------------------------------------------------------
 
-// pollDueJobs 轮询到期 Job（P3-09.4）。
+// pollDueJobs 轮询到期 Job。
 // 轮询用 Wait/Timer 和有界退避，不占 Worker；重启按持久 Job ID 继续；
 // 查询失败或作业过期不被当作未执行证明。
 func pollDueJobs(tx *sql.Tx, now int64, limit int) (polled int, err error) {

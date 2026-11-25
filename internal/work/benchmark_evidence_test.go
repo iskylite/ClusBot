@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestV31BenchmarkRejectsIncompleteOrUnrelatedEvidence(t *testing.T) {
+func TestBenchmarkRejectsIncompleteOrUnrelatedEvidence(t *testing.T) {
 	job := benchmarkJob{"bench-mcp", "O9", "J17", 1}
 	e := benchmarkRequirement{
 		Target: "pod7", Check: "deepep", Validator: "deepep@1", Job: job,
@@ -42,7 +42,7 @@ func TestV31BenchmarkRejectsIncompleteOrUnrelatedEvidence(t *testing.T) {
 	}
 }
 
-func TestV31BenchmarkTargetMatrixAndThreshold(t *testing.T) {
+func TestBenchmarkTargetMatrixAndThreshold(t *testing.T) {
 	j := benchmarkJob{"bench", "O9", "J17", 1}
 	a := benchmarkRequirement{Target: "node-1", Check: "bandwidth", Job: j, Validator: "bench@1",
 		RequiredMetrics: map[string]string{"read": "GB/s"}, Threshold: &benchmarkThreshold{"read", "GB/s", 100}}

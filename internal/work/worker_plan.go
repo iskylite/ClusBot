@@ -27,7 +27,6 @@ AND t.revision=b.task_revision
 AND b.assignment_generation=(SELECT max(generation) FROM assignments WHERE task_id=t.id)
 AND NOT EXISTS(SELECT 1 FROM runs earlier WHERE earlier.task_id=t.id AND earlier.rowid<r.rowid)
 AND NOT EXISTS(SELECT 1 FROM workflow_children c WHERE c.task_id=t.id OR c.parent_id=t.id)
-AND NOT EXISTS(SELECT 1 FROM goal_tasks g WHERE g.task_id=t.id)
 AND NOT EXISTS(SELECT 1 FROM run_reads d WHERE d.run_id=r.id)
 )`
 

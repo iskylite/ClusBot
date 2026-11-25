@@ -9,17 +9,17 @@ import (
 	"testing"
 )
 
-func TestV31OperationReceiptCorrelation(t *testing.T) {
-	s, _, op := setupV3P309(t, "v31-receipts")
-	stamp := v3P102Now()
+func TestOperationReceiptCorrelation(t *testing.T) {
+	s, _, op := setupJobsStore(t, "v31-receipts")
+	stamp := recordsTestNow()
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	oldAttempt := dispatchV3P309Attempt(t, tx, op, stamp)
-	attempt := dispatchV3P309Attempt(t, tx, op, stamp+1)
+	oldAttempt := dispatchJobAttempt(t, tx, op, stamp)
+	attempt := dispatchJobAttempt(t, tx, op, stamp+1)
 	if _, err := normalizeJobStart(tx, op, "job-1", "key-1", "7d", stamp); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestV31OperationReceiptCorrelation(t *testing.T) {
 	}
 }
 
-func TestV31OperationReceiptMigrationPreservesRows(t *testing.T) {
+func TestOperationReceiptMigrationPreservesRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "receipts.sqlite")
 	s, err := Open(path)
 	if err != nil {

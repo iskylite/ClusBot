@@ -96,7 +96,7 @@ func TestDiscoveryRecoveryGuardPrecedesUnavailableModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecoverV3(ctx, time.Now().UnixMilli()); err != nil {
+	if _, err := store.RecoverRuntime(ctx, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	s := Server{Store: store, Settings: &model.Settings{Store: store}, Token: "a1-token", Hosts: []string{"127.0.0.1"}}

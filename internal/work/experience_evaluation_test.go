@@ -91,8 +91,8 @@ func TestExperienceEvaluationFreezesSourcesAndSeparatesPolicies(t *testing.T) {
 		answer := "完成测试"
 		switch {
 		case m.Experience != nil:
-			if m.Experience.ArtifactID != reference.ArtifactID || !strings.Contains(m.Experience.Example, "OLD-88") {
-				t.Fatalf("current policy chose the wrong source: %+v", m.Experience)
+			if m.Experience.ArtifactID != reference.ArtifactID || !strings.Contains(m.Experience.Example, "摘要") || strings.Contains(m.Experience.Example, "OLD-88") {
+				t.Fatalf("current policy leaked facts or chose the wrong source: %+v", m.Experience)
 			}
 			answer += " OLD-88"
 		case strings.Contains(m.Text, "经审阅"):
@@ -114,10 +114,10 @@ func TestExperienceEvaluationFreezesSourcesAndSeparatesPolicies(t *testing.T) {
 	for _, policy := range evaluationPolicies {
 		m := report.Metrics[policy]
 		want := 0.5
-		if policy == currentExperiencePolicy {
+		if policy == acceptedExperiencePolicy {
 			want = 0
 		}
-		if m.Cases != 2 || m.Completed != 1 || m.SuccessRate != want || m.WrongReuseChecked != 1 ||
+		if m.Cases != 2 || m.Completed != 1 || m.Incomplete != 1 || m.SuccessRate != want || m.WrongReuseChecked != 1 ||
 			m.InputTokensKnown != 20 || m.OutputTokensKnown != 7 || m.InputUsageReported != 1 || m.OutputUsageReported != 1 {
 			t.Fatalf("wrong denominators or usage for %s: %+v", policy, m)
 		}
@@ -125,14 +125,17 @@ func TestExperienceEvaluationFreezesSourcesAndSeparatesPolicies(t *testing.T) {
 	var actual []string
 	for _, r := range report.Results {
 		actual = append(actual, r.Policy)
-		if r.CaseID == "weekly" && r.Policy == candidateExperiencePolicy &&
+		if r.CaseID == "weekly" && r.Policy == approvedCandidateExperiencePolicy &&
 			(len(r.Sources) != 1 || r.Sources[0].CandidateID != reference.ID || r.Sources[0].CandidateRevision != reference.Revision) {
 			t.Fatalf("missing candidate provenance: %+v", r)
 		}
 	}
-	if !reflect.DeepEqual(actual, []string{"none", "current", "candidate", "current", "candidate", "none"}) ||
-		report.Metrics["current"].WrongReuseCount != 1 {
+	if !reflect.DeepEqual(actual, []string{"none", "accepted_experience", "approved_candidates", "accepted_experience", "approved_candidates", "none"}) ||
+		report.Metrics["accepted_experience"].WrongReuseCount != 1 {
 		t.Fatalf("unexpected order or wrong-reuse result: %v %+v", actual, report.Metrics)
+	}
+	if len(report.SuiteDigest) != 64 {
+		t.Fatalf("missing suite_sha256 in report: %+v", report)
 	}
 	proposal, err := s.ProposeSkill(ctx, scope, goal, report)
 	if err != nil || proposal.Status != "pending" || proposal.Skill.Active ||
@@ -145,5 +148,51 @@ func TestExperienceEvaluationFreezesSourcesAndSeparatesPolicies(t *testing.T) {
 	}})
 	if err != nil || len(variant) != 1 || len(variant[0].CandidateSources) != 0 {
 		t.Fatalf("candidate evaluation crossed the Skill goal boundary: %+v, %v", variant, err)
+	}
+}
+
+func TestStructuredEvaluationAndServerEvaluationRun(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "eval-v2.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	const goal, scope = "检查 POD7 节点状态", "集群巡检"
+	suite := ExperienceEvaluationSuite{Cases: []ExperienceEvaluationCase{
+		{
+			ID:               "v2-case",
+			Prompt:           "请输出 POD7 检查结论",
+			Goal:             goal,
+			Scope:            scope,
+			Required:         []string{"结论"},
+			RequiredHeadings: []string{"检查结论"},
+			RequiredRegex:    []string{`POD7:\s+OK`},
+			ForbiddenRegex:   []string{`OLD-\d+`},
+			MaxChars:         200,
+		},
+	}}
+	provider := testProvider(func(_ context.Context, input []Message, _ bool, _ int, emit func(string) error) (*TokenUsage, error) {
+		in, out := int64(10), int64(5)
+		return &TokenUsage{InputTokens: &in, OutputTokens: &out}, emit("# 检查结论\nPOD7: OK")
+	})
+	cfg := ExperienceEvaluationConfig{Model: "fixture", MaxOutput: 256, RequestTimeout: time.Second}
+	run, err := s.RunExperienceEvaluation(ctx, suite, cfg, provider)
+	if err != nil {
+		t.Fatalf("RunExperienceEvaluation: %v", err)
+	}
+	if run.Report.Scoring != scoringStructuredV2 || len(run.SuiteDigest) != 64 || run.Report.Metrics["none"].Successful != 1 {
+		t.Fatalf("unexpected v2 evaluation run: %+v", run)
+	}
+	runs, err := s.ExperienceEvaluations(ctx)
+	if err != nil || len(runs) != 1 || runs[0].ID != run.ID {
+		t.Fatalf("ExperienceEvaluations: %+v, %v", runs, err)
+	}
+	// Verify regex forbidden failure.
+	bad := evaluateTaskOutput(ctx, testProvider(func(_ context.Context, _ []Message, _ bool, _ int, emit func(string) error) (*TokenUsage, error) {
+		return nil, emit("# 检查结论\nPOD7: OK OLD-42")
+	}), cfg, suite.Cases[0], Message{Role: "user", Text: "x"}, ExperienceEvaluationResult{CaseID: "v2-case", Status: "completed"})
+	if bad.Success || bad.WrongReuse == nil || !*bad.WrongReuse {
+		t.Fatalf("forbidden_regex did not mark wrong_reuse: %+v", bad)
 	}
 }

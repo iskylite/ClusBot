@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestV31BenchmarkEarlyNotificationOnlyWakesOriginalJob(t *testing.T) {
+func TestBenchmarkEarlyNotificationOnlyWakesOriginalJob(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "hints.sqlite"))
 	if err != nil {
 		t.Fatal(err)

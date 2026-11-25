@@ -5,7 +5,7 @@ import "testing"
 func TestTimerWaitFollowupAtomicAndRestartable(t *testing.T) {
 	for _, scenario := range []string{"normal", "replaced", "superseded_step", "reconcile", "paused"} {
 		t.Run(scenario, func(t *testing.T) {
-			s, task := setupV3P108(t, scenario+".sqlite")
+			s, task := setupTimersStore(t, scenario+".sqlite")
 			ctx, stamp := t.Context(), now()
 			tx, err := s.db.BeginTx(ctx, nil)
 			if err != nil {
@@ -24,7 +24,7 @@ func TestTimerWaitFollowupAtomicAndRestartable(t *testing.T) {
 			}
 			step := "step-" + task
 			if err = insertStep(tx, Step{StepID: step, TaskID: task, ContractRevision: 1,
-				DefinitionKey: "timer-deferred-step", DefinitionVersion: 1, State: V3StepWaiting, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
+				DefinitionKey: "timer-deferred-step", DefinitionVersion: 1, State: RuntimeStepWaiting, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
 				t.Fatal(err)
 			}
 			wait := Wait{WaitID: "wait-" + task, TaskID: task, StepID: step, Kind: WaitKindTimer, OpenedAt: stamp}
@@ -58,7 +58,7 @@ func TestTimerWaitFollowupAtomicAndRestartable(t *testing.T) {
 				}
 				exec("DROP TRIGGER simulate_lost_commit")
 				got, err := readTaskState(s.db, task)
-				if err != nil || got.State != V3TaskWaiting {
+				if err != nil || got.State != RuntimeTaskWaiting {
 					t.Fatalf("failed receipt wrote task state: %+v %v", got, err)
 				}
 			case "replaced":
@@ -70,20 +70,20 @@ func TestTimerWaitFollowupAtomicAndRestartable(t *testing.T) {
 			case "paused":
 				exec("UPDATE task_states SET state='paused' WHERE task_id=?", task)
 			}
-			wantState, wantCount := V3TaskWaiting, 0
+			wantState, wantCount := RuntimeTaskWaiting, 0
 			if scenario == "replaced" || scenario == "superseded_step" {
 				wantCount = 1
 			}
 			if scenario == "paused" {
-				wantState = V3TaskPaused
+				wantState = RuntimeTaskPaused
 			}
 			if scenario == "normal" {
-				wantState, wantCount = V3TaskPending, 1
+				wantState, wantCount = RuntimeTaskPending, 1
 			}
 			if n, err := s.consumeTimerWaitFollowups(ctx, stamp, 50); err != nil || n != wantCount {
 				t.Fatalf("follow-up: %d/%d %v", n, wantCount, err)
 			}
-			stateIs := func(want V3TaskState) {
+			stateIs := func(want RuntimeTaskState) {
 				t.Helper()
 				got, err := readTaskState(s.db, task)
 				if err != nil || got.State != want {
@@ -97,10 +97,10 @@ func TestTimerWaitFollowupAtomicAndRestartable(t *testing.T) {
 			}
 			if scenario == "reconcile" || scenario == "paused" {
 				exec("UPDATE task_states SET reconcile_required=0,state='waiting' WHERE task_id=?", task)
-				if _, err := s.RecoverV3(ctx, stamp+5000); err != nil {
+				if _, err := s.RecoverRuntime(ctx, stamp+5000); err != nil {
 					t.Fatal(err)
 				}
-				stateIs(V3TaskPending)
+				stateIs(RuntimeTaskPending)
 			}
 			if n, err := s.consumeTimerWaitFollowups(ctx, stamp+5000, 50); err != nil || n != 0 {
 				t.Fatalf("duplicate wake: %d %v", n, err)

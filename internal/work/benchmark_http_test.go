@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestV31BenchmarkHTTPBoundTransport(t *testing.T) {
+func TestBenchmarkHTTPBoundTransport(t *testing.T) {
 	ctx := context.Background()
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 )
 
 func submitPriorityFixture(t *testing.T, s *Store, key, priority string) Run {
@@ -31,34 +30,14 @@ func TestModelRunPriorityFairnessBoundsContinuousArrivals(t *testing.T) {
 	ctx := t.Context()
 	s.configureRuntime(2, RunLimits{ModelRunPriorityFairness: true})
 	normalFirst := submitPriorityFixture(t, s, "normal-first", "normal")
-	stamp := now()
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback()
-	schedule, err := upsertSchedule(tx, v3P109Schedule("normal-scheduled", time.Hour.Milliseconds(), stamp, MissedSkip))
-	if err != nil {
-		t.Fatal(err)
-	}
-	occurrence, err := triggerSchedule(tx, schedule, stamp)
-	if err != nil || !occurrence.Created {
-		t.Fatalf("schedule fixture: %+v %v", occurrence, err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	scheduled, err := s.Detail(occurrence.TaskID, true)
-	if err != nil || scheduled.Run == nil {
-		t.Fatalf("scheduled Run not queued: %+v %v", scheduled, err)
-	}
+	scheduled := submitPriorityFixture(t, s, "normal-scheduled", "normal")
 	chat := submitPriorityFixture(t, s, "ordinary-chat", "conversation")
 	normalLast := submitPriorityFixture(t, s, "normal-last", "normal")
 	lowFirst := submitPriorityFixture(t, s, "low-first", "low")
 	lowSecond := submitPriorityFixture(t, s, "low-second", "low")
 	high := submitPriorityFixture(t, s, "high-0", "high")
 	highArrival := 0
-	for _, normals := range [][3]Run{{normalFirst, *scheduled.Run, lowFirst}, {chat, normalLast, lowSecond}} {
+	for _, normals := range [][3]Run{{normalFirst, scheduled, lowFirst}, {chat, normalLast, lowSecond}} {
 		for _, slot := range modelRunPrioritySlots {
 			var expected Run
 			switch slot {
@@ -82,10 +61,6 @@ func TestModelRunPriorityFairnessBoundsContinuousArrivals(t *testing.T) {
 				high = submitPriorityFixture(t, s, fmt.Sprintf("high-%d", highArrival), "high")
 			}
 		}
-	}
-	var occurrences int
-	if err := s.db.QueryRow("SELECT count(*) FROM schedule_occurrences WHERE schedule_id='normal-scheduled'").Scan(&occurrences); err != nil || occurrences != 1 {
-		t.Fatalf("priority selection changed occurrence bookkeeping: %d %v", occurrences, err)
 	}
 }
 
@@ -187,7 +162,7 @@ func TestModelRunPriorityCursorPreservedOnRestartAndRollback(t *testing.T) {
 	reopened, err := Open(path)
 	must(err)
 	s = reopened
-	_, err = s.RecoverV3(ctx, now())
+	_, err = s.RecoverRuntime(ctx, now())
 	must(err)
 	s.configureRuntime(1, RunLimits{ModelRunPriorityFairness: true})
 	load(6)

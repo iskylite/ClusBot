@@ -1,6 +1,6 @@
 package work
 
-// P2-04：持久预算、并发额度与占用。
+// 持久预算、并发额度与占用。
 //
 // 本文件实现多工作者共享预算和配额，重启、重领或新 Run 都不能重置已消费
 // 成本：
@@ -65,7 +65,7 @@ type QuotaReservation struct {
 // 预留（与领取/派发同事务）
 // ---------------------------------------------------------------------------
 
-// reserveQuota 在事务内预留配额（P2-04.2）。
+// reserveQuota 在事务内预留配额。
 // 领取/派发所需的预留与状态同事务：两个工作者同时申请最后一份额度，仅一方
 // 成功；重复预留（同 settlement_key）返回既有。
 func reserveQuota(tx *sql.Tx, r QuotaReservation) (QuotaReservation, error) {
@@ -151,7 +151,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 	return r, nil
 }
 
-// ensureQuotaAvailable 核对作用域上限（P2-04 反例：两个工作者同时申请最后
+// ensureQuotaAvailable 核对作用域上限（反例：两个工作者同时申请最后
 // 一份额度，仅一方成功）。
 func ensureQuotaAvailable(tx *sql.Tx, r QuotaReservation) error {
 	// 读取作用域上限。
@@ -219,7 +219,7 @@ func quotaOccupiedArgs(r QuotaReservation) []any {
 // 结算（回报按稳定身份，重复结算无影响）
 // ---------------------------------------------------------------------------
 
-// settleQuota 按稳定身份结算配额（P2-04.2）。
+// settleQuota 按稳定身份结算配额。
 // 回报按稳定身份结算，重复结算无影响；费用未知时保留已预留上限/未知状态，
 // 不退款成零。
 func settleQuota(tx *sql.Tx, settlementKey string, costKnown bool, now int64) error {
@@ -239,7 +239,7 @@ WHERE settlement_key=? AND state='reserved'`, now, boolToInt(costKnown), settlem
 // 模型槽（按实际模型请求占用；确定步骤和等待不占槽）
 // ---------------------------------------------------------------------------
 
-// acquireModelSlot 按实际模型请求占用模型槽（P2-04.3）。
+// acquireModelSlot 按实际模型请求占用模型槽。
 // 模型槽按实际模型请求占用；确定步骤和持久等待不占模型槽。
 func acquireModelSlot(tx *sql.Tx, workerID, taskID string, now int64) (QuotaReservation, error) {
 	return reserveQuota(tx, QuotaReservation{
@@ -274,7 +274,7 @@ func targetHasLocalExclusiveHold(tx *sql.Tx, target string) (bool, error) {
 	return held, err
 }
 
-// holdTarget 占用一个目标（P2-04.5）。
+// holdTarget 占用一个目标。
 // 外部动作效果未核实前不能仅按 TTL 释放排他占用。
 func holdTarget(tx *sql.Tx, targetRef, workerID, taskID string, now int64) (QuotaReservation, error) {
 	return reserveQuota(tx, QuotaReservation{

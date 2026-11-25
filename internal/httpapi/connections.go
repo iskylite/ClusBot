@@ -151,11 +151,16 @@ func (s Server) toolPermission(w http.ResponseWriter, r *http.Request) {
 		Version  string `json:"version"`
 		Revision int    `json:"revision"`
 		Allowed  bool   `json:"allowed"`
+		ReadOnly *bool  `json:"read_only,omitempty"`
 	}
 	if !decode(w, r, &in) {
 		return
 	}
-	if err := s.Store.SetToolPermission(r.Context(), r.PathValue("id"), in.Name, in.Version, in.Revision, in.Allowed); err != nil {
+	readOnly := false
+	if in.ReadOnly != nil {
+		readOnly = *in.ReadOnly
+	}
+	if err := s.Store.SetToolPermissionWithMode(r.Context(), r.PathValue("id"), in.Name, in.Version, in.Revision, in.Allowed, readOnly); err != nil {
 		writeError(w, err)
 		return
 	}

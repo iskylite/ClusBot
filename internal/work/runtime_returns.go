@@ -1,6 +1,6 @@
 package work
 
-// P4-20：归还复核、退役再启用与 E04。
+// 归还复核、退役再启用与 E04。
 //
 // 本文件实现借期、真实归还、维修影响和后续管理状态不混淆：
 //   - 到期只提示/记录逾期；真实归还核对身份、现况、维修、操作和责任后，
@@ -23,7 +23,7 @@ import (
 // 到期（只提示/记录逾期）
 // ---------------------------------------------------------------------------
 
-// checkLoanDue 核对借期（P4-20.1）。
+// checkLoanDue 核对借期。
 // 到期只提示/记录逾期；到期、告警恢复或口头预计均不会自动归还。
 func checkLoanDue(tx *sql.Tx, objectRef string, now int64) (overdue bool, err error) {
 	var dueAt int64
@@ -60,7 +60,7 @@ type ReturnVerification struct {
 	ResponsibilityTransferred bool
 }
 
-// returnLoan 归还借用（P4-20.1/P4-20.2）。
+// returnLoan 归还借用。
 // 真实归还核对身份、现况、维修、操作和责任后，同事务结束有效 loan 并进入
 // 待复核；专项维修保持借出状态，归还后相关证据重新复查；不能自动恢复历史在役。
 func returnLoan(tx *sql.Tx, objectRef string, v ReturnVerification, now int64) error {
@@ -128,7 +128,7 @@ WHERE object_ref=? AND state=? AND ownership_epoch=?`,
 // 普通退役（先完成实际归还/责任交接）
 // ---------------------------------------------------------------------------
 
-// retireAsset 退役资产（P4-20.3）。
+// retireAsset 退役资产。
 // 普通退役先完成实际归还/责任交接，处理占用、未知动作、设备/数据处置和连接
 // 关闭，保留证明。
 func retireAsset(tx *sql.Tx, objectRef string, returnCompleted bool, occupationHandled bool, deviceDataDisposed bool, connectionClosed bool, evidenceRef string, now int64) error {
@@ -159,7 +159,7 @@ func retireAsset(tx *sql.Tx, objectRef string, returnCompleted bool, occupationH
 // 再启用（重新接收管理责任并回待复核）
 // ---------------------------------------------------------------------------
 
-// reactivateAsset 再启用资产（P4-20.4）。
+// reactivateAsset 再启用资产。
 // 再启用重新接收管理责任并回待复核，不沿用旧交付直接在役。
 func reactivateAsset(tx *sql.Tx, objectRef string, responsibilityAccepted bool, now int64) error {
 	// 再启用重新接收管理责任（不沿用旧交付直接在役）。

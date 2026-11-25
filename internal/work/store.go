@@ -38,23 +38,14 @@ var runtimeWaitsSchema string
 //go:embed runtime_timers.sql
 var runtimeTimersSchema string
 
-//go:embed runtime_schedules.sql
-var runtimeSchedulesSchema string
-
 //go:embed runtime_workers.sql
 var runtimeWorkersSchema string
 
 //go:embed runtime_leases.sql
 var runtimeLeasesSchema string
 
-//go:embed runtime_worker_reports.sql
-var runtimeWorkerReportsSchema string
-
 //go:embed runtime_quotas.sql
 var runtimeQuotasSchema string
-
-//go:embed runtime_scheduler.sql
-var runtimeSchedulerSchema string
 
 //go:embed runtime_authorization.sql
 var runtimeAuthorizationSchema string
@@ -68,26 +59,11 @@ var runtimeApprovalsSchema string
 //go:embed runtime_capabilities.sql
 var runtimeCapabilitiesSchema string
 
-//go:embed runtime_capability_snapshots.sql
-var runtimeCapabilitySnapshotsSchema string
-
-//go:embed runtime_evidence.sql
-var runtimeEvidenceSchema string
-
 //go:embed runtime_operations.sql
 var runtimeOperationsSchema string
 
 //go:embed runtime_operation_jobs.sql
 var runtimeOperationJobsSchema string
-
-//go:embed runtime_delegation.sql
-var runtimeDelegationSchema string
-
-//go:embed runtime_service_events.sql
-var runtimeServiceEventsSchema string
-
-//go:embed runtime_domain_definitions.sql
-var runtimeDomainDefinitionsSchema string
 
 //go:embed runtime_identity.sql
 var runtimeIdentitySchema string
@@ -100,12 +76,6 @@ var runtimeAssetTransitionsSchema string
 
 //go:embed runtime_validation.sql
 var runtimeValidationSchema string
-
-//go:embed runtime_workflows.sql
-var runtimeWorkflowsSchema string
-
-//go:embed runtime_image_builds.sql
-var runtimeImageBuildsSchema string
 
 //go:embed runtime_observation.sql
 var runtimeObservationSchema string
@@ -122,31 +92,13 @@ var runtimeTicketsSchema string
 //go:embed runtime_loans.sql
 var runtimeLoansSchema string
 
-//go:embed runtime_material_index.sql
-var runtimeMaterialIndexSchema string
-
-//go:embed runtime_context_assembly.sql
-var runtimeContextAssemblySchema string
-
-//go:embed runtime_provenance.sql
-var runtimeProvenanceSchema string
-
-//go:embed runtime_cleanup.sql
-var runtimeCleanupSchema string
-
-//go:embed runtime_cases.sql
-var runtimeCasesSchema string
-
-//go:embed runtime_skills.sql
-var runtimeSkillsSchema string
-
 //go:embed runtime_retention.sql
 var runtimeRetentionSchema string
 
 //go:embed runtime_domain_query.sql
 var runtimeDomainQuerySchema string
 
-const databaseSchemaVersion = 133
+const databaseSchemaVersion = 136
 const modelProtocolMigrationFrom = 43
 const modelKeyMigrationFrom = 44
 const lastInputTokensMigrationFrom = 45
@@ -224,6 +176,7 @@ type Store struct {
 	runEventMu        sync.Mutex
 	runEventSubs      map[string]map[chan struct{}]struct{}
 	queueWake         chan struct{}
+	mcpPool           *mcpSessionPool
 }
 
 type Task struct {
@@ -351,13 +304,13 @@ func Open(path string) (*Store, error) {
 }
 
 func storeForWriter(path string, writer *writerDB) *Store {
-	// 只读连接池：短只读查询并发，不持有写连接（P1-01）。
+	// 只读连接池：短只读查询并发，不持有写连接。
 	// 打开失败不阻止服务（只读池是优化，写路径仍是权威）。
 	readPool, poolErr := openReadPool(path, 4)
 	if poolErr != nil {
 		readPool = nil
 	}
-	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes(), connectionGrantMu: &sync.Mutex{}, queueWake: make(chan struct{}, 1)}
+	return &Store{db: writer.db, writer: writer, readPool: readPool, storageLocation: configuredSQLiteStorage(path), connectionKey: randBytes(), connectionGrantMu: &sync.Mutex{}, queueWake: make(chan struct{}, 1), mcpPool: newMCPSessionPool()}
 }
 
 // SubscribeRunEvents registers a wake-up channel for run events on runID and returns an idempotent unsubscribe function.
@@ -413,7 +366,7 @@ func (s *Store) notifyQueue() {
 
 // initializeDatabase 校验并按需迁移数据库到当前 schema 版本。
 //
-// 迁移设计（P0-05）：每一步通过"目标列/结构是否已存在"判定是否需要执行，
+// 迁移设计：每一步通过"目标列/结构是否已存在"判定是否需要执行，
 // 因此对同一库重复运行是幂等的；迁移在单个可回滚事务内完成，失败不产生
 // 半套被当作有效的结构。user_version 是唯一的迁移进度标记：任何一步失败
 // 都随事务回滚，库保持原版本，可诊断、可重试，不出现"部分迁移已提交"。
@@ -431,7 +384,7 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	// 每个迁移步骤：from 是触发它的前一版本，apply 在目标结构缺失时执行。
-	// 幂等性来自结构存在性检查，而非盲目 ALTER（P0-03 发现的缺口）。
+	// 幂等性来自结构存在性检查，而非盲目 ALTER。
 	type migration struct {
 		from  int
 		apply func(*sql.Tx) error
@@ -457,203 +410,154 @@ func initializeDatabase(db *sql.DB) error {
 			return addColumnIfMissing(tx, "context_manifests", "control_revision",
 				`ALTER TABLE context_manifests ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0`)
 		}},
-		// P1-02：新增 Task/Step/work_unit/控制记录/结果引用/审计结构。
+		// 新增 Task/Step/work_unit/控制记录/结果引用/审计结构。
 		// 整组结构用 CREATE TABLE IF NOT EXISTS，幂等可重入。
 		{runtimeRecordsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeRecordsSchema)
 			return err
 		}},
-		// P1-05：新增 Inbox 结构（通用持久输入）。
+		// 新增 Inbox 结构（通用持久输入）。
 		{runtimeInboxMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeInboxSchema)
 			return err
 		}},
-		// P1-06：新增 Outbox 结构（持久待发送命令）。
+		// 新增 Outbox 结构（持久待发送命令）。
 		{runtimeOutboxMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeOutboxSchema)
 			return err
 		}},
-		// P1-07：新增 Wait 结构（版本化等待）。
+		// 新增 Wait 结构（版本化等待）。
 		{runtimeWaitsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeWaitsSchema)
 			return err
 		}},
-		// P1-08：新增 Timer 结构（持久计时器与逾期扫描）。
+		// 新增 Timer 结构（持久计时器与逾期扫描）。
 		{runtimeTimersMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeTimersSchema)
 			return err
 		}},
-		// P1-09：新增 Schedule 结构（周期/定点触发）。
-		{runtimeSchedulesMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeSchedulesSchema)
-			return err
-		}},
-		// P2-01：新增 Worker 实例与令牌结构。
+		// 原定时计划原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeSchedulesMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增 Worker 实例与令牌结构。
 		{runtimeWorkersMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeWorkersSchema)
 			return err
 		}},
-		// P2-02：新增租约结构（原子领取/续租/回收）。
+		// 新增租约结构（原子领取/续租/回收）。
 		{runtimeLeasesMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeLeasesSchema)
 			return err
 		}},
-		// P2-03：新增 Worker 回报与流式片段结构。
-		{runtimeWorkerReportsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeWorkerReportsSchema)
-			return err
-		}},
-		// P2-04：新增配额预留与占用结构。
+		// 原 Worker 回报原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeWorkerReportsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增配额预留与占用结构。
 		{runtimeQuotasMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeQuotasSchema)
 			return err
 		}},
-		// P2-05：新增公平调度与背压结构。
-		{runtimeSchedulerMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeSchedulerSchema)
-			return err
-		}},
-		// P3-01：新增授权与主体结构。
+		// 原公平调度原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeSchedulerMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增授权与主体结构。
 		{runtimeAuthorizationMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeAuthorizationSchema)
 			return err
 		}},
-		// P3-02：新增资产身份与领域准入结构。
+		// 新增资产身份与领域准入结构。
 		{runtimeAssetsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeAssetsSchema)
 			return err
 		}},
-		// P3-03：新增确认与人工接管结构。
+		// 新增确认与人工接管结构。
 		{runtimeApprovalsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeApprovalsSchema)
 			return err
 		}},
-		// P3-04：新增能力/提供者/连接结构。
+		// 新增能力/提供者/连接结构。
 		{runtimeCapabilitiesMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeCapabilitiesSchema)
 			return err
 		}},
-		// P3-05：新增能力快照与 Schema 发现结构。
-		{runtimeCapabilitySnapshotsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeCapabilitySnapshotsSchema)
-			return err
-		}},
-		// P3-06：新增证据引用与读取结构。
-		{runtimeEvidenceMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeEvidenceSchema)
-			return err
-		}},
-		// P3-07：新增 Operation 与尝试结构。
+		// 原能力快照原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeCapabilitySnapshotsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原证据引用原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeEvidenceMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增 Operation 与尝试结构。
 		{runtimeOperationsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeOperationsSchema)
 			return err
 		}},
-		// P3-09：新增异步 Job 与回执结构。
+		// 新增异步 Job 与回执结构。
 		{runtimeOperationJobsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeOperationJobsSchema)
 			return err
 		}},
-		// P3-16：新增外部工作流委托结构。
-		{runtimeDelegationMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeDelegationSchema)
-			return err
-		}},
-		// P3-17：新增服务实例与事件结构。
-		{runtimeServiceEventsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeServiceEventsSchema)
-			return err
-		}},
-		// P4-01：新增领域定义结构。
-		{runtimeDomainDefinitionsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeDomainDefinitionsSchema)
-			return err
-		}},
-		// P4-02：新增身份与部件结构。
+		// 原外部工作流委托原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeDelegationMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原服务实例事件原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeServiceEventsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原领域包定义原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeDomainDefinitionsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增身份与部件结构。
 		{runtimeIdentityMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeIdentitySchema)
 			return err
 		}},
-		// P4-03：新增双时间事实与关系结构。
+		// 新增双时间事实与关系结构。
 		{runtimeFactsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeFactsSchema)
 			return err
 		}},
-		// P4-05：新增资产九态迁移结构。
+		// 新增资产九态迁移结构。
 		{runtimeAssetTransitionsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeAssetTransitionsSchema)
 			return err
 		}},
-		// P4-06：新增配置规范与验证结构。
+		// 新增配置规范与验证结构。
 		{runtimeValidationMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeValidationSchema)
 			return err
 		}},
-		// P4-07：新增流程模板与绑定结构。
-		{runtimeWorkflowsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeWorkflowsSchema)
-			return err
-		}},
-		// P4-09：新增母盘构建与核验结构。
-		{runtimeImageBuildsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeImageBuildsSchema)
-			return err
-		}},
-		// P4-15：新增观测接入结构。
+		// 原流程模板原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeWorkflowsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原母盘构建原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeImageBuildsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增观测接入结构。
 		{runtimeObservationMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeObservationSchema)
 			return err
 		}},
-		// P4-16：新增故障调查结构。
+		// 新增故障调查结构。
 		{runtimeIncidentsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeIncidentsSchema)
 			return err
 		}},
-		// P4-17：新增自愈策略结构。
+		// 新增自愈策略结构。
 		{runtimeSelfHealMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeSelfHealSchema)
 			return err
 		}},
-		// P4-18：新增工单结构。
+		// 新增工单结构。
 		{runtimeTicketsMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeTicketsSchema)
 			return err
 		}},
-		// P4-19：新增借出与交接结构。
+		// 新增借出与交接结构。
 		{runtimeLoansMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeLoansSchema)
 			return err
 		}},
-		// P5-01：新增材料索引结构。
-		{runtimeMaterialIndexMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeMaterialIndexSchema)
-			return err
-		}},
-		// P5-03：新增上下文装配结构。
-		{runtimeContextAssemblyMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeContextAssemblySchema)
-			return err
-		}},
-		// P5-04：新增来源依赖与撤销结构。
-		{runtimeProvenanceMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeProvenanceSchema)
-			return err
-		}},
-		// P5-05：新增异步清理结构。
-		{runtimeCleanupMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeCleanupSchema)
-			return err
-		}},
-		// P5-06：新增案例结构。
-		{runtimeCasesMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeCasesSchema)
-			return err
-		}},
-		// P5-07：新增 Skill 结构。
-		{runtimeSkillsMigrationFrom, func(tx *sql.Tx) error {
-			_, err := tx.Exec(runtimeSkillsSchema)
-			return err
-		}},
-		// P5-10：新增保留与归档结构。
+		// 原材料索引原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeMaterialIndexMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原上下文清单原型表已下线，统一使用 context_manifests（迁移步骤保留为兼容空操作）。
+		{runtimeContextAssemblyMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原来源依赖原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeProvenanceMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原异步清理与案例原型表已下线（迁移步骤保留为兼容空操作）。
+		{runtimeCleanupMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		{runtimeCasesMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 原 v3_skills 原型表已下线，统一使用 personal_skills（迁移步骤保留为兼容空操作）。
+		{runtimeSkillsMigrationFrom, func(tx *sql.Tx) error { return nil }},
+		// 新增保留与归档结构。
 		{runtimeRetentionMigrationFrom, func(tx *sql.Tx) error {
 			_, err := tx.Exec(runtimeRetentionSchema)
 			return err
@@ -677,10 +581,10 @@ func initializeDatabase(db *sql.DB) error {
 			return err
 		}},
 		{91, migrateOperationReceiptKeys},
-		{92, migrateV31Benchmark},
-		{93, migrateV31Discovery},
-		{94, migrateV31BenchmarkHints},
-		{95, migrateV31DiscoveryDrift},
+		{92, migrateBenchmarkStorage},
+		{93, migrateDiscoveryStorage},
+		{94, migrateBenchmarkHints},
+		{95, migrateDiscoveryDrift},
 		{96, migrateBenchmarkOrders},
 		{97, migrateBenchmarkDrafts},
 		{98, migrateBenchmarkRevisions},
@@ -721,6 +625,9 @@ func initializeDatabase(db *sql.DB) error {
 			_, err := tx.Exec(runtimeIncidentsSchema)
 			return err
 		}},
+		{133, migrateCleanupRetiredPrototypeTablesAndRSI},
+		{134, migrateGovernanceAndMCPReadOnly},
+		{135, migrateRetireRedundantDomainPrototypeTables},
 	}
 	for _, step := range steps {
 		if version == step.from {
@@ -756,8 +663,8 @@ func initializeDatabase(db *sql.DB) error {
 	if _, err := tx.Exec(modelAttributesSchema); err != nil {
 		return err
 	}
-	// 新建库必须包含全部当前结构：基础 schema + 各增量模块（P1-02、P1-05 等）。
-	// 与增量迁移保持同一来源，禁止只改一边（P0-05.2）。
+	// 新建库必须包含全部当前结构：基础 schema + 各增量模块。
+	// 与增量迁移保持同一来源，禁止只改一边。
 	if _, err := tx.Exec(runtimeRecordsSchema); err != nil {
 		return err
 	}
@@ -776,22 +683,13 @@ func initializeDatabase(db *sql.DB) error {
 	if _, err := tx.Exec(runtimeTimersSchema); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(runtimeSchedulesSchema); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(runtimeWorkersSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeLeasesSchema); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(runtimeWorkerReportsSchema); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(runtimeQuotasSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeSchedulerSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeAuthorizationSchema); err != nil {
@@ -806,25 +704,10 @@ func initializeDatabase(db *sql.DB) error {
 	if _, err := tx.Exec(runtimeCapabilitiesSchema); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(runtimeCapabilitySnapshotsSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeEvidenceSchema); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(runtimeOperationsSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeOperationJobsSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeDelegationSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeServiceEventsSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeDomainDefinitionsSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeIdentitySchema); err != nil {
@@ -837,12 +720,6 @@ func initializeDatabase(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(runtimeValidationSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeWorkflowsSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeImageBuildsSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeObservationSchema); err != nil {
@@ -860,40 +737,22 @@ func initializeDatabase(db *sql.DB) error {
 	if _, err := tx.Exec(runtimeLoansSchema); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(runtimeMaterialIndexSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeContextAssemblySchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeProvenanceSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeCleanupSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeCasesSchema); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(runtimeSkillsSchema); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(runtimeRetentionSchema); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(runtimeDomainQuerySchema); err != nil {
 		return err
 	}
-	if err := migrateV31Benchmark(tx); err != nil {
+	if err := migrateBenchmarkStorage(tx); err != nil {
 		return err
 	}
-	if err := migrateV31Discovery(tx); err != nil {
+	if err := migrateDiscoveryStorage(tx); err != nil {
 		return err
 	}
-	if err := migrateV31BenchmarkHints(tx); err != nil {
+	if err := migrateBenchmarkHints(tx); err != nil {
 		return err
 	}
-	if err := migrateV31DiscoveryDrift(tx); err != nil {
+	if err := migrateDiscoveryDrift(tx); err != nil {
 		return err
 	}
 	if err := migrateBenchmarkOrders(tx); err != nil {
@@ -1069,6 +928,9 @@ func (s *Store) Close() error {
 	}
 	if s.readPool != nil {
 		err = errors.Join(err, s.readPool.db.Close())
+	}
+	if s.mcpPool != nil {
+		err = errors.Join(err, s.mcpPool.closeAll())
 	}
 	return errors.Join(err, s.db.Close())
 }
@@ -1366,9 +1228,6 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 				if target.Revision != route.Revision {
 					return Run{}, ErrTaskRevision
 				}
-				if err := ensureGoalTaskContinuable(tx, target.ID); err != nil {
-					return Run{}, err
-				}
 				if err := checkConversationSubmission(tx, target.ConversationID); errors.Is(err, ErrActive) && len(materialIDs) == 0 {
 					pending, err := deferTaskFollowup(tx, target, requestKey, fingerprint, text)
 					if err != nil {
@@ -1435,9 +1294,6 @@ func submitWorkTxWithMode(ctx context.Context, tx *sql.Tx, requestKey, fingerpri
 				}
 			}
 			if findErr == nil && !specialized {
-				if err = ensureGoalTaskContinuable(tx, existing.ID); err != nil {
-					return Run{}, err
-				}
 				if err = ensureNoPublication(tx, existing.ID); err != nil {
 					return Run{}, err
 				}

@@ -1,6 +1,6 @@
 package work
 
-// P4-16：故障调查、假设和验证证据。
+// 故障调查、假设和验证证据。
 //
 // 本文件实现调查能够比较假设和反证，定位与恢复结论分开：
 //   - 建立 incident、症状/影响范围、时间线、假设、支持/反证、未知项和下一
@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ type Incident struct {
 	UpdatedAt         int64
 }
 
-// createIncident 创建 incident（P4-16.1）。
+// createIncident 创建 incident。
 // 建立 incident、症状/影响范围、时间线。
 func createIncident(tx *sql.Tx, i Incident, now int64) (Incident, error) {
 	if i.Symptoms == "" {
@@ -86,7 +87,7 @@ type IncidentHypothesis struct {
 // ErrModelGuessAsFact 是模型猜测写事实的错误。
 var ErrModelGuessAsFact = errors.New("模型猜测不能写当前事实")
 
-// proposeHypothesis 提出假设（P4-16.1）。
+// proposeHypothesis 提出假设。
 // 假设、支持/反证、未知项和下一查询；模型猜测不能写当前事实。
 func proposeHypothesis(tx *sql.Tx, h IncidentHypothesis, now int64) (IncidentHypothesis, error) {
 	if h.IncidentID == "" || h.Statement == "" || h.ProposedBy == "" {
@@ -123,7 +124,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 // 支持/反证（比较假设和反证）
 // ---------------------------------------------------------------------------
 
-// addHypothesisEvidence 添加假设证据（P4-16.1）。
+// addHypothesisEvidence 添加假设证据。
 // 比较假设和反证：支持/反证分别记录。
 func addHypothesisEvidence(tx *sql.Tx, hypothesisID string, evidenceRef string, supporting bool, now int64) error {
 	var field string
@@ -156,7 +157,7 @@ type IncidentProposal struct {
 	CreatedAt     int64
 }
 
-// proposeIncidentAction 提出处置提案（P4-16.4）。
+// proposeIncidentAction 提出处置提案。
 // 形成处置提案时携带具体对象、能力/参数、证据和风险边界，经运行时与领域
 // 准入后才可动作。
 func proposeIncidentAction(tx *sql.Tx, p IncidentProposal, now int64) (IncidentProposal, error) {
@@ -185,7 +186,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?)`,
 // 恢复验证与根因证明分别记录
 // ---------------------------------------------------------------------------
 
-// recordRecoveryVerification 记录恢复验证（P4-16.5）。
+// recordRecoveryVerification 记录恢复验证。
 // 恢复验证与根因证明分别记录；恢复成功但根因未知仍保持未知。
 func recordRecoveryVerification(tx *sql.Tx, incidentID string, verified bool, evidence string, now int64) error {
 	// 恢复验证与根因证明分别记录。
@@ -194,7 +195,7 @@ func recordRecoveryVerification(tx *sql.Tx, incidentID string, verified bool, ev
 	return err
 }
 
-// recordRootCauseProof 记录根因证明（P4-16.5）。
+// recordRootCauseProof 记录根因证明。
 // 恢复成功但根因未知仍保持未知，候选经验不得改称已证实根因。
 func recordRootCauseProof(tx *sql.Tx, incidentID string, proven bool, rootCause string, evidence string, now int64) error {
 	// 恢复成功但根因未知仍保持未知：proven=false 时不写 root_cause。
@@ -206,7 +207,7 @@ func recordRootCauseProof(tx *sql.Tx, incidentID string, proven bool, rootCause 
 	return err
 }
 
-// ensureRootCauseNotOverclaimed 核对根因不过度声称（P4-16.5）。
+// ensureRootCauseNotOverclaimed 核对根因不过度声称。
 // 恢复成功但根因未知仍保持未知，候选经验不得改称已证实根因。
 func ensureRootCauseNotOverclaimed(i Incident) error {
 	if i.RecoveryVerified && !i.RootCauseProven && i.RootCause != "" {
@@ -230,6 +231,7 @@ type IncidentWorkflowStage struct {
 	StepKey          string               `json:"step_key"`
 	Label            string               `json:"label"`
 	Status           string               `json:"status"` // completed, active, conditional, pending, blocked
+	DataStatus       string               `json:"data_status,omitempty"`
 	Summary          string               `json:"summary"`
 	PolicyNote       string               `json:"policy_note,omitempty"`
 	ProposalRiskNote string               `json:"proposal_risk_note,omitempty"`
@@ -355,6 +357,7 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		Actions: []IncidentStepAction{{ActionID: inc.IncidentID + ":obs", Timestamp: inc.CreatedAt, Summary: "症状登记: " + inc.Symptoms, Status: "completed"}},
 	}
 	rcStatus := "active"
+	rcDataStatus := "live"
 	rcSummary := fmt.Sprintf("待收敛（%d 条假设，%d 条获支持）", hypCount, supportedHyp)
 	rootCause := ""
 	if inc.RootCauseProven {
@@ -364,18 +367,27 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		if rootCause != "" {
 			rcSummary = "已证实: " + rootCause
 		}
+	} else if hypCount == 0 {
+		rcDataStatus = "not_connected"
+		rcSummary = "根因假设引擎未接入（待人工登记）"
 	}
 	rootCauseStage := IncidentWorkflowStage{
-		StepKey: "root_cause",
-		Label:   "② 根因",
-		Status:  rcStatus,
-		Summary: rcSummary,
-		Actions: []IncidentStepAction{{ActionID: inc.IncidentID + ":rc", Timestamp: inc.UpdatedAt, Summary: rcSummary, Status: rcStatus, HasLogs: inc.RootCauseEvidence != "", LogPreview: inc.RootCauseEvidence}},
+		StepKey:    "root_cause",
+		Label:      "② 根因",
+		Status:     rcStatus,
+		DataStatus: rcDataStatus,
+		Summary:    rcSummary,
+		Actions:    []IncidentStepAction{{ActionID: inc.IncidentID + ":rc", Timestamp: inc.UpdatedAt, Summary: rcSummary, Status: rcStatus, HasLogs: inc.RootCauseEvidence != "", LogPreview: inc.RootCauseEvidence}},
 	}
 	healExecutionCount := len(healActions)
+	var activeSelfHealPolicyCount int
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM self_heal_policies WHERE state='active'`).Scan(&activeSelfHealPolicyCount)
+	healDataStatus := "live"
 	healSummary := "暂无自愈记录"
 	if healExecutionCount > 0 {
 		healSummary = fmt.Sprintf("最近 %d 条自愈记录", healExecutionCount)
+	} else if activeSelfHealPolicyCount > 0 {
+		healSummary = fmt.Sprintf("已配置 %d 条自愈策略，待触发", activeSelfHealPolicyCount)
 	}
 	proposalRiskNote := ""
 	if lastPropID != "" {
@@ -384,11 +396,15 @@ func (s *Store) IncidentWorkflow(ctx context.Context, incidentID string) (Incide
 		if lastPropRisk != "" {
 			proposalRiskNote = lastPropCap + "：" + lastPropRisk
 		}
+	} else if healExecutionCount == 0 && activeSelfHealPolicyCount == 0 {
+		healDataStatus = "not_connected"
+		healSummary = "自动自愈执行器未接入"
 	}
 	selfHealStage := IncidentWorkflowStage{
 		StepKey:          "self_heal",
 		Label:            "③ 自愈",
 		Status:           healStatus,
+		DataStatus:       healDataStatus,
 		Summary:          healSummary,
 		ProposalRiskNote: proposalRiskNote,
 		ImpactNote:       inc.ImpactScope,
@@ -504,6 +520,161 @@ func (s *Store) IncidentStepLogs(ctx context.Context, incidentID, stepKey string
 		return IncidentStepLogView{}, err
 	}
 	return out, nil
+}
+
+// AddIncidentHypothesis registers a root-cause hypothesis on an incident (Stage ②).
+func (s *Store) AddIncidentHypothesis(ctx context.Context, subject, incidentID, statement string, unknowns, nextQueries []string) (IncidentHypothesis, error) {
+	if strings.TrimSpace(subject) == "" {
+		return IncidentHypothesis{}, ErrAuthorizationDenied
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return IncidentHypothesis{}, err
+	}
+	defer tx.Rollback()
+
+	stamp := now()
+	if err := incidentExistsAndWritable(tx, incidentID); err != nil {
+		return IncidentHypothesis{}, err
+	}
+	h, err := proposeHypothesis(tx, IncidentHypothesis{
+		IncidentID:  incidentID,
+		Statement:   strings.TrimSpace(statement),
+		ProposedBy:  subject,
+		Unknowns:    toJSON(nonNilStrings(unknowns)),
+		NextQueries: toJSON(nonNilStrings(nextQueries)),
+	}, stamp)
+	if err != nil {
+		return IncidentHypothesis{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE incidents SET updated_at=? WHERE incident_id=?`, stamp, incidentID); err != nil {
+		return IncidentHypothesis{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return IncidentHypothesis{}, err
+	}
+	return h, nil
+}
+
+// RecordIncidentHypothesisEvidence appends supporting or counter evidence to a hypothesis.
+func (s *Store) RecordIncidentHypothesisEvidence(ctx context.Context, subject, incidentID, hypothesisID, evidenceRef string, supporting bool, nextState string) error {
+	if strings.TrimSpace(subject) == "" {
+		return ErrAuthorizationDenied
+	}
+	if strings.TrimSpace(evidenceRef) == "" {
+		return errors.New("evidence_ref 不能为空")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var ownerIncident string
+	err = tx.QueryRowContext(ctx, `SELECT incident_id FROM incident_hypotheses WHERE hypothesis_id=?`, hypothesisID).Scan(&ownerIncident)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && ownerIncident != incidentID) {
+		return sql.ErrNoRows
+	}
+	if err != nil {
+		return err
+	}
+	stamp := now()
+	if err := addHypothesisEvidence(tx, hypothesisID, strings.TrimSpace(evidenceRef), supporting, stamp); err != nil {
+		return err
+	}
+	if nextState != "" {
+		switch nextState {
+		case "open", "supported", "refuted", "inconclusive":
+			if _, err := tx.ExecContext(ctx, `UPDATE incident_hypotheses SET state=?, updated_at=? WHERE hypothesis_id=?`, nextState, stamp, hypothesisID); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("无效的假设状态：%s", nextState)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE incidents SET updated_at=? WHERE incident_id=?`, stamp, incidentID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ResolveIncident records recovery verification and optional root-cause proof,
+// enforcing ensureRootCauseNotOverclaimed before closing the incident.
+func (s *Store) ResolveIncident(ctx context.Context, subject, incidentID string, recoveryVerified bool, recoveryEvidence string, rootCauseProven bool, rootCause, rootCauseEvidence string) (Incident, error) {
+	if strings.TrimSpace(subject) == "" {
+		return Incident{}, ErrAuthorizationDenied
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Incident{}, err
+	}
+	defer tx.Rollback()
+
+	if err := incidentExistsAndWritable(tx, incidentID); err != nil {
+		return Incident{}, err
+	}
+	stamp := now()
+	if err := recordRecoveryVerification(tx, incidentID, recoveryVerified, strings.TrimSpace(recoveryEvidence), stamp); err != nil {
+		return Incident{}, err
+	}
+	if err := ensureRootCauseNotOverclaimed(Incident{
+		IncidentID:       incidentID,
+		RecoveryVerified: recoveryVerified,
+		RootCauseProven:  rootCauseProven,
+		RootCause:        strings.TrimSpace(rootCause),
+	}); err != nil {
+		return Incident{}, err
+	}
+	if rootCauseProven || strings.TrimSpace(rootCause) != "" || strings.TrimSpace(rootCauseEvidence) != "" {
+		if err := recordRootCauseProof(tx, incidentID, rootCauseProven, strings.TrimSpace(rootCause), strings.TrimSpace(rootCauseEvidence), stamp); err != nil {
+			return Incident{}, err
+		}
+	}
+	nextState := "mitigated"
+	if recoveryVerified {
+		nextState = "resolved"
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE incidents SET state=?, updated_at=? WHERE incident_id=?`, nextState, stamp, incidentID); err != nil {
+		return Incident{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Incident{}, err
+	}
+	return readIncidentByID(s.db, incidentID)
+}
+
+func readIncidentByID(db *sql.DB, incidentID string) (Incident, error) {
+	var inc Incident
+	var recV, rcP int
+	err := db.QueryRow(`SELECT incident_id,symptoms,impact_scope,timeline,state,recovery_verified,recovery_evidence,root_cause_proven,root_cause,root_cause_evidence,created_at,updated_at
+FROM incidents WHERE incident_id=?`, incidentID).Scan(
+		&inc.IncidentID, &inc.Symptoms, &inc.ImpactScope, &inc.Timeline, &inc.State,
+		&recV, &inc.RecoveryEvidence, &rcP, &inc.RootCause, &inc.RootCauseEvidence, &inc.CreatedAt, &inc.UpdatedAt)
+	inc.RecoveryVerified = recV != 0
+	inc.RootCauseProven = rcP != 0
+	return inc, err
+}
+
+func incidentExistsAndWritable(tx *sql.Tx, incidentID string) error {
+	var state string
+	err := tx.QueryRow(`SELECT state FROM incidents WHERE incident_id=?`, incidentID).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return sql.ErrNoRows
+	}
+	if err != nil {
+		return err
+	}
+	if state == "resolved" {
+		return ErrState
+	}
+	return nil
+}
+
+func nonNilStrings(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	return in
 }
 
 // 确保 context/sql/errors/fmt 引用保留。

@@ -1,9 +1,9 @@
 package work
 
-// P4-05：资产九态与领域迁移服务。
+// 资产九态与领域迁移服务。
 //
 // 本文件实现状态唯一、语义互斥，每次迁移由领域证据与规则确认：
-//   - 实现 V3 §6.7 全部合法迁移、触发与前置条件；Task/Operation 仅引用，
+//   - 实现 §6.7 全部合法迁移、触发与前置条件；Task/Operation 仅引用，
 //     不直接写资产状态；
 //   - 迁移事务核对当前状态、预期版本、规则、证据、占用、责任和授权，写
 //     迁移历史与 Outbox；
@@ -22,7 +22,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// 资产九态（V3 §6.7）
+// 资产九态（§6.7）
 // ---------------------------------------------------------------------------
 
 // 资产九个唯一末级状态：待纳管；在管下的待复核、待调试、调试中、待交付、
@@ -39,7 +39,7 @@ const (
 	AssetStateRetired   = "已退役"
 )
 
-// assetTransitions 是 V3 §6.7 允许迁移的结构表达。
+// assetTransitions 是 §6.7 允许迁移的结构表达。
 var assetTransitions = map[string]map[string]bool{
 	AssetStatePending: {
 		AssetStateRecheck: true, // 首次纳管
@@ -128,14 +128,14 @@ type AssetTransition struct {
 	CreatedAt              int64
 }
 
-// transitionAssetState 迁移资产状态（P4-05.2）。
+// transitionAssetState 迁移资产状态。
 // 迁移事务核对当前状态、预期版本、规则、证据、占用、责任和授权，写迁移
 // 历史与 Outbox；同一版本的并发迁移只有一方成功，另一方重判，不覆盖历史。
 func transitionAssetState(tx *sql.Tx, t AssetTransition, now int64) (AssetTransition, error) {
 	if t.ObjectRef == "" || t.FromState == "" || t.ToState == "" || t.Actor == "" {
 		return AssetTransition{}, errors.New("迁移缺少对象/状态/执行者")
 	}
-	// 合法迁移核对（V3 §6.7）。
+	// 合法迁移核对（§6.7）。
 	if !canTransitionAsset(t.FromState, t.ToState) {
 		return AssetTransition{}, fmt.Errorf("资产状态跳跃：%s → %s 不允许", t.FromState, t.ToState)
 	}
@@ -195,7 +195,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 // ErrAlertAutoMaintenance 是告警自动进入维护的错误。
 var ErrAlertAutoMaintenance = errors.New("告警不自动进入维护中（需维护接管）")
 
-// ensureAlertNotAutoMaintenance 核对告警不自动进入维护（P4-05.3）。
+// ensureAlertNotAutoMaintenance 核对告警不自动进入维护。
 // 健康、可达性、业务占用单独表达；告警不自动进入维护中，Task 取消不自动回在役。
 func ensureAlertNotAutoMaintenance(currentState string, alertReceived bool) error {
 	if currentState == AssetStateInService && alertReceived {
@@ -220,7 +220,7 @@ type MaintenanceTakeover struct {
 	CreatedAt       int64
 }
 
-// recordMaintenanceTakeover 记录维护接管（P4-05.4）。
+// recordMaintenanceTakeover 记录维护接管。
 // 维护接管可由有效策略自动完成，也可等待有权人员；均必须有影响与责任记录。
 func recordMaintenanceTakeover(tx *sql.Tx, t MaintenanceTakeover, now int64) (MaintenanceTakeover, error) {
 	if t.ObjectRef == "" || t.TakeoverKind == "" {
@@ -252,10 +252,13 @@ VALUES(?,?,?,?,?,?,?,?)`,
 // Task/Operation 仅引用（不直接写资产状态）
 // ---------------------------------------------------------------------------
 
+// ErrRevisionConflict 是版本冲突的错误。
+var ErrRevisionConflict = errors.New("版本冲突：任务已被更新")
+
 // ErrTaskAssetAuthority 是 Task 直接写资产状态的错误。
 var ErrTaskAssetAuthority = errors.New("Task/Operation 仅引用，不直接写资产状态")
 
-// ensureTaskNotAssetAuthority 核对 Task 不直接写资产状态（P4-05.1）。
+// ensureTaskNotAssetAuthority 核对 Task 不直接写资产状态。
 // Task/Operation 仅引用，不直接写资产状态；Task 成败、工单关闭、告警恢复
 // 都不能越过领域验证直接恢复资产。
 func ensureTaskNotAssetAuthority(taskID string, objectRef string) error {

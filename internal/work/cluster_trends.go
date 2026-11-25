@@ -31,6 +31,7 @@ type ClusterTrends struct {
 	FaultCountBasis    string               `json:"fault_count_basis"`
 	FaultCategoryBasis string               `json:"fault_category_basis"`
 	FaultCoverage      string               `json:"fault_coverage"`
+	FaultSourceStatus  string               `json:"fault_source_status"`
 	FaultCategories    []string             `json:"fault_categories"`
 	Buckets            []ClusterTrendBucket `json:"buckets"`
 }
@@ -90,6 +91,7 @@ func (s *Store) ClusterTrendStats(ctx context.Context, principal, window string,
 	out.FaultCountBasis = "segment_start"
 	out.FaultCategoryBasis = "observation_kind"
 	out.FaultCoverage = "consistent_observation_refs_or_simple_keys"
+	out.FaultSourceStatus = "not_connected"
 	out.FaultCategories = []string{"nhc", "oob_alert", "network", "service", "other"}
 	out.Buckets = make([]ClusterTrendBucket, count)
 	for i := range out.Buckets {
@@ -195,6 +197,14 @@ func (s *Store) ClusterTrendStats(ctx context.Context, principal, window string,
 			percent := float64(b.InServiceNodes) * 100 / float64(b.TotalNodes)
 			b.InServicePercent = &percent
 		}
+	}
+
+	var hasFaultSegments bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM fault_segments)`).Scan(&hasFaultSegments); err != nil {
+		return out, err
+	}
+	if hasFaultSegments {
+		out.FaultSourceStatus = "live"
 	}
 
 	rows, err = tx.QueryContext(ctx, `SELECT f.segment_id,f.fault_key,f.window_start,j.type,o.object_ref

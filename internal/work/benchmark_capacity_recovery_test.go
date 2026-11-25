@@ -123,7 +123,7 @@ func TestBenchmarkConcurrentCapacityAndDurableHoldRecovery(t *testing.T) {
 	}
 	recoverAt := stamp + benchmarkWaitRecheckMS + benchmarkClaimMS
 	for i := 0; i < 2; i++ {
-		if _, err := s.RecoverV3(ctx, recoverAt); err != nil {
+		if _, err := s.RecoverRuntime(ctx, recoverAt); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.applyBenchmarkTimeouts(ctx, recoverAt); err != nil {
@@ -429,7 +429,7 @@ func TestBenchmarkProductionTicksDrainSaturatedBatchesAfterRestart(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RecoverV3(ctx, now()); err != nil {
+	if _, err := s.RecoverRuntime(ctx, now()); err != nil {
 		t.Fatal(err)
 	}
 	firstStep := p.lostKey[len("benchmark:"):]

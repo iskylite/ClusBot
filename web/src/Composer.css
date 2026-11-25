@@ -69,8 +69,8 @@
 .reply-strategy-menu > button small {margin:0;font-size:10px}
 .reply-badge {border:1px solid var(--line);background:var(--surface);border-radius:4px;padding:1px 4px}
 .reply-settings-link {border-top:1px solid var(--line)}
-.v31-workspace[data-section="chat"] > main > .composer .composer-bar {margin-top:0}
-.v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {
+.app-workspace[data-section="chat"] > main > .composer .composer-bar {margin-top:0}
+.app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {
   min-height:28px;
   border:1px solid var(--line);
   border-radius:7px;
@@ -78,19 +78,19 @@
   font-size:12px;
   color:var(--ink);
 }
-.v31-workspace[data-section="chat"] > main > .composer .send {min-height:28px;width:28px;height:28px;border-radius:50%}
-.v31-workspace[data-section="chat"] > main > .composer textarea {field-sizing:content;height:auto;max-height:170px}
-.v31-workspace[data-section="chat"] > main > .composer .message-context {gap:5px;margin-bottom:4px}
-.v31-workspace[data-section="chat"] .message-context :is(.message-reference,.message-attachment) {width:auto;max-width:245px;height:26px;border-radius:6px}
-.v31-workspace[data-section="chat"] .message-context .message-attachment-open {flex:0 1 auto}
+.app-workspace[data-section="chat"] > main > .composer .send {min-height:28px;width:28px;height:28px;border-radius:50%}
+.app-workspace[data-section="chat"] > main > .composer textarea {field-sizing:content;height:auto;max-height:170px}
+.app-workspace[data-section="chat"] > main > .composer .message-context {gap:5px;margin-bottom:4px}
+.app-workspace[data-section="chat"] .message-context :is(.message-reference,.message-attachment) {width:auto;max-width:245px;height:26px;border-radius:6px}
+.app-workspace[data-section="chat"] .message-context .message-attachment-open {flex:0 1 auto}
 @media (max-width:540px) {
-  .v31-workspace[data-section="chat"] > main > .composer:has(.reply-strategy) {grid-template-columns:minmax(0,1fr) auto}
-  .v31-workspace[data-section="chat"] > main > .composer:has(.reply-strategy) > .composer-bar {grid-column:auto}
+  .app-workspace[data-section="chat"] > main > .composer:has(.reply-strategy) {grid-template-columns:minmax(0,1fr) auto}
+  .app-workspace[data-section="chat"] > main > .composer:has(.reply-strategy) > .composer-bar {grid-column:auto}
 }
 .material-preview-floating {
   position:fixed;
   top:clamp(55px,17.2vh,142px);
-  left:calc(50% + 96px);
+  left:calc(50% + 110px);
   right:auto;
   bottom:auto;
   z-index:12;
@@ -99,7 +99,7 @@
   padding:11px 13px;
   border-radius:12px;
 }
-body:has(.rail-collapsed) .material-preview-floating {left:calc(50% + 48px)}
+body:has(.rail-collapsed) .material-preview-floating {left:50%}
 .material-preview header {align-items:center;margin-bottom:7px}
 .material-preview-title,.material-preview-actions {display:flex;align-items:center;gap:7px;min-width:0}
 .material-preview-title {flex-wrap:wrap}
@@ -116,30 +116,30 @@ body:has(.rail-collapsed) .material-preview-floating {left:calc(50% + 48px)}
   .material-preview-floating,body:has(.rail-collapsed) .material-preview-floating {left:50%}
   .material-preview-actions select {max-width:90px}
 }
-.v31-workspace[data-section="chat"] > main > .composer:has(.message-context) textarea {min-height:25px}
-.v31-workspace[data-section="chat"] > main > .composer .message-content {gap:5px}
+.app-workspace[data-section="chat"] > main > .composer:has(.message-context) textarea {min-height:25px}
+.app-workspace[data-section="chat"] > main > .composer .message-content {gap:5px}
 .material-preview-actions :is(button,a) {height:27px}
 .material-preview-body {padding-block:5px}
 .composer-suggestions-list button[aria-selected="true"] .composer-suggestion-badge {color:var(--accent);background:var(--surface)}
 .composer-suggestion-badge {margin-inline-start:auto;border:1px solid var(--line);border-radius:5px;padding:1px 4px;color:var(--muted);background:var(--workspace-bg);white-space:nowrap;font-size:10px}
-.v31-workspace[data-section="chat"] .message-context .message-attachment[data-previewing] {border-color:var(--accent);background:var(--selected)}
+.app-workspace[data-section="chat"] .message-context .message-attachment[data-previewing] {border-color:var(--accent);background:var(--selected)}
 .message-attachment[data-previewing] :is(strong,small) {color:var(--accent)}
 
 /* Compact context and completion surfaces in the conversation composer. */
-.v31-workspace[data-section="chat"] > main > .composer:has(.message-context) {min-height:112px}
-.v31-workspace[data-section="chat"] > main > .composer:focus-within,
-.v31-workspace[data-section="chat"] > main > .composer:has(.composer-suggestions) {border-color:color-mix(in srgb,var(--accent) 28%,var(--surface))}
-.v31-workspace[data-section="chat"] > main > .composer .message-context {gap:6px;margin-bottom:0}
-.v31-workspace[data-section="chat"] > main > .composer .message-context :is(.message-reference,.message-attachment) {height:24px;max-width:min(330px,100%)}
-.v31-workspace[data-section="chat"] > main > .composer .message-attachment {gap:5px;padding:0 8px}
-.v31-workspace[data-section="chat"] > main > .composer .message-attachment-open {gap:5px}
-.v31-workspace[data-section="chat"] > main > .composer .message-attachment-open svg {width:12px;height:12px}
-.v31-workspace[data-section="chat"] > main > .composer .message-attachment-open :is(strong,small) {font-size:11px;font-weight:500}
-.v31-workspace[data-section="chat"] > main > .composer .message-attachment[data-previewing] :is(strong,small) {font-weight:600}
-.v31-workspace[data-section="chat"] > main > .composer .message-content-action {width:11px;height:22px}
-.v31-workspace[data-section="chat"] > main > .composer .message-content-action svg {width:11px;height:11px}
-.v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {min-height:26px;padding:3px 9px}
-.v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button svg {width:13px;height:13px}
+.app-workspace[data-section="chat"] > main > .composer:has(.message-context) {min-height:112px}
+.app-workspace[data-section="chat"] > main > .composer:focus-within,
+.app-workspace[data-section="chat"] > main > .composer:has(.composer-suggestions) {border-color:color-mix(in srgb,var(--accent) 28%,var(--surface))}
+.app-workspace[data-section="chat"] > main > .composer .message-context {gap:6px;margin-bottom:0}
+.app-workspace[data-section="chat"] > main > .composer .message-context :is(.message-reference,.message-attachment) {height:24px;max-width:min(330px,100%)}
+.app-workspace[data-section="chat"] > main > .composer .message-attachment {gap:5px;padding:0 8px}
+.app-workspace[data-section="chat"] > main > .composer .message-attachment-open {gap:5px}
+.app-workspace[data-section="chat"] > main > .composer .message-attachment-open svg {width:12px;height:12px}
+.app-workspace[data-section="chat"] > main > .composer .message-attachment-open :is(strong,small) {font-size:11px;font-weight:500}
+.app-workspace[data-section="chat"] > main > .composer .message-attachment[data-previewing] :is(strong,small) {font-weight:600}
+.app-workspace[data-section="chat"] > main > .composer .message-content-action {width:11px;height:22px}
+.app-workspace[data-section="chat"] > main > .composer .message-content-action svg {width:11px;height:11px}
+.app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {min-height:26px;padding:3px 9px}
+.app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button svg {width:13px;height:13px}
 .composer-suggestions-list button[aria-selected="true"] strong {font-weight:600}
 .composer-suggestion-badge[data-badge="活跃"] {color:#047857;border-color:#a7f3d0;background:#ecfdf5}
 .reply-strategy-trigger {min-height:26px;padding:4px 5px;color:var(--muted);background:var(--panel)}
@@ -162,26 +162,26 @@ body:has(.rail-collapsed) .material-preview-floating {left:calc(50% + 48px)}
 .material-preview-table :is(th,td) {position:relative;padding:0 24px 0 0;border:0;font-weight:400;white-space:nowrap}
 .material-preview-table th {color:var(--muted);font-weight:600}
 .material-preview-table :is(th,td):not(:last-child)::after {position:absolute;right:6px;content:'|';color:var(--muted)}
-.v31-workspace[data-section="chat"] .message-user .message-content {display:flex;flex-direction:column;gap:8px}
-.v31-workspace[data-section="chat"] .message-user .message-content-body {order:0;font-size:13px;line-height:19px;font-weight:400}
-.v31-workspace[data-section="chat"] .message-user .message-context {order:1;gap:6px}
-.v31-workspace[data-section="chat"] .message-user .message-context :is(.message-reference,.message-attachment) {height:20px;max-width:100%;border:0;border-radius:5px;background:var(--surface)}
-.v31-workspace[data-section="chat"] .message-user .message-context .message-reference {order:1;background:var(--selected)}
-.v31-workspace[data-section="chat"] .message-user .message-reference-label {font-size:11px}
-.v31-workspace[data-section="chat"] .message-user .message-attachment {padding:0 7px}
-.v31-workspace[data-section="chat"] .message-user .message-attachment-open {gap:0}
-.v31-workspace[data-section="chat"] .message-user .message-attachment-open svg {display:none}
-.v31-workspace[data-section="chat"] .message-user .message-attachment-open :is(strong,small) {font-size:11px;line-height:1}
+.app-workspace[data-section="chat"] .message-user .message-content {display:flex;flex-direction:column;gap:8px}
+.app-workspace[data-section="chat"] .message-user .message-content-body {order:0;font-size:13px;line-height:19px;font-weight:400}
+.app-workspace[data-section="chat"] .message-user .message-context {order:1;gap:6px}
+.app-workspace[data-section="chat"] .message-user .message-context :is(.message-reference,.message-attachment) {height:20px;max-width:100%;border:0;border-radius:5px;background:var(--surface)}
+.app-workspace[data-section="chat"] .message-user .message-context .message-reference {order:1;background:var(--selected)}
+.app-workspace[data-section="chat"] .message-user .message-reference-label {font-size:11px}
+.app-workspace[data-section="chat"] .message-user .message-attachment {padding:0 7px}
+.app-workspace[data-section="chat"] .message-user .message-attachment-open {gap:0}
+.app-workspace[data-section="chat"] .message-user .message-attachment-open svg {display:none}
+.app-workspace[data-section="chat"] .message-user .message-attachment-open :is(strong,small) {font-size:11px;line-height:1}
 @media (min-width:821px) {
-  .v31-workspace[data-section="chat"] > main > .composer:has(.message-context):not(:has(.error,.material-progress,.criteria-editor)) {align-content:start;row-gap:8px}
-  .v31-workspace[data-section="chat"] > main > .composer:has(.message-context) .message-content {gap:8px}
-  .v31-workspace[data-section="chat"] > main > .composer:has(.message-context) textarea {min-height:20px}
-  .v31-workspace[data-section="chat"] > main > .composer .composer-secondary:has(> .muted:only-child:empty) {display:none}
+  .app-workspace[data-section="chat"] > main > .composer:has(.message-context):not(:has(.error,.material-progress,.criteria-editor)) {align-content:start;row-gap:8px}
+  .app-workspace[data-section="chat"] > main > .composer:has(.message-context) .message-content {gap:8px}
+  .app-workspace[data-section="chat"] > main > .composer:has(.message-context) textarea {min-height:20px}
+  .app-workspace[data-section="chat"] > main > .composer .composer-secondary:has(> .muted:only-child:empty) {display:none}
 }
 @media (max-width:820px) {
-  .v31-workspace[data-section="chat"] > main > .composer:has(.message-context) {min-height:76px}
-  .v31-workspace[data-section="chat"] > main > .composer:has(textarea:placeholder-shown) .reply-strategy {display:none}
-  .v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {border:0;padding:0;min-height:26px}
-  .v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button svg {display:none}
-  .v31-workspace[data-section="chat"] > main > .composer .composer-tools .text-button::before {content:'+'}
+  .app-workspace[data-section="chat"] > main > .composer:has(.message-context) {min-height:76px}
+  .app-workspace[data-section="chat"] > main > .composer:has(textarea:placeholder-shown) .reply-strategy {display:none}
+  .app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button {border:0;padding:0;min-height:26px}
+  .app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button svg {display:none}
+  .app-workspace[data-section="chat"] > main > .composer .composer-tools .text-button::before {content:'+'}
 }

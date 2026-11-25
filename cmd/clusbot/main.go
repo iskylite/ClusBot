@@ -297,9 +297,9 @@ func run() error {
 	if err = db.Recover(); err != nil {
 		return err
 	}
-	// V3 运行时恢复（扫描持久工作/未决操作/等待）。
-	if _, err = db.RecoverV3(context.Background(), time.Now().UnixMilli()); err != nil {
-		return fmt.Errorf("V3 恢复失败：%w", err)
+	// 运行时恢复（扫描持久工作/未决操作/等待）。
+	if _, err = db.RecoverRuntime(context.Background(), time.Now().UnixMilli()); err != nil {
+		return fmt.Errorf("运行时恢复失败：%w", err)
 	}
 	// 本地演示模式注入领域台账样例（幂等，仅 -demo 启用）。
 	if *demo {
@@ -372,17 +372,21 @@ func run() error {
 		discoverySource = p
 	}
 
+	benchmarkProvider = db.DynamicBenchmarkProvider(benchmarkProvider)
+	discoverySource = db.DynamicDiscoverySource(discoverySource)
+	ticketChecker = db.DynamicEffectChecker(ticketChecker)
+
 	api := httpapi.Server{
 		Store: db, Token: token, Hosts: hosts, Settings: settings, WorkspacePath: workspacePath, TicketProvider: ticketProvider, TicketEffectChecker: ticketChecker, BenchmarkProvider: benchmarkProvider, BenchmarkEvents: benchmarkEvents, DiscoverySource: discoverySource,
 		MaxPendingExplicitTasks: cfg.Runtime.MaxPendingExplicitTasks, ModelConcurrency: cfg.Runtime.MaxActiveRuns,
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	// V3 运行时循环（推进 Timer/Schedule/未决核对/确定性工作；模型不可用时确定性工作独立存活）。
+	// 运行时循环（推进 Timer/未决核对/确定性工作；模型不可用时确定性工作独立存活）。
 	modelAvailable := func() bool { return api.ModelAvailable(ctx) }
 	runtimeLoop := work.NewRuntimeLoop(db, modelAvailable)
 	var background sync.WaitGroup
-	// A2+A3：注册资产验收状态查询处理器并启动本地嵌入执行器（消费确定性 work_unit）。
+	// 注册资产验收状态查询处理器并启动本地嵌入执行器（消费确定性 work_unit）。
 	executor, err := db.EnableAssetAcceptanceQuery(ctx)
 	if err != nil {
 		return fmt.Errorf("启动领域查询执行器失败：%w", err)
@@ -401,13 +405,8 @@ func run() error {
 	})
 	approvalWorker := db.StartApprovalWorker(ctx)
 	background.Go(func() { db.RunChatAdmissions(ctx, modelAvailable, settings.RouteSubmission) })
-	if benchmarkProvider != nil {
-		background.Go(func() { db.RunBenchmarks(ctx, benchmarkProvider) })
-	}
-
-	if discoverySource != nil {
-		background.Go(func() { db.RunDiscovery(ctx, discoverySource) })
-	}
+	background.Go(func() { db.RunBenchmarks(ctx, benchmarkProvider) })
+	background.Go(func() { db.RunDiscovery(ctx, discoverySource) })
 
 	if ticketProvider != nil {
 		background.Go(func() { db.RunTicketOperations(ctx, ticketProvider, ticketChecker) })

@@ -13,7 +13,7 @@ import (
 
 var ErrDiscoveryInput = errors.New("发现配置、来源或候选不受支持")
 
-const v31DiscoverySchema = `
+const discoverySchema = `
 CREATE TABLE IF NOT EXISTS discovery_source_versions (
  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL
 );
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS discovery_admissions (
 );
 `
 
-func migrateV31Discovery(tx *sql.Tx) error { _, err := tx.Exec(v31DiscoverySchema); return err }
+func migrateDiscoveryStorage(tx *sql.Tx) error { _, err := tx.Exec(discoverySchema); return err }
 
 func migrateDiscoveryTaskLookup(tx *sql.Tx) error {
 	_, err := tx.Exec("CREATE INDEX IF NOT EXISTS discovery_occurrences_by_task ON discovery_occurrences(task_id) WHERE task_id IS NOT NULL")
@@ -275,11 +275,11 @@ func (s *Store) claimDiscovery(ctx context.Context, source DiscoveryScanSource, 
 	if err != nil {
 		return d, false, err
 	}
-	if st.State == V3TaskPending {
+	if st.State == RuntimeTaskPending {
 		if _, err = transitionTaskState(tx, d.task, EventClaim, TaskGuard{Actor: "system", ExpectedStorageRevision: st.StorageRevision}, stamp); err != nil {
 			return d, false, err
 		}
-	} else if st.State != V3TaskRunning {
+	} else if st.State != RuntimeTaskRunning {
 		return d, false, ErrState
 	}
 	d.generation++
@@ -400,9 +400,9 @@ FROM discovery_candidates c LEFT JOIN discovery_observations o ON o.rowid=(
 	return tx.Commit()
 }
 func finishDiscovery(tx *sql.Tx, d discoveryTick, success bool, summary string, stamp int64) error {
-	status, legacy, final := "failed", "interrupted", V3TaskFailed
+	status, legacy, final := "failed", "interrupted", RuntimeTaskFailed
 	if success {
-		status, legacy, final = "done", "completed", V3TaskSucceeded
+		status, legacy, final = "done", "completed", RuntimeTaskSucceeded
 	}
 	if _, err := tx.Exec("UPDATE discovery_occurrences SET status=?,summary=? WHERE plan_id=? AND scheduled_at=?", status, summary, d.plan, d.at); err != nil {
 		return err

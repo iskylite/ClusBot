@@ -31,7 +31,7 @@ ORDER BY t.completed_at DESC,before.task_id DESC LIMIT 1`, d.step).Scan(&task, &
 	if err != nil {
 		return nil, err
 	}
-	var prev v31BenchReport
+	var prev benchReportJSON
 	if err = json.Unmarshal([]byte(raw), &prev); err != nil {
 		return nil, err
 	}

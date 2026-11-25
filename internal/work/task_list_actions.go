@@ -46,7 +46,7 @@ FROM runs WHERE task_id=? ORDER BY rowid DESC LIMIT 1`, task.ID).Scan(&runID, &r
 		// any delivery checks can be reviewed before confirmation.
 		actions.StatusAction = "accept"
 	case ordinary && clear && (task.Status == "interrupted" || task.Status == "cancelled") &&
-		ensureGoalTaskContinuable(tx, task.ID) == nil && conversationIdle(tx, task.ConversationID) == nil:
+		conversationIdle(tx, task.ConversationID) == nil:
 		if task.Status == "cancelled" || task.RequirementsChanged {
 			actions.StatusAction = "resume"
 		} else if runID != "" {

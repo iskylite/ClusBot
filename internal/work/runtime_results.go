@@ -1,6 +1,6 @@
 package work
 
-// P1-10：持久结果回执与幂等收尾。
+// 持久结果回执与幂等收尾。
 //
 // 本文件实现结果保存失败后恢复收尾，不重新调用模型或重做已执行工作：
 //   - 回报先持久记录独立结果身份、单元/Run/代际、摘要、用量和证据，再事务
@@ -13,7 +13,7 @@ package work
 //   - 收尾记录涵盖剩余占用/待决定事项；未来 Operation 结果由同一输入链接入，
 //     不能直接更新资产。
 //
-// 与现有 finalization 的关系：本文件在 P1-02 的 result_receipts 之上提供
+// 与现有 finalization 的关系：本文件在 的 result_receipts 之上提供
 // 通用结果回执与应用守卫，复用 finalization 的失败注入测试与恢复机制；
 // 不因去掉现有全局停止领取保护而失去持久性。
 
@@ -44,7 +44,7 @@ type ResultReport struct {
 	ReceivedAt          int64
 }
 
-// recordReport 先持久记录结果回执（P1-10.1），返回回执与是否为新。
+// recordReport 先持久记录结果回执，返回回执与是否为新。
 // 相同结果重复送达返回既有回执（幂等）；同身份不同结果隔离（不覆盖）。
 func recordReport(tx *sql.Tx, r ResultReport) (receipt ResultReceipt, isNew bool, err error) {
 	if r.ResultKey == "" {
@@ -91,7 +91,7 @@ type ApplyReportResult struct {
 	Reason     string
 }
 
-// applyReport 事务性应用结果（P1-10.2）。
+// applyReport 事务性应用结果。
 // 相同结果重复送达只应用和计费一次；同身份不同结果隔离；旧代际结果留证但
 // 不能完成当前单元。applier 是业务应用函数（实际状态更新）。
 func applyReport(tx *sql.Tx, resultKey string, currentGeneration int, applier func(tx *sql.Tx, r ResultReceipt) error, now int64) (ApplyReportResult, error) {
@@ -165,7 +165,7 @@ func markReceiptStale(tx *sql.Tx, resultKey string, now int64) error {
 }
 
 // ---------------------------------------------------------------------------
-// 未落盘与待应用区分（P1-10.3）
+// 未落盘与待应用区分
 // ---------------------------------------------------------------------------
 
 // ResultBacklog 是结果积压快照。
@@ -203,7 +203,7 @@ func readResultBacklog(q recordsQuerier) (ResultBacklog, error) {
 }
 
 // ---------------------------------------------------------------------------
-// 用量未知标记（P1-10.3）
+// 用量未知标记
 // ---------------------------------------------------------------------------
 
 // UsageUnknown 报告用量是否未知（不伪造丢失用量）。
@@ -213,7 +213,7 @@ func (r ResultReceipt) UsageUnknown() bool {
 }
 
 // ---------------------------------------------------------------------------
-// 数据库可写性守卫（P1-10.4）
+// 数据库可写性守卫
 // ---------------------------------------------------------------------------
 
 // ErrDatabaseUnwritable 是数据库整体不可写的错误。
@@ -231,7 +231,7 @@ func ensureWritable(tx *sql.Tx) error {
 }
 
 // ---------------------------------------------------------------------------
-// 收尾记录（P1-10.5）
+// 收尾记录
 // ---------------------------------------------------------------------------
 
 // FinalizationRecord 是收尾记录：涵盖剩余占用/待决定事项。

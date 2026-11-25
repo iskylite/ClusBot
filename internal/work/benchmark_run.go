@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const v31BenchmarkRunSchema = `
+const benchmarkRunSchema = `
 CREATE TABLE IF NOT EXISTS benchmark_provider_versions (
  connection_key TEXT NOT NULL, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL,
  PRIMARY KEY(connection_key,revision)
@@ -236,7 +236,7 @@ VALUES(?,?,?,?,'基准测试','active','queued','方案已受理',?)`, taskID, c
 		step := id()
 		ids[c.Key] = step
 		if err := insertStep(tx, Step{StepID: step, TaskID: taskID, ContractRevision: 1, DefinitionKey: c.Key,
-			DefinitionVersion: p.Version, State: V3StepWaiting, Position: i + 1, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
+			DefinitionVersion: p.Version, State: RuntimeStepWaiting, Position: i + 1, CreatedAt: stamp, UpdatedAt: stamp}); err != nil {
 			return "", err
 		}
 		if _, err := tx.Exec(`INSERT INTO benchmark_cases(step_id,task_id,case_key,frozen_targets,authorization_refs,phase)
@@ -301,8 +301,8 @@ WHERE r.task_id=? AND r.actor=?`, taskID, actor).Scan(&p.Profile, &p.Version, &p
 	if err != nil {
 		return p, err
 	}
-	p.DispatchControl.Paused = p.State == string(V3TaskPaused)
-	p.DispatchControl.Available = !p.StopRequested && ownerStatus == "active" && (p.State == string(V3TaskPending) || p.State == string(V3TaskRunning) || p.DispatchControl.Paused)
+	p.DispatchControl.Paused = p.State == string(RuntimeTaskPaused)
+	p.DispatchControl.Available = !p.StopRequested && ownerStatus == "active" && (p.State == string(RuntimeTaskPending) || p.State == string(RuntimeTaskRunning) || p.DispatchControl.Paused)
 	rows, err := tx.QueryContext(ctx, `SELECT b.case_key,b.phase,b.job_id,b.report,s.step_id,s.state,
 o.operation_id,o.state,w.wait_id,w.wait_version,w.state,w.deadline_at,
 ec.action,ec.state,ec.plan_revision,g.control_version,g.held,b.operation_id,b.case_spec,b.authorization_refs,`+benchmarkHasBoundWorkSQL+`,
@@ -407,8 +407,8 @@ func projectBenchmarkReconciliationBlockers(tx *sql.Tx, progress *BenchmarkRunPr
 		if c.Operation == nil || c.Phase != "submitting" && c.Phase != "following" {
 			continue
 		}
-		switch V3OperationState(c.Operation.State) {
-		case V3OperationDispatched, V3OperationRunning, V3OperationReconcile:
+		switch RuntimeOperationState(c.Operation.State) {
+		case RuntimeOperationDispatched, RuntimeOperationRunning, RuntimeOperationReconcile:
 		default:
 			continue
 		}
@@ -488,7 +488,7 @@ func controlBenchmark(tx *sql.Tx, taskID, action string) (bool, error) {
 	if _, err = tx.Exec("UPDATE benchmark_runs SET stop_requested=1 WHERE task_id=?", taskID); err != nil {
 		return true, err
 	}
-	if _, err = tx.Exec("UPDATE tasks SET status_reason='stop_requested',reason='正在停止，仍需核对远端作业',revision=revision+1,updated_at=? WHERE id=?", stamp, taskID); err != nil {
+	if err := projectTaskFromRuntimeState(tx, taskID, "", "stop_requested", "正在停止，仍需核对远端作业", stamp); err != nil {
 		return true, err
 	}
 	return true, nil

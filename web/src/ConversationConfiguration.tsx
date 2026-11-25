@@ -130,7 +130,7 @@ function BindingCard({spec,binding,disabled,onChange}:{spec:Spec;binding:Binding
   return <div className="conversation-binding-card">
     <div className="conversation-binding-card-row">
       <Icon size={14} aria-hidden="true"/>
-      <label className="v31-screen-reader" htmlFor={field}>{spec.title}</label>
+      <label className="app-screen-reader" htmlFor={field}>{spec.title}</label>
       <select id={field} name={spec===skill?'skill':'mcp'} value={choice} aria-describedby={display&&!unavailable?detailID+' '+badgeID:detailID}
         disabled={disabled||stale||!options} onChange={event=>{binding.setChoice(event.currentTarget.value);onChange()}}>
         <option value="">{spec.defaultLabel}</option>

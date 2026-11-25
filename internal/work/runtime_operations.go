@@ -1,6 +1,6 @@
 package work
 
-// P3-07：Operation 七态、尝试与逐目标结果。
+// Operation 七态、尝试与逐目标结果。
 //
 // 本文件实现每个外部副作用有稳定身份、固定意图和可核对历史：
 //   - Operation 绑定 Task/Step、能力/连接、目标快照、参数摘要、授权依据和
@@ -33,7 +33,7 @@ type Operation struct {
 	ParamsDigest      string
 	AuthorizationRef  string
 	IdempotencyKey    string
-	State             V3OperationState
+	State             RuntimeOperationState
 	AttemptCount      int
 	CurrentAttemptID  string
 	PredecessorID     string
@@ -48,7 +48,7 @@ type Operation struct {
 // 登记（与 Outbox 同事务）
 // ---------------------------------------------------------------------------
 
-// registerOperation 登记一个 Operation（P3-07.1）。
+// registerOperation 登记一个 Operation。
 // Operation 绑定 Task/Step、能力/连接、目标快照、参数摘要、授权依据和幂等键；
 // 登记与 Outbox 同事务；同请求重复只返回同一 Operation。
 func registerOperation(tx *sql.Tx, o Operation, now int64) (Operation, error) {
@@ -80,7 +80,7 @@ func registerOperation(tx *sql.Tx, o Operation, now int64) (Operation, error) {
 	}
 	// 登记事务失败不产生可派发动作：登记与 Outbox 同事务（在事务内失败则回滚）。
 	o.OperationID = id()
-	o.State = V3OperationRegistered
+	o.State = RuntimeOperationRegistered
 	o.RegisteredAt, o.UpdatedAt = now, now
 	var stepID, currentAttemptID, predecessorID any
 	if o.StepID != "" {
@@ -124,7 +124,7 @@ FROM operations WHERE operation_id=?`, operationID).
 	o.StepID = stepID.String
 	o.CurrentAttemptID = currentAttemptID.String
 	o.PredecessorID = predecessorID.String
-	o.State = V3OperationState(state)
+	o.State = RuntimeOperationState(state)
 	return o, nil
 }
 
@@ -132,15 +132,15 @@ FROM operations WHERE operation_id=?`, operationID).
 // 七态守卫（outcome unknown 映射待核对，不能新增随意状态）
 // ---------------------------------------------------------------------------
 
-// transitionOperation 转换 Operation 状态（P3-07.2）。
+// transitionOperation 转换 Operation 状态。
 // 七态守卫：状态跳跃、终态复活被拒绝；outcome unknown 映射待核对。
-func transitionOperation(tx *sql.Tx, operationID string, to V3OperationState, now int64) (Operation, error) {
+func transitionOperation(tx *sql.Tx, operationID string, to RuntimeOperationState, now int64) (Operation, error) {
 	o, err := readOperation(tx, operationID)
 	if err != nil {
 		return o, err
 	}
 	// 终态不复活。
-	if o.State == V3OperationSucceeded || o.State == V3OperationFailed || o.State == V3OperationCancelled {
+	if o.State == RuntimeOperationSucceeded || o.State == RuntimeOperationFailed || o.State == RuntimeOperationCancelled {
 		return o, fmt.Errorf("%w：Operation 终态 %s 不能复活", ErrTaskTerminal, o.State)
 	}
 	// 状态跳跃：必须经允许迁移表。
@@ -160,15 +160,15 @@ func transitionOperation(tx *sql.Tx, operationID string, to V3OperationState, no
 	return o, nil
 }
 
-// mapOutcomeUnknownToReconcile 把 outcome unknown 映射为待核对（P3-07.2）。
+// mapOutcomeUnknownToReconcile 把 outcome unknown 映射为待核对。
 // outcome unknown 映射待核对，不能新增随意状态或直接失败重试。
 func mapOutcomeUnknownToReconcile(tx *sql.Tx, operationID string, now int64) error {
 	o, err := readOperation(tx, operationID)
 	if err != nil {
 		return err
 	}
-	if o.State == V3OperationRunning {
-		if _, err := transitionOperation(tx, operationID, V3OperationReconcile, now); err != nil {
+	if o.State == RuntimeOperationRunning {
+		if _, err := transitionOperation(tx, operationID, RuntimeOperationReconcile, now); err != nil {
 			return err
 		}
 	}
@@ -191,7 +191,7 @@ type OperationAttempt struct {
 	CompletedAt   int64
 }
 
-// dispatchOperationAttempt 派发一个尝试（P3-07.3）。
+// dispatchOperationAttempt 派发一个尝试。
 // 同一逻辑操作跨 attempt 保持幂等键和参数；参数/目标变更创建新关联 Operation。
 func dispatchOperationAttempt(tx *sql.Tx, operationID string, now int64) (OperationAttempt, error) {
 	o, err := readOperation(tx, operationID)
@@ -199,7 +199,7 @@ func dispatchOperationAttempt(tx *sql.Tx, operationID string, now int64) (Operat
 		return OperationAttempt{}, err
 	}
 	// 状态守卫：只有 registered/dispatched 可派发新 attempt。
-	if o.State != V3OperationRegistered && o.State != V3OperationDispatched {
+	if o.State != RuntimeOperationRegistered && o.State != RuntimeOperationDispatched {
 		return OperationAttempt{}, fmt.Errorf("Operation 状态 %s 不能派发新 attempt", o.State)
 	}
 	// 创建新 attempt（同一逻辑操作跨 attempt 保持幂等键和参数）。
@@ -233,7 +233,7 @@ type OperationTargetResult struct {
 	UpdatedAt   int64
 }
 
-// recordTargetResult 记录逐目标结果（P3-07.4）。
+// recordTargetResult 记录逐目标结果。
 // 批量保存逐目标状态与证据；部分成功不等于全批完成，未知部分不被成功部分覆盖。
 func recordTargetResult(tx *sql.Tx, r OperationTargetResult, now int64) error {
 	if r.OperationID == "" || r.TargetRef == "" || r.State == "" {
@@ -270,7 +270,7 @@ FROM operation_target_results WHERE operation_id=?`, operationID)
 // 迟到矛盾回执（保留并进入核对，不直接改写终态）
 // ---------------------------------------------------------------------------
 
-// recordConflictingReceipt 记录迟到矛盾回执（P3-07.5）。
+// recordConflictingReceipt 记录迟到矛盾回执。
 // 迟到矛盾回执保留并进入核对，不直接改写终态；失败可包含已发生效果。
 func recordConflictingReceipt(tx *sql.Tx, operationID, receipt, evidenceRef string, now int64) error {
 	o, err := readOperation(tx, operationID)
@@ -278,7 +278,7 @@ func recordConflictingReceipt(tx *sql.Tx, operationID, receipt, evidenceRef stri
 		return err
 	}
 	// 迟到矛盾回执：保留（进入核对），不直接改写终态。
-	if o.State == V3OperationSucceeded || o.State == V3OperationFailed || o.State == V3OperationCancelled {
+	if o.State == RuntimeOperationSucceeded || o.State == RuntimeOperationFailed || o.State == RuntimeOperationCancelled {
 		// 终态：保留回执留证（不改写终态）。
 		return recordAudit(tx, AuditEvent{
 			TaskID: o.TaskID, Event: "conflicting_receipt_after_terminal", Actor: "system",
@@ -287,7 +287,7 @@ func recordConflictingReceipt(tx *sql.Tx, operationID, receipt, evidenceRef stri
 		})
 	}
 	// 非终态：进入核对。
-	if _, err := transitionOperation(tx, operationID, V3OperationReconcile, now); err != nil {
+	if _, err := transitionOperation(tx, operationID, RuntimeOperationReconcile, now); err != nil {
 		return err
 	}
 	return nil

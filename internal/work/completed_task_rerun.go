@@ -156,23 +156,17 @@ func completedTaskRerunInputs(ctx context.Context, tx *sql.Tx, taskID string, ve
 	if err = conversationIdle(tx, task.ConversationID); err != nil {
 		return Task{}, nil, err
 	}
-	if err = ensureGoalTaskContinuable(tx, taskID); err != nil {
-		return Task{}, nil, err
-	}
 
 	// The generic personal worker cannot safely recreate workflow graphs,
-	// scheduled occurrences, side effects, or automatic tool conversations.
+	// side effects, or automatic tool conversations.
 	var unsupported bool
 	err = tx.QueryRowContext(ctx, `SELECT
 EXISTS(SELECT 1 FROM workflow_children WHERE task_id=? OR parent_id=?) OR
-EXISTS(SELECT 1 FROM workflow_bindings WHERE task_id=?) OR
-EXISTS(SELECT 1 FROM goal_tasks WHERE task_id=?) OR
-EXISTS(SELECT 1 FROM schedule_occurrences WHERE task_id=?) OR
 EXISTS(SELECT 1 FROM operations WHERE task_id=?) OR
 EXISTS(SELECT 1 FROM outbox_commands WHERE task_id=?) OR
 EXISTS(SELECT 1 FROM runs r JOIN run_read_checkpoints c ON c.run_id=r.id
   JOIN run_reads d ON d.run_id=r.id WHERE r.task_id=? AND c.automatic_tools=1)`,
-		taskID, taskID, taskID, taskID, taskID, taskID, taskID, taskID).Scan(&unsupported)
+		taskID, taskID, taskID, taskID, taskID).Scan(&unsupported)
 	if err != nil {
 		return Task{}, nil, err
 	}

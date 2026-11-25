@@ -143,7 +143,7 @@ WHERE state='received' AND kind='benchmark_job_hint' AND received_at<?`, stamp-8
 	}
 	return tx.Commit()
 }
-func migrateV31BenchmarkHints(tx *sql.Tx) error {
+func migrateBenchmarkHints(tx *sql.Tx) error {
 	if err := addColumnIfMissing(tx, "benchmark_cases", "call_until", "ALTER TABLE benchmark_cases ADD COLUMN call_until INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}

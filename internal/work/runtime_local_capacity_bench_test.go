@@ -91,7 +91,7 @@ func BenchmarkRuntimeLocalMixedCapacity(b *testing.B) {
 		err := initial.db.QueryRowContext(ctx, `SELECT coalesce(o.operation_id,''),coalesce(o.state,'')
  FROM benchmark_cases c LEFT JOIN operations o ON o.operation_id=c.operation_id WHERE c.task_id=?`, task).
 			Scan(&originalOp, &state)
-		return state == string(V3OperationReconcile), err
+		return state == string(RuntimeOperationReconcile), err
 	})
 	unknownObserved := time.Now()
 	stop()
@@ -111,7 +111,7 @@ func BenchmarkRuntimeLocalMixedCapacity(b *testing.B) {
 	reopened, err := Open(path)
 	must(err)
 	s = reopened
-	_, err = s.RecoverV3(ctx, now())
+	_, err = s.RecoverRuntime(ctx, now())
 	must(err)
 	executor, err := s.EnableAssetAcceptanceQuery(ctx)
 	must(err)

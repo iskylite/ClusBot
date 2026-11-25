@@ -160,7 +160,7 @@ func TestLoanAndBenchmarkUseSameTargetOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = reopened
-	if _, err := s.RecoverV3(ctx, stamp+benchmarkWaitRecheckMS+benchmarkClaimMS); err != nil {
+	if _, err := s.RecoverRuntime(ctx, stamp+benchmarkWaitRecheckMS+benchmarkClaimMS); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := lend("node-held"); !errors.Is(err, ErrConflict) {
@@ -213,7 +213,7 @@ func TestLoanAndBenchmarkUseSameTargetOwnership(t *testing.T) {
 }
 
 func TestReturnPreservesIndependentAssetFreeze(t *testing.T) {
-	s, _ := setupV3P420(t, "independent-return-freeze.db")
+	s, _ := setupReturnsStore(t, "independent-return-freeze.db")
 	asset, err := readAsset(s.db, "node-1")
 	if err != nil {
 		t.Fatal(err)

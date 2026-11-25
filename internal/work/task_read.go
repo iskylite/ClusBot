@@ -53,7 +53,7 @@ type TaskToolOption struct {
 
 func (s *Store) TaskTools(ctx context.Context) ([]TaskToolOption, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT c.id,c.name,c.revision,t.definition FROM connections c
-JOIN connection_tools t ON t.connection_id=c.id WHERE c.enabled=1 AND c.status='ready' AND t.allowed=1 ORDER BY c.name,t.name LIMIT 100`)
+JOIN connection_tools t ON t.connection_id=c.id WHERE c.enabled=1 AND c.status='ready' AND t.allowed=1 AND t.read_only=1 ORDER BY c.name,t.name LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -68,10 +68,11 @@ JOIN connection_tools t ON t.connection_id=c.id WHERE c.enabled=1 AND c.status='
 		if err = json.Unmarshal([]byte(definition), &option.Tool); err != nil {
 			return nil, err
 		}
-		if mcpclient.ValidateToolSchemas(option.Tool) != nil {
+		if isToolDisallowedForReadOnly(option.Tool) || mcpclient.ValidateToolSchemas(option.Tool) != nil {
 			continue
 		}
 		option.Tool.Allowed = true
+		option.Tool.ReadOnly = true
 		options = append(options, option)
 	}
 	return options, rows.Err()
@@ -81,14 +82,17 @@ func recordTaskRead(ctx context.Context, tx *sql.Tx, run Run, position int, requ
 	var c Connection
 	var raw string
 	var tool mcpclient.Tool
-	var allowed bool
-	err := tx.QueryRowContext(ctx, `SELECT c.name,c.revision,t.definition,t.allowed FROM connections c JOIN connection_tools t ON t.connection_id=c.id
-WHERE c.id=? AND c.enabled=1 AND c.status='ready' AND t.name=?`, request.ConnectionID, request.ToolName).Scan(&c.Name, &c.Revision, &raw, &allowed)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !allowed) {
+	var allowed, readOnly bool
+	err := tx.QueryRowContext(ctx, `SELECT c.name,c.revision,t.definition,t.allowed,t.read_only FROM connections c JOIN connection_tools t ON t.connection_id=c.id
+WHERE c.id=? AND c.enabled=1 AND c.status='ready' AND t.name=?`, request.ConnectionID, request.ToolName).Scan(&c.Name, &c.Revision, &raw, &allowed, &readOnly)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (!allowed || !readOnly || isKnownUnsafeWriteTool(request.ToolName))) {
 		return ErrToolPermission
 	}
 	if err != nil {
 		return err
+	}
+	if json.Unmarshal([]byte(raw), &tool) == nil && isToolDisallowedForReadOnly(tool) {
+		return ErrToolPermission
 	}
 	if c.Revision != request.Revision {
 		return ErrConnectionRevision

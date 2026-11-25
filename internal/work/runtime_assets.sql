@@ -1,4 +1,4 @@
--- P3-02：最小资产身份、版本与执行准入（V3 §5.5、§6.4/6.7，F05/F06）。
+-- 最小资产身份、版本与执行准入（§5.5、§6.4/6.7，F05/F06）。
 --
 -- 任何集群写操作都能回答目标是谁、当前谁管理、是否允许执行：
 --   - 资产保存稳定 ObjectRef、唯一当前末级状态、revision、ownership_epoch、
@@ -48,21 +48,3 @@ CREATE TABLE IF NOT EXISTS asset_state_history (
 );
 
 CREATE INDEX IF NOT EXISTS asset_history ON asset_state_history(object_ref, occurred_at);
-
--- 领域准入决策（授权与领域准入分离）。
-CREATE TABLE IF NOT EXISTS asset_admission_decisions (
-  decision_id TEXT PRIMARY KEY,
-  object_ref TEXT NOT NULL,
-  action TEXT NOT NULL,
-  -- 授权结果（谁可以做）。
-  auth_outcome TEXT NOT NULL,
-  -- 领域准入结果（当前资产状态和证据下能不能做）。
-  admission_outcome TEXT NOT NULL CHECK(admission_outcome IN ('allowed','denied','reconcile')),
-  admission_reason TEXT NOT NULL DEFAULT '',
-  -- 来源版本（资产 revision/ownership_epoch）。
-  asset_revision INTEGER NOT NULL,
-  ownership_epoch INTEGER NOT NULL,
-  decided_at INTEGER NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS admission_by_asset ON asset_admission_decisions(object_ref, decided_at);

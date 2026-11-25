@@ -124,7 +124,7 @@
 /* Compact tool results in the assistant conversation. */
 .ops-assistant-card, .ops-assistant-dock { --ops-blue:var(--accent); --ops-grid:var(--line); --ops-ink:var(--ink); --ops-muted:var(--muted); --ops-border:var(--line); --ops-subtle:var(--panel); --ops-good:#087b50; --ops-good-bg:#effbf5; --ops-good-border:#afe6ca; --ops-warn:#975c00; --ops-warn-bg:#fff9e9; --ops-warn-border:#f3d691; --ops-info:#075fcf; --ops-info-bg:#eaf3ff; --ops-info-border:#82b6ff; --ops-bad:#a1273b; --ops-bad-bg:#fff2f3; --ops-bad-border:#f2bac2; }
 .ops-assistant-card { width:min(100%,600px); min-width:0; padding:10px 12px; border:1px solid var(--ops-border); border-radius:9px; background:var(--surface); color:var(--ops-ink); }
-.v31-workspace[data-section="chat"] .message-assistant > .ops-assistant-card { width:min(600px,calc(100% - 28px)); }
+.app-workspace[data-section="chat"] .message-assistant > .ops-assistant-card { width:min(600px,calc(100% - 28px)); }
 .ops-assistant-card .ops-card-heading { margin-bottom:8px; }
 .ops-assistant-card .ops-card-heading h2 { font-size:13px; }
 .ops-assistant-card .ops-badge { display:inline-flex; height:20px; align-items:center; padding:0 6px; line-height:1; }
@@ -226,15 +226,15 @@
   :root[data-appearance="system"] :is(.ops-assistant-card,.ops-assistant-dock) { --ops-good:#8cdeb5; --ops-good-bg:#18392f; --ops-good-border:#32604b; --ops-warn:#f4c477; --ops-warn-bg:#41351e; --ops-warn-border:#715a2e; --ops-info:#a6caff; --ops-info-bg:#203856; --ops-info-border:#446b9a; --ops-bad:#ffb6be; --ops-bad-bg:#4a252d; --ops-bad-border:#78424b; }
 }
 @media (min-width:1001px) {
-  .workspace.v31-workspace[data-section="chat"]:has(.ops-assistant-dock) > main { margin-right:412px; }
-  .v31-workspace[data-section="chat"]:has(.ops-assistant-dock) .assistant-reply-cards { gap:8px; }
+  .workspace.app-workspace[data-section="chat"]:has(.ops-assistant-dock) > main { margin-right:412px; }
+  .app-workspace[data-section="chat"]:has(.ops-assistant-dock) .assistant-reply-cards { gap:8px; }
 }
 @media (max-width:1000px) {
   .ops-assistant-dock { box-shadow:-8px 0 24px #14203322; }
 }
 @media (max-width:820px) {
   .ops-assistant-dock { top:44px; }
-  .v31-workspace[data-section="chat"] .message-assistant > .ops-assistant-card { width:min(100%,600px); }
+  .app-workspace[data-section="chat"] .message-assistant > .ops-assistant-card { width:min(100%,600px); }
 }
 @media (max-width:600px) {
   .ops-assistant-card .ops-node-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }

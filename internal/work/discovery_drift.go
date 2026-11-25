@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS discovery_drift_checks (
 CREATE UNIQUE INDEX IF NOT EXISTS discovery_drift_by_task ON discovery_drift_checks(task_id) WHERE task_id IS NOT NULL;
 `
 
-func migrateV31DiscoveryDrift(tx *sql.Tx) error {
+func migrateDiscoveryDrift(tx *sql.Tx) error {
 	if err := addColumnIfMissing(tx, "discovery_plans", "check_on_address_drift", "ALTER TABLE discovery_plans ADD COLUMN check_on_address_drift INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}

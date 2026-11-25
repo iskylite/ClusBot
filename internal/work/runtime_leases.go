@@ -1,6 +1,6 @@
 package work
 
-// P2-02：原子领取、续租与过期回收。
+// 原子领取、续租与过期回收。
 //
 // 本文件实现同一执行单元同一时刻只有一个有效推进者，失联可恢复：
 //   - Claim 在短事务核对 Task/Step、合同与控制修订、依赖、工作者范围和额度，
@@ -50,7 +50,7 @@ type ClaimRequest struct {
 	Kind       WorkUnitKind
 	Scope      string
 	LeaseTTL   int64 // 租约期限（毫秒）
-	// QuotaAvailable 是可用额度（由调用方核对，P2-04 接入持久配额）。
+	// QuotaAvailable 是可用额度（由调用方核对，接入持久配额）。
 	QuotaAvailable bool
 }
 
@@ -62,7 +62,7 @@ type ClaimResult struct {
 	Unit       WorkUnit
 }
 
-// claimWorkUnit 原子领取一个就绪单元（P2-02.1）。
+// claimWorkUnit 原子领取一个就绪单元。
 // 短事务：核对工作者范围/额度 → 条件更新单元状态 → 增加 lease_generation →
 // 签发令牌。两个工作者竞争同一单元仅一个领取成功；不同单元可分别领取。
 func claimWorkUnit(tx *sql.Tx, req ClaimRequest, now int64) (ClaimResult, error) {
@@ -139,14 +139,14 @@ VALUES(?,?,?,?,?,?,?,?,?)`,
 // ErrLeaseConflict 是领取竞争失败的错误。
 var ErrLeaseConflict = errors.New("租约竞争失败")
 
-// ErrQuotaExhausted 是额度耗尽的错误（P2-04 接入持久配额）。
+// ErrQuotaExhausted 是额度耗尽的错误。
 var ErrQuotaExhausted = errors.New("额度耗尽")
 
 // ---------------------------------------------------------------------------
 // Renew（控制面时间验证原租约、代际与身份）
 // ---------------------------------------------------------------------------
 
-// renewLease 续租（P2-02.3）。
+// renewLease 续租。
 // 以控制面时间验证原租约、代际与身份：过期令牌不能续租；重复 Renew 不创造
 // 第二份额度；新领取不复用旧令牌。
 func renewLease(tx *sql.Tx, tokenID, plainToken string, now int64) (Lease, error) {
@@ -195,7 +195,7 @@ type ReclaimResult struct {
 	Reason string
 }
 
-// reclaimExpiredLeases 回收过期租约（P2-02.5）。
+// reclaimExpiredLeases 回收过期租约。
 // 失联回收先判断是否有已派发操作；未知外部效果进入核对，不能自动重新发出；
 // 控制面重启后根据持久租约恢复，不能依赖内存 map 判断所有权。
 func reclaimExpiredLeases(tx *sql.Tx, now int64, limit int) (ReclaimResult, error) {
@@ -299,7 +299,7 @@ WHERE task_id=? AND step_id=? AND state IN ('dispatched','running','reconcile')`
 			return nil, err
 		}
 		ids = append(ids, id)
-		if state != string(V3OperationReconcile) {
+		if state != string(RuntimeOperationReconcile) {
 			newlyUnknown = append(newlyUnknown, id)
 		}
 	}
@@ -309,7 +309,7 @@ WHERE task_id=? AND step_id=? AND state IN ('dispatched','running','reconcile')`
 		return nil, err
 	}
 	for _, id := range newlyUnknown {
-		if _, err = transitionOperation(tx, id, V3OperationReconcile, stamp); err != nil {
+		if _, err = transitionOperation(tx, id, RuntimeOperationReconcile, stamp); err != nil {
 			return nil, err
 		}
 	}
@@ -320,7 +320,7 @@ WHERE task_id=? AND step_id=? AND state IN ('dispatched','running','reconcile')`
 // 查询（重启后按持久租约恢复）
 // ---------------------------------------------------------------------------
 
-// activeLeaseForUnit 查询一个单元的当前有效租约（P2-02 反例：重启后按持久
+// activeLeaseForUnit 查询一个单元的当前有效租约（反例：重启后按持久
 // 租约恢复，不依赖内存 map 判断所有权）。
 func activeLeaseForUnit(q recordsQuerier, unitID string, now int64) (*Lease, error) {
 	var l Lease

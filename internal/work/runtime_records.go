@@ -1,11 +1,11 @@
 package work
 
-// P1-02：Task、Step、Run 与控制记录的持久结构操作层。
+// Task、Step、Run 与控制记录的持久结构操作层。
 //
 // 本文件提供 schema 48 新增结构（task_states/steps/step_dependencies/
 // work_units/control_records/result_receipts/runtime_audit）的类型与操作。
 // 设计要点：
-//   - 使用 P0-02 的合同/控制/存储版本约定；Run 绑定 Task/Step/执行单元、
+//   - 使用 的合同/控制/存储版本约定；Run 绑定 Task/Step/执行单元、
 //     分配与执行代际，不以 Run 状态冒充 Task 状态。
 //   - 不可变合同快照和控制记录；重复请求键相同内容返回原结果，不同内容冲突。
 //   - 失败事务没有部分记录：所有多步写入在单个事务内完成。
@@ -24,13 +24,13 @@ type recordsQuerier interface {
 }
 
 // ---------------------------------------------------------------------------
-// Task 状态（V3 九态权威记录）
+// Task 状态（九态权威记录）
 // ---------------------------------------------------------------------------
 
 // TaskState 是 task_states 的一行。
 type TaskState struct {
 	TaskID            string
-	State             V3TaskState
+	State             RuntimeTaskState
 	Reason            string
 	StorageRevision   int
 	ControlRevision   int
@@ -39,7 +39,7 @@ type TaskState struct {
 	UpdatedAt         int64
 }
 
-// upsertTaskState 在事务内写入/更新 Task 的 V3 状态（P1-03 的状态机使用）。
+// upsertTaskState 在事务内写入/更新 Task 的 状态。
 func upsertTaskState(tx *sql.Tx, ts TaskState) error {
 	if !ts.State.Valid() {
 		return fmt.Errorf("非法 Task 状态 %q", ts.State)
@@ -54,7 +54,7 @@ mapping_reason=excluded.mapping_reason,reconcile_required=excluded.reconcile_req
 	return err
 }
 
-// readTaskState 读取 Task 的 V3 状态；不存在时返回 sql.ErrNoRows。
+// readTaskState 读取 Task 的 状态；不存在时返回 sql.ErrNoRows。
 func readTaskState(q recordsQuerier, taskID string) (TaskState, error) {
 	var ts TaskState
 	var state string
@@ -63,7 +63,7 @@ func readTaskState(q recordsQuerier, taskID string) (TaskState, error) {
 FROM task_states WHERE task_id=?`, taskID).
 		Scan(&ts.TaskID, &state, &ts.Reason, &ts.StorageRevision, &ts.ControlRevision,
 			&ts.MappingReason, &reconcile, &ts.UpdatedAt)
-	ts.State = V3TaskState(state)
+	ts.State = RuntimeTaskState(state)
 	ts.ReconcileRequired = reconcile == 1
 	return ts, err
 }
@@ -81,7 +81,7 @@ type Step struct {
 	DefinitionVersion int
 	InputRef          string
 	ResultRef         string
-	State             V3StepState
+	State             RuntimeStepState
 	EvidenceRevision  int
 	Condition         string
 	Error             string
@@ -134,7 +134,7 @@ FROM steps WHERE task_id=? ORDER BY position`, taskID)
 			&optional, &s.Position, &s.CreatedAt, &s.UpdatedAt); err != nil {
 			return nil, err
 		}
-		s.State = V3StepState(state)
+		s.State = RuntimeStepState(state)
 		s.Optional = optional == 1
 		out = append(out, s)
 	}
@@ -397,7 +397,7 @@ type TaskOverview struct {
 	RecentAudits  int
 }
 
-// readTaskOverview 读取一个 Task 的当前汇总（P1-02.5）。
+// readTaskOverview 读取一个 Task 的当前汇总。
 func readTaskOverview(q recordsQuerier, taskID string) (TaskOverview, error) {
 	var o TaskOverview
 	state, err := readTaskState(q, taskID)

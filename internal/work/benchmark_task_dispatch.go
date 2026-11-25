@@ -114,8 +114,8 @@ FROM benchmark_runs b JOIN tasks t ON t.id=b.task_id WHERE b.task_id=? AND b.act
 	if stopping || ownerStatus != "active" || plan != in.ExpectedPlanRevision || current.ControlRevision != *in.ExpectedControlVersion {
 		return out, fmt.Errorf("%w：任务方案或控制状态已变化，请刷新后重试", ErrConflict)
 	}
-	if in.Action == "pause" && current.State != V3TaskPending && current.State != V3TaskRunning ||
-		in.Action == "resume" && current.State != V3TaskPaused {
+	if in.Action == "pause" && current.State != RuntimeTaskPending && current.State != RuntimeTaskRunning ||
+		in.Action == "resume" && current.State != RuntimeTaskPaused {
 		return out, fmt.Errorf("%w：当前状态不能执行该操作", ErrState)
 	}
 	stamp := now()
@@ -154,7 +154,7 @@ EXISTS(SELECT 1 FROM benchmark_cases WHERE task_id=? AND phase IN ('submitting',
 	if in.Action == "resume" {
 		statusReason = "benchmark_dispatch_resumed"
 	}
-	if _, err := tx.Exec(`UPDATE tasks SET status_reason=?,reason=?,revision=revision+1,updated_at=? WHERE id=?`, statusReason, reason, stamp, task); err != nil {
+	if err := projectTaskFromRuntimeState(tx, task, "", statusReason, reason, stamp); err != nil {
 		return BenchmarkTaskDispatchReceipt{}, err
 	}
 	decision := "已暂停后续派发"

@@ -145,6 +145,7 @@ CREATE TABLE connection_tools (
   name TEXT NOT NULL,
   definition TEXT NOT NULL,
   allowed INTEGER NOT NULL DEFAULT 0,
+  read_only INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY(connection_id,name)
 );
 
@@ -340,27 +341,6 @@ CREATE TABLE task_followups (
   cancelled_at INTEGER
 );
 
-CREATE TABLE goals (
-  id TEXT PRIMARY KEY,
-  fingerprint TEXT NOT NULL,
-  target TEXT NOT NULL,
-  scope_label TEXT NOT NULL,
-  acceptance_criteria TEXT NOT NULL,
-  interval_ms INTEGER NOT NULL,
-  next_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  remaining INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK(status IN ('active','exhausted','stopped','expired')),
-  revision INTEGER NOT NULL
-);
-
-CREATE TABLE goal_tasks (
-  goal_id TEXT NOT NULL REFERENCES goals(id),
-  scheduled_at INTEGER NOT NULL,
-  task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
-  PRIMARY KEY (goal_id,scheduled_at)
-);
-
 CREATE TABLE personal_skills (
   id TEXT PRIMARY KEY,
   scope_label TEXT NOT NULL UNIQUE,
@@ -481,6 +461,29 @@ CREATE TABLE experience_candidates (
         (artifact_id IS NULL AND acceptance_revision IS NULL AND message_seq IS NOT NULL))
 );
 
+CREATE TABLE skill_evaluation_suites (
+  id TEXT PRIMARY KEY,
+  scope_label TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  suite_json TEXT NOT NULL,
+  suite_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(scope_label, goal, suite_digest)
+);
+
+CREATE TABLE skill_evaluation_runs (
+  id TEXT PRIMARY KEY,
+  suite_id TEXT NOT NULL REFERENCES skill_evaluation_suites(id),
+  scope_label TEXT NOT NULL,
+  goal TEXT NOT NULL,
+  suite_digest TEXT NOT NULL,
+  snapshot_digest TEXT NOT NULL,
+  report_digest TEXT NOT NULL,
+  model TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
 CREATE TABLE skill_proposals (
   id TEXT PRIMARY KEY,
   skill_id TEXT NOT NULL,
@@ -494,6 +497,11 @@ CREATE TABLE skill_proposals (
   evidence TEXT NOT NULL,
   sources TEXT NOT NULL,
   created_at INTEGER NOT NULL,
+  suite_digest TEXT NOT NULL DEFAULT '',
+  evaluation_run_id TEXT NOT NULL DEFAULT '',
+  match_mode TEXT NOT NULL DEFAULT 'goal_exact',
+  match_keywords TEXT NOT NULL DEFAULT '[]',
+  draft_mode TEXT NOT NULL DEFAULT 'template',
   UNIQUE(skill_id, version),
   UNIQUE(report_digest, skill_id, goal),
   FOREIGN KEY(skill_id,version) REFERENCES personal_skill_versions(skill_id,version)
@@ -523,8 +531,6 @@ CREATE INDEX context_inputs_message ON context_inputs(message_seq);
 
 CREATE INDEX task_followups_pending ON task_followups(task_id,accepted_at)
 WHERE dispatched_run_id IS NULL AND cancelled_at IS NULL;
-
-CREATE INDEX goals_due ON goals(next_at) WHERE status='active';
 
 CREATE INDEX workflow_run_inputs_source ON workflow_run_inputs(task_id);
 

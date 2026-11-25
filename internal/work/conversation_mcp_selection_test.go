@@ -41,7 +41,7 @@ func TestConversationMCPSelectionOnlyNarrowsExistingReadCandidates(t *testing.T)
 		if err != nil {
 			t.Fatal(err)
 		}
-		exec("INSERT INTO connection_tools VALUES(?,?,?,?)", conn.ID, name, string(definition), i < 2)
+		exec("INSERT INTO connection_tools(connection_id,name,definition,allowed,read_only) VALUES(?,?,?,?,?)", conn.ID, name, string(definition), i < 2, i < 2)
 	}
 	chat, handled, err := s.SubmitBenchmarkCommand(ctx, "new-chat", actor, "", "跑 POD7 全套基准", "", nil)
 	if err != nil || !handled {

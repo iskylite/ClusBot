@@ -1,8 +1,8 @@
 package work
 
-// V3 领域台账只读快照（GET /api/v1/domain/snapshot 的数据来源）。
+// 领域台账只读快照（GET /api/v1/domain/snapshot 的数据来源）。
 //
-// 契约唯一来源：docs/ui/v3-app/src/api.ts「领域台账契约」之后的 type 定义。
+// 契约唯一来源：web/src/api.ts「领域台账契约」之后的 type 定义。
 // 约定：字段名 snake_case；时间一律毫秒整数；JSON 字符串列保持 string 不解析；
 // 所有数组字段即使为空也返回 [] 而不是 null。
 //
@@ -530,6 +530,7 @@ type DomainOperationView struct {
 type DomainSnapshot struct {
 	SnapshotAt            int64                            `json:"snapshot_at"`
 	Counts                map[string]int                   `json:"counts"`
+	UnwiredSections       []string                         `json:"unwired_sections,omitempty"`
 	Assets                []DomainAssetView                `json:"assets"`
 	Facts                 []DomainFactView                 `json:"facts"`
 	Relations             []DomainRelationView             `json:"relations"`
@@ -555,14 +556,10 @@ type DomainSnapshot struct {
 	Leases                []DomainLeaseView                `json:"leases"`
 	Workers               []DomainWorkerView               `json:"workers"`
 	Authorizations        []DomainAuthorizationView        `json:"authorizations"`
-	DomainPackages        []DomainPackageView              `json:"domain_packages"`
 	RetentionPolicies     []DomainRetentionPolicyView      `json:"retention_policies"`
-	CleanupQueue          []DomainCleanupItemView          `json:"cleanup_queue"`
 	Capabilities          []DomainCapabilityView           `json:"capabilities"`
 	CapabilityProviders   []DomainProviderView             `json:"capability_providers"`
 	CapabilityConnections []DomainCapabilityConnectionView `json:"capability_connections"`
-	Cases                 []DomainCaseView                 `json:"cases"`
-	CaseEvents            []DomainCaseEventView            `json:"case_events"`
 	Operations            []DomainOperationView            `json:"operations"`
 }
 
@@ -576,8 +573,6 @@ func newDomainSnapshot() DomainSnapshot {
 		Components:            []DomainComponentView{},
 		AssetTransitions:      []DomainTransitionView{},
 		AcceptanceCoverage:    []DomainCoverageView{},
-		ObjectTypes:           []DomainObjectTypeView{},
-		RelationTypes:         []DomainRelationTypeView{},
 		Observations:          []DomainObservationView{},
 		FaultSegments:         []DomainFaultSegmentView{},
 		SelfHealPolicies:      []DomainSelfHealPolicyView{},
@@ -595,21 +590,15 @@ func newDomainSnapshot() DomainSnapshot {
 		Leases:                []DomainLeaseView{},
 		Workers:               []DomainWorkerView{},
 		Authorizations:        []DomainAuthorizationView{},
-		DomainPackages:        []DomainPackageView{},
 		RetentionPolicies:     []DomainRetentionPolicyView{},
-		CleanupQueue:          []DomainCleanupItemView{},
 		Capabilities:          []DomainCapabilityView{},
 		CapabilityProviders:   []DomainProviderView{},
 		CapabilityConnections: []DomainCapabilityConnectionView{},
-		Cases:                 []DomainCaseView{},
-		CaseEvents:            []DomainCaseEventView{},
 		Operations:            []DomainOperationView{},
 	}
 }
 
-// domainCounts 用各数组长度生成 counts；键名与 DomainSnapshot 的数组字段一致，
-// 必定覆盖契约要求的 assets/facts/relations/incidents/tickets/loans/
-// fault_segments/delivery_records/capabilities/cases/operations/leases。
+// domainCounts 用各数组长度生成 counts；键名与 DomainSnapshot 的数组字段一致。
 func domainCounts(s *DomainSnapshot) map[string]int {
 	return map[string]int{
 		"assets":                 len(s.Assets),
@@ -618,8 +607,6 @@ func domainCounts(s *DomainSnapshot) map[string]int {
 		"components":             len(s.Components),
 		"asset_transitions":      len(s.AssetTransitions),
 		"acceptance_coverage":    len(s.AcceptanceCoverage),
-		"object_types":           len(s.ObjectTypes),
-		"relation_types":         len(s.RelationTypes),
 		"observations":           len(s.Observations),
 		"fault_segments":         len(s.FaultSegments),
 		"self_heal_policies":     len(s.SelfHealPolicies),
@@ -637,14 +624,10 @@ func domainCounts(s *DomainSnapshot) map[string]int {
 		"leases":                 len(s.Leases),
 		"workers":                len(s.Workers),
 		"authorizations":         len(s.Authorizations),
-		"domain_packages":        len(s.DomainPackages),
 		"retention_policies":     len(s.RetentionPolicies),
-		"cleanup_queue":          len(s.CleanupQueue),
 		"capabilities":           len(s.Capabilities),
 		"capability_providers":   len(s.CapabilityProviders),
 		"capability_connections": len(s.CapabilityConnections),
-		"cases":                  len(s.Cases),
-		"case_events":            len(s.CaseEvents),
 		"operations":             len(s.Operations),
 	}
 }
@@ -674,7 +657,7 @@ type domainQuery struct {
 	scan  func(*sql.Rows) error
 }
 
-// DomainSnapshot 读取 V3 领域台账的全部只读视图，返回一份稳定排序的快照。
+// DomainSnapshot 读取 领域台账的全部只读视图，返回一份稳定排序的快照。
 func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 	snap := newDomainSnapshot()
 
@@ -758,28 +741,6 @@ func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 				return err
 			}
 			snap.AcceptanceCoverage = append(snap.AcceptanceCoverage, v)
-			return nil
-		}},
-		{"object_types", `SELECT package_id, type_key, fields, cardinality, identity_rule,
-			data_binding, config_spec, test_spec, created_at
-			FROM domain_object_types ORDER BY package_id, type_key`, func(r *sql.Rows) error {
-			var v DomainObjectTypeView
-			if err := r.Scan(&v.PackageID, &v.TypeKey, &v.Fields, &v.Cardinality,
-				&v.IdentityRule, &v.DataBinding, &v.ConfigSpec, &v.TestSpec, &v.CreatedAt); err != nil {
-				return err
-			}
-			snap.ObjectTypes = append(snap.ObjectTypes, v)
-			return nil
-		}},
-		{"relation_types", `SELECT package_id, relation_key, source_type, target_type,
-			cardinality, mutually_exclusive_with, created_at
-			FROM domain_relation_types ORDER BY package_id, relation_key`, func(r *sql.Rows) error {
-			var v DomainRelationTypeView
-			if err := r.Scan(&v.PackageID, &v.RelationKey, &v.SourceType, &v.TargetType,
-				&v.Cardinality, &v.MutuallyExclusiveWith, &v.CreatedAt); err != nil {
-				return err
-			}
-			snap.RelationTypes = append(snap.RelationTypes, v)
 			return nil
 		}},
 		{"observations", `SELECT observation_id, source_ref, source_identity, collected_at,
@@ -989,19 +950,6 @@ func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 			snap.Authorizations = append(snap.Authorizations, v)
 			return nil
 		}},
-		{"domain_packages", `SELECT package_id, name, version, state, definitions,
-			definitions_digest, compatibility, impact_summary, rollback_basis,
-			published_by, published_at, created_at, updated_at
-			FROM domain_packages ORDER BY package_id`, func(r *sql.Rows) error {
-			var v DomainPackageView
-			if err := r.Scan(&v.PackageID, &v.Name, &v.Version, &v.State, &v.Definitions,
-				&v.DefinitionsDigest, &v.Compatibility, &v.ImpactSummary, &v.RollbackBasis,
-				&v.PublishedBy, &v.PublishedAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
-				return err
-			}
-			snap.DomainPackages = append(snap.DomainPackages, v)
-			return nil
-		}},
 		{"retention_policies", `SELECT policy_key, object_kind, retention_ms, legal_hold,
 			business_hold, tombstone_ms, unknown_retention_ms, created_at, updated_at
 			FROM retention_policies ORDER BY policy_key`, func(r *sql.Rows) error {
@@ -1012,18 +960,6 @@ func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 				return err
 			}
 			snap.RetentionPolicies = append(snap.RetentionPolicies, v)
-			return nil
-		}},
-		{"cleanup_queue", `SELECT cleanup_id, kind, object_ref, source_ref, unreadable,
-			source_version, policy_version, state, retry_count, next_retry_at,
-			failure_reason, created_at, updated_at FROM cleanup_queue ORDER BY cleanup_id`, func(r *sql.Rows) error {
-			var v DomainCleanupItemView
-			if err := r.Scan(&v.CleanupID, &v.Kind, &v.ObjectRef, &v.SourceRef, &v.Unreadable,
-				&v.SourceVersion, &v.PolicyVersion, &v.State, &v.RetryCount, &v.NextRetryAt,
-				&v.FailureReason, &v.CreatedAt, &v.UpdatedAt); err != nil {
-				return err
-			}
-			snap.CleanupQueue = append(snap.CleanupQueue, v)
 			return nil
 		}},
 		{"capabilities", `SELECT capability_id, capability_key, version, kind, input_schema,
@@ -1062,35 +998,6 @@ func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 			snap.CapabilityConnections = append(snap.CapabilityConnections, v)
 			return nil
 		}},
-		{"cases", `SELECT case_id, symptom, object_ref, environment, hypothesis, actual_action,
-			independent_outcome, unknowns, source_refs, applicability, contraindications,
-			invalidation_conditions, counterexamples, evidence_refs, review_at, root_cause,
-			root_cause_proven, state, version, COALESCE(supersedes, ''), superseded_reason,
-			published_by, published_at, created_at, updated_at
-			FROM operational_cases ORDER BY case_id`, func(r *sql.Rows) error {
-			var v DomainCaseView
-			if err := r.Scan(&v.CaseID, &v.Symptom, &v.ObjectRef, &v.Environment,
-				&v.Hypothesis, &v.ActualAction, &v.IndependentOutcome, &v.Unknowns,
-				&v.SourceRefs, &v.Applicability, &v.Contraindications,
-				&v.InvalidationConditions, &v.Counterexamples, &v.EvidenceRefs,
-				&v.ReviewAt, &v.RootCause, &v.RootCauseProven, &v.State, &v.Version,
-				&v.Supersedes, &v.SupersededReason, &v.PublishedBy, &v.PublishedAt,
-				&v.CreatedAt, &v.UpdatedAt); err != nil {
-				return err
-			}
-			snap.Cases = append(snap.Cases, v)
-			return nil
-		}},
-		{"case_events", `SELECT event_id, case_id, kind, task_id, object_ref, evidence_ref,
-			detail, occurred_at FROM case_events ORDER BY event_id`, func(r *sql.Rows) error {
-			var v DomainCaseEventView
-			if err := r.Scan(&v.EventID, &v.CaseID, &v.Kind, &v.TaskID, &v.ObjectRef,
-				&v.EvidenceRef, &v.Detail, &v.OccurredAt); err != nil {
-				return err
-			}
-			snap.CaseEvents = append(snap.CaseEvents, v)
-			return nil
-		}},
 		{"operations", `SELECT operation_id, task_id, COALESCE(step_id, ''), capability_key,
 			capability_version, connection_id, target_refs, params_digest, authorization_ref,
 			idempotency_key, state, attempt_count, COALESCE(current_attempt_id, ''),
@@ -1115,6 +1022,20 @@ func (s *Store) DomainSnapshot(ctx context.Context) (DomainSnapshot, error) {
 		}
 	}
 	snap.Counts = domainCounts(&snap)
+	var unwired []string
+	if len(snap.Facts) == 0 {
+		unwired = append(unwired, "facts")
+	}
+	if len(snap.FaultSegments) == 0 {
+		unwired = append(unwired, "fault_segments")
+	}
+	if len(snap.SelfHealPolicies) == 0 && len(snap.SelfHealExecutions) == 0 {
+		unwired = append(unwired, "self_heal")
+	}
+	if len(snap.DeliveryStageEvents) == 0 {
+		unwired = append(unwired, "delivery_stage_events")
+	}
+	snap.UnwiredSections = unwired
 	return snap, nil
 }
 

@@ -53,16 +53,16 @@ func (s *Store) ReadBenchmarkReport(ctx context.Context, actor, task string) (Be
 			ToolOutcome: "not_started", RequiredEvidence: "not_evaluated", Performance: "not_evaluated", Targets: []BenchmarkReportTarget{}}
 		if c.Operation != nil {
 			item.OperationState = c.Operation.State
-			switch V3OperationState(c.Operation.State) {
-			case V3OperationDispatched, V3OperationRunning:
+			switch RuntimeOperationState(c.Operation.State) {
+			case RuntimeOperationDispatched, RuntimeOperationRunning:
 				item.ToolOutcome = "in_progress"
-			case V3OperationReconcile:
+			case RuntimeOperationReconcile:
 				item.ToolOutcome = "outcome_unknown"
-			case V3OperationSucceeded:
+			case RuntimeOperationSucceeded:
 				item.ToolOutcome = "completed"
-			case V3OperationFailed:
+			case RuntimeOperationFailed:
 				item.ToolOutcome = "failed"
-			case V3OperationCancelled:
+			case RuntimeOperationCancelled:
 				item.ToolOutcome = "cancelled"
 			}
 		}
@@ -79,7 +79,7 @@ func (s *Store) ReadBenchmarkReport(ctx context.Context, actor, task string) (Be
 			item.Reason = skipped.Reason
 		}
 		if len(c.Report) > 0 && c.Operation != nil && (c.Phase == "verified" || c.Phase == "incomplete") {
-			var assessment v31BenchReport
+			var assessment benchReportJSON
 			if err := json.Unmarshal(c.Report, &assessment); err != nil {
 				return BenchmarkReport{}, fmt.Errorf("基准核验记录无效: %w", err)
 			}

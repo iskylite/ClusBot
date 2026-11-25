@@ -71,7 +71,7 @@ func TestAutomaticCatalogCheckpointRejectsNewOfferAfterRecovery(t *testing.T) {
 		if _, err := store.db.Exec("UPDATE connections SET status='ready',credential_binding=? WHERE id=?", fingerprint, conn.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := store.db.Exec("INSERT INTO connection_tools VALUES(?,?,?,?)", conn.ID, toolName, string(definition), allowed); err != nil {
+		if _, err := store.db.Exec("INSERT INTO connection_tools(connection_id,name,definition,allowed,read_only) VALUES(?,?,?,?,?)", conn.ID, toolName, string(definition), allowed, allowed); err != nil {
 			t.Fatal(err)
 		}
 		return conn

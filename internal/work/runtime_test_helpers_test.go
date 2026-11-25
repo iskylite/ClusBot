@@ -1,6 +1,6 @@
 package work
 
-// P0-04 建立可控时钟、故障屏障与外部账本（测试基础设施）。
+// 建立可控时钟、故障屏障与外部账本（测试基础设施）。
 //
 // 本文件提供后续 F01—F12 故障注入验收所需的可复用设施：
 //   - Clock：可控时钟接口，生产默认使用系统时钟，测试可暂停/推进；
@@ -73,7 +73,7 @@ func (c *FakeClock) Set(t time.Time) {
 // Barrier：可暂停的提交/派发边界
 // ---------------------------------------------------------------------------
 
-// BarrierPoint 标识一个可注入的边界。P0-04.2 定义的点覆盖 F01—F09 的关键
+// BarrierPoint 标识一个可注入的边界。定义的点覆盖 F01—F09 的关键
 // 提交/派发竞态；具体在途效果在各工作项落地时接入。
 type BarrierPoint string
 
@@ -198,7 +198,7 @@ type LedgerEffect struct {
 
 // ProviderLedger 独立于 ClusBot 数据库保存提供者的接收与生效账本。
 // 同一请求收到两次但去重只生效一次时，账本仍能暴露两次调用，防止掩盖
-// 违规重发（P0-04.5）。
+// 违规重发。
 type ProviderLedger struct {
 	mu      sync.Mutex
 	clock   Clock
@@ -206,7 +206,7 @@ type ProviderLedger struct {
 	effects []LedgerEffect
 	// Jobs 记录异步作业状态，按 operationID+attempt 索引。
 	Jobs    map[string]*LedgerJob
-	// 能力配置：分别声明查询/幂等/fencing/取消支持（P0-04.3）。
+	// 能力配置：分别声明查询/幂等/fencing/取消支持。
 	SupportsQuery   bool
 	SupportsIdem    bool
 	SupportsFence   bool
@@ -322,7 +322,7 @@ func (l *ProviderLedger) EffectCount(operationID string) int {
 }
 
 // ---------------------------------------------------------------------------
-// 数据库快照 + 外部账本联合断言（P0-04.5）
+// 数据库快照 + 外部账本联合断言
 // ---------------------------------------------------------------------------
 
 // DBAssertion 是从数据库读取的一组可断言事实。
@@ -390,10 +390,10 @@ func AssertJoint(t *testing.T, db *DBAssertion, ledger *ProviderLedger, operatio
 }
 
 // ---------------------------------------------------------------------------
-// 子进程测试帮助（P0-04.4 工作者终止与重连）
+// 子进程测试帮助
 // ---------------------------------------------------------------------------
 
-// WorkerCrashKind 区分进程崩溃与硬件断电（P0-04.2 反例：没有相应环境不能
+// WorkerCrashKind 区分进程崩溃与硬件断电（反例：没有相应环境不能
 // 写断电已验证）。
 type WorkerCrashKind string
 
@@ -415,7 +415,7 @@ func RecordCrash(t *testing.T, kind WorkerCrashKind, detail string) {
 }
 
 // ---------------------------------------------------------------------------
-// 受控提供者（P0-04.3）：把账本与故障注入接到 ClusBot Provider
+// 受控提供者：把账本与故障注入接到 ClusBot Provider
 // ---------------------------------------------------------------------------
 
 // ControlledProvider 实现 work.Provider，把每次模型调用记录到账本，

@@ -1,6 +1,6 @@
 package work
 
-// P3-13：HTTP/SDK 适配与远端作业。
+// HTTP/SDK 适配与远端作业。
 //
 // 本文件把外部 REST/SDK 调用映射到同一能力与操作契约：
 //   - 适配 Describe/Query/Start/Get/Cancel/Events/Materials 的可支持子集；
@@ -72,7 +72,7 @@ type HTTPResponseResult struct {
 // 连接校验（目标地址、TLS 身份、凭据作用域）
 // ---------------------------------------------------------------------------
 
-// validateHTTPConnection 校验 HTTP 连接（P3-13.2）。
+// validateHTTPConnection 校验 HTTP 连接。
 // 验证目标地址、TLS 身份和凭据作用域，重定向不能泄露凭据；请求大小/超时有界。
 func validateHTTPConnection(spec HTTPRequestSpec) error {
 	// 目标地址必须是 HTTPS（TLS 身份）。
@@ -98,7 +98,7 @@ func validateHTTPConnection(spec HTTPRequestSpec) error {
 // 错误分类（网络错误转待核对；不把 HTTP 202 当完成）
 // ---------------------------------------------------------------------------
 
-// classifyHTTPResponse 分类 HTTP 响应（P3-13.1/P3-13.3）。
+// classifyHTTPResponse 分类 HTTP 响应。
 // 请求/响应校验与错误分类一致；网络错误转待核对，不把 HTTP 202 当完成；
 // 不同 HTTP 状态与业务结果分别处理，成功响应但验收失败不误报资产恢复。
 func classifyHTTPResponse(statusCode int, body string, err error) HTTPResponseResult {
@@ -143,7 +143,7 @@ func classifyHTTPResponse(statusCode int, body string, err error) HTTPResponseRe
 // ErrImplicitRetry 是隐含重试的错误。
 var ErrImplicitRetry = errors.New("禁用会自动重放非幂等动作的隐含重试")
 
-// ensureNoImplicitRetry 核对禁用隐含重试（P3-13.3）。
+// ensureNoImplicitRetry 核对禁用隐含重试。
 // 禁用会自动重放非幂等动作的隐含重试；网络错误转待核对，不把 HTTP 202 当完成。
 func ensureNoImplicitRetry(spec HTTPRequestSpec, idempotent bool) error {
 	// 非幂等动作禁用隐含重试（自动重放非幂等动作禁止）。
@@ -157,11 +157,11 @@ func ensureNoImplicitRetry(spec HTTPRequestSpec, idempotent bool) error {
 // 远端 Job（保存远端 Job、状态版本和部分目标结果）
 // ---------------------------------------------------------------------------
 
-// saveHTTPJob 保存远端 Job（P3-13.4）。
+// saveHTTPJob 保存远端 Job。
 // 保存远端 Job、状态版本和部分目标结果；HTTP 幂等头只有验证其作用域/保留期
 // 后才能作为能力声明。
 func saveHTTPJob(tx *sql.Tx, operationID string, jobID string, stateVersion int, partialResults []OperationTargetResult, now int64) error {
-	// 保存远端 Job（复用 P3-09 的 operation_jobs）。
+	// 保存远端 Job（复用 的 operation_jobs）。
 	if _, err := normalizeJobStart(tx, operationID, jobID, "http-query", "http-retention", now); err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func saveHTTPJob(tx *sql.Tx, operationID string, jobID string, stateVersion int,
 	return nil
 }
 
-// validateHTTPIdempotencyHeader 核对 HTTP 幂等头（P3-13.4）。
+// validateHTTPIdempotencyHeader 核对 HTTP 幂等头。
 // HTTP 幂等头只有验证其作用域/保留期后才能作为能力声明。
 func validateHTTPIdempotencyHeader(header string, scopeVerified, retentionVerified bool) error {
 	if header == "" {
@@ -209,7 +209,7 @@ type HTTPFaultInjection struct {
 	DuplicateCallback bool
 }
 
-// simulateHTTPFault 模拟 HTTP 故障（P3-13.5）。
+// simulateHTTPFault 模拟 HTTP 故障。
 // 使用可控 HTTP 服务验证接收前断线、已接收丢响应、查询/取消缺失及重复回调。
 func simulateHTTPFault(injection HTTPFaultInjection, spec HTTPRequestSpec) (HTTPResponseResult, error) {
 	var result HTTPResponseResult

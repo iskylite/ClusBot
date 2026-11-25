@@ -1,6 +1,6 @@
 package work
 
-// P4-02：资产发现身份、部件和外部映射。
+// 资产发现身份、部件和外部映射。
 //
 // 本文件实现准确关联节点、可更换部件与外部系统身份，不靠 IP 合并历史：
 //   - 使用稳定内部 ID，外部映射含来源系统实例、外部类型/ID、设备代际及
@@ -36,7 +36,7 @@ type AssetExternalMapping struct {
 	CreatedAt        int64
 }
 
-// createExternalMapping 创建外部映射（P4-02.1）。
+// createExternalMapping 创建外部映射。
 // 使用稳定内部 ID，外部映射含来源系统实例、外部类型/ID、设备代际及有效区间。
 func createExternalMapping(tx *sql.Tx, m AssetExternalMapping, now int64) (AssetExternalMapping, error) {
 	if m.ObjectRef == "" || m.SourceSystem == "" || m.ExternalID == "" {
@@ -74,7 +74,7 @@ type IdentityClaim struct {
 	ClaimedAt          int64
 }
 
-// recordIdentityClaim 记录身份声明（P4-02.2）。
+// recordIdentityClaim 记录身份声明。
 // 发现先保存 identity_claim；可信无矛盾规则可归一，名称/IP/相似度仅作候选；
 // IP 被新设备复用不合并为旧节点；同序列号冲突可见且不自动覆盖。
 func recordIdentityClaim(tx *sql.Tx, c IdentityClaim, now int64) (IdentityClaim, error) {
@@ -108,7 +108,7 @@ VALUES(?,?,?,?,?,?,?,?)`,
 // 身份冲突（IP/序列号冲突可见且不自动覆盖）
 // ---------------------------------------------------------------------------
 
-// checkIdentityConflict 核对身份冲突（P4-02.2/P4-02.5）。
+// checkIdentityConflict 核对身份冲突。
 // IP 被新设备复用不合并为旧节点；同序列号冲突可见且不自动覆盖；
 // 身份冲突只阻止相关对象写动作，不阻断其他已确认资产的工作。
 func checkIdentityConflict(tx *sql.Tx, identity string, kind string, now int64) (conflict bool, conflictingRefs []string, err error) {
@@ -146,7 +146,7 @@ type ComponentInstallation struct {
 	CreatedAt               int64
 }
 
-// replaceComponent 更换部件（P4-02.3）。
+// replaceComponent 更换部件。
 // 更换网卡等部件创建新部件并结束旧安装关系，节点身份连续性不明时待核对；
 // 更换部件后旧故障/测试仍关联旧部件，新安装关系有时间边界。
 func replaceComponent(tx *sql.Tx, nodeRef, oldComponentRef, newComponentRef, componentKind string, now int64) (ComponentInstallation, error) {
@@ -194,7 +194,7 @@ type IdentityCorrection struct {
 	CorrectedAt    int64
 }
 
-// recordIdentityCorrection 记录身份修订（P4-02.4）。
+// recordIdentityCorrection 记录身份修订。
 // 支持误合并/拆分的带证据修订，保留旧引用并触发相关验证依赖复查。
 func recordIdentityCorrection(tx *sql.Tx, c IdentityCorrection, now int64) (IdentityCorrection, error) {
 	if c.OldObjectRef == "" || c.NewObjectRef == "" || c.CorrectedBy == "" {

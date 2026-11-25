@@ -38,9 +38,6 @@ func assistantTaskTools() []assistantTool {
 
 		{Name: "get_task_workflow", Description: "查看本人任务的多步骤计划和子任务状态；params.id 为父任务 ID。", Method: "GET", Path: "/api/v1/tasks/{id}/workflow"},
 		{Name: "create_workflow", Description: "创建本人多步骤计划并提交执行。body 包含 client_request_id、goal、scope_label、acceptance_criteria、steps；每步包含 key、goal、acceptance_criteria，可选 depends_on、optional。", Method: "POST", Path: "/api/v1/workflows", Confirm: true},
-		{Name: "list_goals", Description: "列出本人的周期目标及其计划状态。", Method: "GET", Path: "/api/v1/goals"},
-		{Name: "create_goal", Description: "创建本人的周期目标。body 包含 client_request_id、target、interval_ms、next_at、expires_at、remaining，可选 scope_label、acceptance_criteria；时间为 Unix 毫秒。", Method: "POST", Path: "/api/v1/goals", Confirm: true},
-		{Name: "stop_goal", Description: "停止本人周期目标，同时停止其活动任务。params.id 为目标 ID；body 包含当前 revision。", Method: "POST", Path: "/api/v1/goals/{id}/stop", Confirm: true},
 
 		{Name: "list_attention", Description: "查看当前账号的待处理事项快照；query 可传 limit、before_at 和 before_id，后两项须同时提供。", Method: "GET", Path: "/api/v1/attention"},
 		{Name: "get_attention", Description: "读取当前账号一项待处理事项的最新状态和来源；params.id 为待处理事项 ID。", Method: "GET", Path: "/api/v1/attention/{id}"},

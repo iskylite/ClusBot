@@ -3,6 +3,8 @@ package httpapi
 import (
 	"net/http"
 	"strings"
+
+	"clusbot/internal/work"
 )
 
 // The ticket worker and independent checker currently run only in local mode.
@@ -202,4 +204,130 @@ func (s Server) recentIncidents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, items)
+}
+
+func (s Server) addIncidentHypothesis(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validIncidentID(id) {
+		fail(w, http.StatusBadRequest, "invalid_incident", "故障事件标识无效")
+		return
+	}
+	var in struct {
+		Statement   string   `json:"statement"`
+		Unknowns    []string `json:"unknowns"`
+		NextQueries []string `json:"next_queries"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	h, err := s.Store.AddIncidentHypothesis(r.Context(), s.principal(r), id, in.Statement, in.Unknowns, in.NextQueries)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, h)
+}
+
+func (s Server) addIncidentHypothesisEvidence(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	hid := r.PathValue("hid")
+	if !validIncidentID(id) || !validID(hid) {
+		fail(w, http.StatusBadRequest, "invalid_hypothesis", "故障事件或假设标识无效")
+		return
+	}
+	var in struct {
+		EvidenceRef string `json:"evidence_ref"`
+		Supporting  bool   `json:"supporting"`
+		State       string `json:"state"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	if err := s.Store.RecordIncidentHypothesisEvidence(r.Context(), s.principal(r), id, hid, in.EvidenceRef, in.Supporting, in.State); err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s Server) listSelfHealPolicies(w http.ResponseWriter, r *http.Request) {
+	items, err := s.Store.ListSelfHealPolicies(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, items)
+}
+
+func (s Server) upsertSelfHealPolicy(w http.ResponseWriter, r *http.Request) {
+	if s.ServerMode {
+		fail(w, http.StatusForbidden, "self_heal_unavailable", "多人模式暂不支持此操作")
+		return
+	}
+	var in work.SelfHealPolicyInput
+	if !decode(w, r, &in) {
+		return
+	}
+	if in.Subject == "" {
+		in.Subject = s.principal(r)
+	}
+	out, err := s.Store.UpsertSelfHealPolicy(r.Context(), in)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "invalid_self_heal_policy", err.Error())
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) executeIncidentSelfHeal(w http.ResponseWriter, r *http.Request) {
+	if !s.localIncidentAction(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	var in struct {
+		PolicyID  string `json:"policy_id"`
+		ObjectRef string `json:"object_ref"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	pol, err := s.Store.GetSelfHealPolicy(r.Context(), in.PolicyID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !pol.ObserveOnly {
+		fail(w, http.StatusForbidden, "self_heal_write_disabled", "非观察模式自动自愈写操作暂不允许通过直连 HTTP 接口触发，须经 Operation 网关与人工审批")
+		return
+	}
+	out, err := s.Store.ExecuteIncidentSelfHeal(r.Context(), s.principal(r), id, in.PolicyID, in.ObjectRef, s.TicketEffectChecker)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+
+func (s Server) resolveIncident(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validIncidentID(id) {
+		fail(w, http.StatusBadRequest, "invalid_incident", "故障事件标识无效")
+		return
+	}
+	var in struct {
+		RecoveryVerified  bool   `json:"recovery_verified"`
+		RecoveryEvidence  string `json:"recovery_evidence"`
+		RootCauseProven   bool   `json:"root_cause_proven"`
+		RootCause         string `json:"root_cause"`
+		RootCauseEvidence string `json:"root_cause_evidence"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.Store.ResolveIncident(r.Context(), s.principal(r), id, in.RecoveryVerified, in.RecoveryEvidence, in.RootCauseProven, in.RootCause, in.RootCauseEvidence)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
 }

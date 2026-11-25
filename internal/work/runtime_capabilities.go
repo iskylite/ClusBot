@@ -1,6 +1,6 @@
 package work
 
-// P3-04：能力、提供者与连接分离。
+// 能力、提供者与连接分离。
 //
 // 本文件实现统一能力语义而保持内部函数、CLI、HTTP、MCP 与已有平台可替换：
 //   - 能力有稳定 ID/版本、Query/Action 类别、输入输出 Schema、目标类型和
@@ -50,7 +50,7 @@ type Capability struct {
 	UpdatedAt        int64
 }
 
-// registerCapability 注册一个能力（P3-04.1/P3-04.5）。
+// registerCapability 注册一个能力。
 // 能力有稳定 ID/版本、Query/Action 类别、输入输出 Schema、目标类型和执行
 // 模式；新写能力默认不向模型暴露，需相应契约验证和当前主体准入通过。
 func registerCapability(tx *sql.Tx, c Capability, now int64) (Capability, error) {
@@ -107,7 +107,7 @@ type CapabilityProvider struct {
 	CreatedAt    int64
 }
 
-// registerProvider 注册一个提供者（P3-04.1）。
+// registerProvider 注册一个提供者。
 // 提供者与连接另有身份及版本。
 func registerProvider(tx *sql.Tx, p CapabilityProvider, now int64) (CapabilityProvider, error) {
 	if p.ProviderKey == "" || p.Kind == "" {
@@ -145,7 +145,7 @@ type CapabilityConnection struct {
 	CreatedAt         int64
 }
 
-// registerConnection 注册一个连接（P3-04.3）。
+// registerConnection 注册一个连接。
 // 工具名称与连接 ID 保持来源区分；同名不同连接不合并。
 func registerConnection(tx *sql.Tx, c CapabilityConnection, now int64) (CapabilityConnection, error) {
 	if c.ProviderID == "" || c.ConnectionName == "" {
@@ -179,7 +179,7 @@ const (
 	FeatureFencing   CapabilityFeature = "fencing"
 )
 
-// capabilityFeature 查询一个能力的特性（P3-04.2）。
+// capabilityFeature 查询一个能力的特性。
 // 缺失可选能力准确返回不可用/未知，不制造取消或查询成功。
 func capabilityFeature(q recordsQuerier, capabilityKey string, version int, feature CapabilityFeature) (string, error) {
 	var value string
@@ -218,7 +218,7 @@ func capabilityFeature(q recordsQuerier, capabilityKey string, version int, feat
 // ErrCapabilityUntrusted 是能力声明不可信的错误。
 var ErrCapabilityUntrusted = errors.New("能力声明不可信")
 
-// validateCapabilityClaim 核对能力声明（P3-04.4）。
+// validateCapabilityClaim 核对能力声明。
 // 能力和连接描述只声明机制，不拥有 Task/资产权威，也不能自报业务验收通过；
 // 伪造描述不会绕过宿主校验。
 func validateCapabilityClaim(c Capability) error {
@@ -237,7 +237,7 @@ func validateCapabilityClaim(c Capability) error {
 // 连接来源区分（同名不同连接不合并）
 // ---------------------------------------------------------------------------
 
-// resolveConnectionByName 按名称解析连接（P3-04.3）。
+// resolveConnectionByName 按名称解析连接。
 // 同名不同连接不合并：返回连接列表（调用方按来源区分）。
 func resolveConnectionsByName(q recordsQuerier, name string) ([]CapabilityConnection, error) {
 	rows, err := q.Query(`SELECT connection_id,provider_id,connection_name,connection_version,credential_ref,enabled,created_at

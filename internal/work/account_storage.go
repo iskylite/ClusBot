@@ -39,7 +39,6 @@ SELECT 1,? WHERE NOT EXISTS(SELECT 1 FROM accounts)
 AND NOT EXISTS(SELECT 1 FROM conversations)
 AND NOT EXISTS(SELECT 1 FROM materials)
 AND NOT EXISTS(SELECT 1 FROM memories)
-AND NOT EXISTS(SELECT 1 FROM goals)
 AND NOT EXISTS(SELECT 1 FROM general_preferences)
 ON CONFLICT(singleton) DO NOTHING`, principal); err != nil {
 		return err

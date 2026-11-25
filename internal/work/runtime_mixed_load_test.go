@@ -113,7 +113,7 @@ func TestRuntimeMixedLoadProgressWhileRecoveryLookupIsBlocked(t *testing.T) {
 	reopened, err := Open(path)
 	must(err)
 	s = reopened
-	_, err = s.RecoverV3(ctx, now())
+	_, err = s.RecoverRuntime(ctx, now())
 	must(err)
 	executor, err := s.EnableAssetAcceptanceQuery(ctx)
 	must(err)
@@ -200,7 +200,7 @@ func TestRuntimeMixedLoadProgressWhileRecoveryLookupIsBlocked(t *testing.T) {
 	}
 	progress, err := s.ReadAssetAcceptanceQuery(ctx, query.TaskID, actor)
 	must(err)
-	if !progress.Done || progress.StepState != string(V3StepCompleted) ||
+	if !progress.Done || progress.StepState != string(RuntimeStepCompleted) ||
 		progress.Result == nil || progress.Result.ObjectRef != readAsset {
 		t.Fatalf("read-only work did not commit its result: %+v", progress)
 	}
@@ -212,7 +212,7 @@ func TestRuntimeMixedLoadProgressWhileRecoveryLookupIsBlocked(t *testing.T) {
 	var state string
 	var attempts int
 	must(s.db.QueryRowContext(ctx, "SELECT state,attempt_count FROM operations WHERE operation_id=?", originalOperation).Scan(&state, &attempts))
-	if state != string(V3OperationReconcile) || attempts != 1 {
+	if state != string(RuntimeOperationReconcile) || attempts != 1 {
 		t.Fatalf("blocked lookup lost the original reconciliation: state=%s attempts=%d", state, attempts)
 	}
 	select {
@@ -252,7 +252,7 @@ func TestRuntimeMixedLoadProgressWhileRecoveryLookupIsBlocked(t *testing.T) {
 		t.Fatalf("same-asset waiter did not complete exactly once: %+v", p.benchmarkRestartLoadFake)
 	}
 	must(s.db.QueryRowContext(ctx, "SELECT state,attempt_count FROM operations WHERE operation_id=?", originalOperation).Scan(&state, &attempts))
-	if state != string(V3OperationSucceeded) || attempts != 1 {
+	if state != string(RuntimeOperationSucceeded) || attempts != 1 {
 		t.Fatalf("terminal receipt did not settle the original operation: state=%s attempts=%d", state, attempts)
 	}
 	worked, err := s.runDiscoveryOnce(ctx, source, due)

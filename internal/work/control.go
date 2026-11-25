@@ -228,9 +228,6 @@ func resumeTaskTx(tx *sql.Tx, taskID, requestKey string, revision int, action st
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Run{}, err
 	}
-	if err = ensureGoalTaskContinuable(tx, taskID); err != nil {
-		return Run{}, err
-	}
 	task, err := scanTask(tx.QueryRow("SELECT "+taskColumns+" FROM tasks WHERE id=?", taskID))
 	if err != nil {
 		return Run{}, err

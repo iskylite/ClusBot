@@ -387,21 +387,6 @@ func assistantResultSurface(tool, method string, raw []byte) []assistantA2UIMess
 			return assistantSurfaceParts(item.Owner, item.Title, state)
 		})
 		return assistantSurface(lines, false)
-	case "list_goals":
-		var goals []struct {
-			Target string `json:"target"`
-			Status string `json:"status"`
-		}
-		if json.Unmarshal(raw, &goals) == nil {
-			lines := assistantSurfaceRowsFrom("周期目标", "暂无周期目标", goals, func(goal struct {
-				Target string `json:"target"`
-				Status string `json:"status"`
-			}) string {
-				state := assistantEnum(goal.Status, "状态未知", map[string]string{"active": "进行中", "stopped": "已停止", "expired": "已到期", "exhausted": "次数已用完"})
-				return assistantSurfaceParts(goal.Target, state)
-			})
-			return assistantSurface(lines, false)
-		}
 	case "list_artifacts":
 		var artifacts []struct {
 			Name       string `json:"name"`

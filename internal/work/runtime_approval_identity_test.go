@@ -7,7 +7,7 @@ import (
 )
 
 func TestApprovalDecisionOwnerAndSnapshot(t *testing.T) {
-	s := setupV3P303(t, "approval-identity.sqlite")
+	s := setupApprovalsStore(t, "approval-identity.sqlite")
 	const owner, other = "user:alice", "user:bob"
 	stamp := now()
 	tx, err := s.db.Begin()
@@ -22,7 +22,7 @@ func TestApprovalDecisionOwnerAndSnapshot(t *testing.T) {
 	}
 	add := func(key, subject, approver string, expiry int64) Approval {
 		t.Helper()
-		a := v3P303Approval(key, subject, "write", "asset-x", stamp-10)
+		a := approvalFixture(key, subject, "write", "asset-x", stamp-10)
 		a.DecidedBy, a.ExpiresAt = approver, expiry
 		out, err := requestApproval(tx, a, stamp-10)
 		if err != nil {

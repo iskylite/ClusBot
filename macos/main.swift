@@ -175,11 +175,9 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
     @objc private func toggleSidebar() {
         webView.evaluateJavaScript("""
             (() => {
-            const sidebarButton = document.querySelector('button.sidebar-collapse');
-            const mobileButton = document.querySelector('button.v31-mobile-nav');
             const visible = button => button && button.getClientRects().length > 0;
-            if (visible(sidebarButton)) sidebarButton.click();
-            else if (visible(mobileButton)) mobileButton.click();
+            const target = Array.from(document.querySelectorAll('button.sidebar-collapse, button.app-mobile-nav')).find(visible);
+            if (target) target.click();
             })();
             """, completionHandler: nil)
     }
@@ -376,7 +374,7 @@ final class ClusBot: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNaviga
           if (window.__clusbotWindowDragInstalled) return;
           window.__clusbotWindowDragInstalled = true;
           const interactiveSelector = 'button, a, input, textarea, select, option, label, summary, details, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"], [role="checkbox"], [role="group"], [contenteditable="true"], .sidebar-items, .toolbar-search, .toolbar-chat-actions, .workspace-notices, [data-no-drag]';
-          const regionSelector = '.v31-sidebar, .sidebar, .unified-toolbar, [data-window-drag]';
+          const regionSelector = '.app-sidebar, .sidebar, .unified-toolbar, [data-window-drag]';
           const elementFromTarget = (target) => target instanceof Element ? target : target?.parentElement ?? null;
           const appRegionFor = (el) => {
             for (let cur = el; cur; cur = cur.parentElement) {

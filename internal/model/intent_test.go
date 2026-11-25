@@ -155,7 +155,7 @@ func TestClassificationModelFailureDoesNotBecomeChat(t *testing.T) {
 	}
 }
 
-func TestV2RouterAndWorkerPersistContractAndContext(t *testing.T) {
+func TestRouterAndWorkerPersistContractAndContext(t *testing.T) {
 	var routes, answers atomic.Int64
 	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request responseRequest

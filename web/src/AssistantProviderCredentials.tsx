@@ -87,7 +87,7 @@ function CredentialFields({provider,back}:{provider:Provider;back:()=>void}){
   const needsCredential=mode!==current.auth_mode||current.credential_status==='missing'
   return <form onSubmit={verify} className="assistant-credential-form" aria-busy={busy}>
     <h3><KeyRound size={15}/>编辑凭据 · {current.name}</h3>
-    <fieldset className="assistant-auth-options"><legend className="v31-screen-reader">认证方式</legend>
+    <fieldset className="assistant-auth-options"><legend className="app-screen-reader">认证方式</legend>
       {choices.map(choice=><label key={choice.value}><input type="radio" name={group} value={choice.value} checked={choice.value===mode} disabled={busy}
         onChange={()=>{setMode(choice.value);setVisible(false);setNotice('')}}/><span>{choice.label}</span></label>)}
     </fieldset>

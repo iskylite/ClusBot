@@ -39,6 +39,14 @@ func snapshotEvaluationCases(ctx context.Context, path string, suite ExperienceE
 	if err := requireDatabaseVersion(version); err != nil {
 		return nil, err
 	}
+	snapshots, err := snapshotEvaluationCasesTx(ctx, tx, suite)
+	if err != nil {
+		return nil, err
+	}
+	return snapshots, tx.Commit()
+}
+
+func snapshotEvaluationCasesTx(ctx context.Context, tx *sql.Tx, suite ExperienceEvaluationSuite) ([]evaluationSnapshot, error) {
 	holdout := make([]string, 0, len(suite.HoldoutTasks)+len(suite.Cases))
 	holdout = append(holdout, suite.HoldoutTasks...)
 	for _, c := range suite.Cases {
@@ -71,7 +79,7 @@ func snapshotEvaluationCases(ctx context.Context, path string, suite ExperienceE
 		}
 		snapshots = append(snapshots, snapshot)
 	}
-	return snapshots, tx.Commit()
+	return snapshots, nil
 }
 
 func evaluationCandidates(ctx context.Context, tx *sql.Tx, c ExperienceEvaluationCase, excluded string) (string, []ExperienceEvaluationSource, error) {

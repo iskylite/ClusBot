@@ -1,6 +1,6 @@
 package work
 
-// P2-01：工作者实例与受限身份。
+// 工作者实例与受限身份。
 //
 // 本文件区分实际执行实例和角色，为统一 API 建立可信调用主体：
 //   - 登记 worker_id、角色、支持单元类型、实例版本、最近联系、启用/撤销及
@@ -61,7 +61,7 @@ type RegisterWorkerRequest struct {
 	RegisteredBy    string
 }
 
-// registerWorker 登记一个 Worker 实例（P2-01.1/P2-01.2）。
+// registerWorker 登记一个 Worker 实例。
 // 凭据只保存摘要（SHA-256），秘密不进入日志、Manifest 或普通回执。
 // 不能所有实例都叫 personal-worker：worker_id 是实例身份，由系统生成。
 func registerWorker(tx *sql.Tx, req RegisterWorkerRequest, now int64) (WorkerInstance, error) {
@@ -120,7 +120,7 @@ func digestCredential(credential string) string {
 // 认证（核对凭据摘要与实例状态）
 // ---------------------------------------------------------------------------
 
-// authenticateWorker 核对 Worker 凭据与实例状态（P2-01 反例）。
+// authenticateWorker 核对 Worker 凭据与实例状态。
 // 未认证、过期、撤销或伪造 worker_id 的请求拒绝；身份轮换不使旧令牌继续领取。
 func authenticateWorker(q recordsQuerier, workerID, credential string, now int64) (WorkerInstance, error) {
 	var w WorkerInstance
@@ -166,7 +166,7 @@ var ErrWorkerAuth = errors.New("worker 认证失败")
 // ErrWorkerScope 是 Worker 范围越权的错误。
 var ErrWorkerScope = errors.New("worker 无权访问该范围")
 
-// ensureWorkerScope 核对 Worker 对指定单元类型与对象范围的权限（P2-01 反例）。
+// ensureWorkerScope 核对 Worker 对指定单元类型与对象范围的权限。
 // 工作者凭据不能调用用户设置、连接授权或任意资产管理入口。
 func ensureWorkerScope(w WorkerInstance, kind WorkUnitKind, scope string) error {
 	// 单元类型核对。
@@ -204,7 +204,7 @@ type WorkerToken struct {
 	RenewedAt       int64
 }
 
-// issueToken 为一次领取签发令牌（P2-02 使用；令牌不包含外部凭据）。
+// issueToken 为一次领取签发令牌。
 func issueToken(tx *sql.Tx, workerID, unitID string, leaseGeneration int, ttl int64, now int64) (WorkerToken, string, error) {
 	plainToken := hex.EncodeToString(randBytes())
 	token := WorkerToken{
@@ -227,7 +227,7 @@ VALUES(?,?,?,?,?,?,?,?)`,
 	return token, plainToken, nil
 }
 
-// validateToken 核对令牌（P2-02 使用）。
+// validateToken 核对令牌。
 // 过期令牌不能续租/提交；新领取不复用旧令牌（身份轮换不使旧令牌继续）。
 func validateToken(q recordsQuerier, tokenID, plainToken string, now int64) (WorkerToken, error) {
 	var t WorkerToken
@@ -256,7 +256,7 @@ FROM worker_tokens WHERE token_id=?`, tokenID).
 // 撤销（统一撤权管理）
 // ---------------------------------------------------------------------------
 
-// revokeWorker 撤销一个 Worker 实例（P2-01.5：受统一撤权管理）。
+// revokeWorker 撤销一个 Worker 实例。
 // 撤销后新领取被拒；已签发的令牌标记 revoked（旧令牌不能继续）。
 func revokeWorker(tx *sql.Tx, workerID, revokedBy string, now int64) error {
 	res, err := tx.Exec(`UPDATE worker_instances SET enabled=0, revoked_at=?, updated_at=? WHERE worker_id=? AND enabled=1`,
@@ -286,7 +286,7 @@ func touchWorker(tx *sql.Tx, workerID string, now int64) error {
 }
 
 // ---------------------------------------------------------------------------
-// 本地嵌入执行器（P2-01.3：同一服务协议校验）
+// 本地嵌入执行器
 // ---------------------------------------------------------------------------
 
 // embeddedWorkerIdentity 是本地嵌入执行器的宿主可信身份。

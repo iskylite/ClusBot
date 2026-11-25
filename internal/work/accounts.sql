@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS account_sessions (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS account_sessions_principal ON account_sessions(principal_id);
+-- 以下两张旧激活/恢复码表保留用于 v126 以前历史账号数据库兼容迁移，新流程统一使用临时密码与 must_change_password。
 CREATE TABLE IF NOT EXISTS account_credentials (
   token_digest TEXT PRIMARY KEY,
   principal_id TEXT NOT NULL REFERENCES accounts(principal_id),

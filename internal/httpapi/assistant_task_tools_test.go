@@ -39,7 +39,7 @@ func TestAssistantTaskToolRoutesAndConfirmations(t *testing.T) {
 	for _, name := range []string{
 		"list_tasks", "get_task", "list_task_runs", "create_task", "accept_task", "list_artifacts", "get_artifact",
 		"admin_list_tasks", "admin_get_task", "admin_list_task_runs", "admin_list_task_artifacts", "admin_get_task_artifact_content", "admin_accept_task",
-		"get_task_workflow", "create_workflow", "list_goals", "create_goal", "stop_goal", "list_attention", "get_attention", "decide_approval",
+		"get_task_workflow", "create_workflow", "list_attention", "get_attention", "decide_approval",
 		"list_assets", "query_asset_acceptance", "get_asset_acceptance", "lend_asset", "return_asset",
 	} {
 		if !seen[name] {

@@ -1,16 +1,16 @@
 package work
 
-// P1-04：Step 依赖与确定性流程基础。
+// Step 依赖与确定性流程基础。
 //
 // 本文件把 Task 内步骤、依赖与等待从父子任务模型中独立出来：
 //   - 实现模型步骤、确定性步骤和能力步骤的类型及输入/结果引用，每步绑定
-//     合同与定义版本（P1-04.1）；
+//     合同与定义版本；
 //   - 复用 DAG 无环与缺失依赖校验；父子 Task 不再是表达每个内部步骤的
-//     唯一方式（P1-04.2）；
-//   - 仅当必需依赖完成且证据版本有效时生成就绪单元；多个独立步骤可就绪（P1-04.3）；
+//     唯一方式；
+//   - 仅当必需依赖完成且证据版本有效时生成就绪单元；多个独立步骤可就绪；
 //   - 上游证据变化使依赖重新核对，不删除旧结果；不可满足依赖产生明确等待/
-//     失败原因（P1-04.4）；
-//   - 确定性步骤无需调用模型；只写计划 JSON 而没有实际推进不能验收（P1-04.5）。
+//     失败原因；
+//   - 确定性步骤无需调用模型；只写计划 JSON 而没有实际推进不能验收。
 //
 // 与现有工作流的关系：保留真正独立的子 Task（有独立目标/验收）；普通流程
 // 步骤使用本文件的 Step。已有个人成果工作流继续核验已验收成果。
@@ -24,7 +24,7 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Step 类型（P1-04.1）
+// Step 类型
 // ---------------------------------------------------------------------------
 
 // StepKind 是步骤类型。
@@ -76,7 +76,7 @@ func (d StepDefinition) validate() error {
 }
 
 // ---------------------------------------------------------------------------
-// Step 计划与 DAG 校验（P1-04.2）
+// Step 计划与 DAG 校验
 // ---------------------------------------------------------------------------
 
 // StepPlan 是一个 Task 的步骤计划（DAG）。
@@ -153,7 +153,7 @@ func (p StepPlan) validate() error {
 }
 
 // ---------------------------------------------------------------------------
-// 就绪判定（P1-04.3）
+// 就绪判定
 // ---------------------------------------------------------------------------
 
 // ReadyStep 是一个就绪步骤及其生成的执行单元。
@@ -175,10 +175,10 @@ func computeReadySteps(q recordsQuerier, taskID string, contractRevision int) ([
 	}
 	var ready []ReadyStep
 	for _, s := range steps {
-		if s.State != V3StepReady && s.State != V3StepBlocked {
+		if s.State != RuntimeStepReady && s.State != RuntimeStepBlocked {
 			continue
 		}
-		// 合同隔离：旧合同版本的步骤不就绪（P1-02 的合同修订隔离）。
+		// 合同隔离：旧合同版本的步骤不就绪。
 		if s.ContractRevision != contractRevision {
 			continue
 		}
@@ -190,7 +190,7 @@ func computeReadySteps(q recordsQuerier, taskID string, contractRevision int) ([
 			continue
 		}
 		_ = reason
-		// 生成就绪单元（kind 映射步骤类型；确定性步骤在 P2-07 接入执行）。
+		// 生成就绪单元（kind 映射步骤类型；确定性步骤在 接入执行）。
 		kind := WorkUnitModel
 		if def, ok := stepDefinitionFor(q, s); ok == nil && def.Kind == StepKindDeterministic {
 			kind = WorkUnitDeterministic
@@ -224,16 +224,16 @@ func stepDependenciesSatisfied(q recordsQuerier, s Step, byID map[string]Step) (
 			return false, fmt.Sprintf("依赖的步骤 %s 不存在", depID), nil
 		}
 		// 可选步骤的取消不阻塞；必需依赖必须完成。
-		if dep.Optional && dep.State == V3StepCancelled {
+		if dep.Optional && dep.State == RuntimeStepCancelled {
 			continue
 		}
-		if dep.State == V3StepCancelled || dep.State == V3StepFailed {
+		if dep.State == RuntimeStepCancelled || dep.State == RuntimeStepFailed {
 			return false, fmt.Sprintf("依赖步骤 %s 已 %s", depID, dep.State), nil
 		}
-		if dep.State != V3StepCompleted {
+		if dep.State != RuntimeStepCompleted {
 			return false, fmt.Sprintf("依赖步骤 %s 未完成（当前 %s）", depID, dep.State), nil
 		}
-		// 证据版本有效性：上游证据变化后须重新核对（P1-04.4）。
+		// 证据版本有效性：上游证据变化后须重新核对。
 		if dep.EvidenceRevision != s.EvidenceRevision && s.EvidenceRevision != 0 {
 			return false, fmt.Sprintf("依赖步骤 %s 的证据版本已变化（%d → %d），须重新核对",
 				depID, s.EvidenceRevision, dep.EvidenceRevision), nil
@@ -243,7 +243,7 @@ func stepDependenciesSatisfied(q recordsQuerier, s Step, byID map[string]Step) (
 }
 
 // ---------------------------------------------------------------------------
-// 确定性步骤执行器（P1-04.5）
+// 确定性步骤执行器
 // ---------------------------------------------------------------------------
 
 // DeterministicResult 是确定性步骤的结果。
@@ -289,9 +289,9 @@ func deterministicHandler(name string) (DeterministicHandler, error) {
 }
 
 // executeDeterministicStep 执行一个确定性步骤：无需调用模型。
-// 处理器在事务外交付结果；结果的持久化由运行时提交（P1-10）。
+// 处理器在事务外交付结果；结果的持久化由运行时提交。
 func executeDeterministicStep(ctx context.Context, step Step, def StepDefinition) (DeterministicResult, error) {
-	if step.State != V3StepReady && step.State != V3StepRunning {
+	if step.State != RuntimeStepReady && step.State != RuntimeStepRunning {
 		return DeterministicResult{}, fmt.Errorf("步骤 %s 不就绪（当前 %s）", step.StepID, step.State)
 	}
 	handler, err := deterministicHandler(def.DeterministicHandler)
@@ -322,7 +322,7 @@ func stepDefinitionFor(q recordsQuerier, s Step) (StepDefinition, error) {
 }
 
 // ---------------------------------------------------------------------------
-// 证据失效检测（P1-04.4）
+// 证据失效检测
 // ---------------------------------------------------------------------------
 
 // InvalidateDependents 在上游步骤证据变化后，使依赖它的步骤重新核对。
@@ -349,7 +349,7 @@ func InvalidateDependents(q recordsQuerier, changedStepID string) ([]string, err
 func markStepEvidenceStale(tx *sql.Tx, stepID string, newEvidenceRevision int) error {
 	res, err := tx.Exec(`UPDATE steps SET state=?, evidence_revision=?, updated_at=?
 WHERE step_id=? AND state IN ('ready','blocked')`,
-		string(V3StepBlocked), newEvidenceRevision, now(), stepID)
+		string(RuntimeStepBlocked), newEvidenceRevision, now(), stepID)
 	if err != nil {
 		return err
 	}
@@ -358,11 +358,11 @@ WHERE step_id=? AND state IN ('ready','blocked')`,
 }
 
 // ---------------------------------------------------------------------------
-// 工作流迁移适配（P1-04.5 保留独立子 Task）
+// 工作流迁移适配
 // ---------------------------------------------------------------------------
 
 // classifyWorkflowSteps 把工作流步骤分类为"独立子 Task"或"Task 内 Step"。
-// 有独立目标/验收的保留子 Task；普通流程步骤使用 Step（P0-02.5 的判定）。
+// 有独立目标/验收的保留子 Task；普通流程步骤使用 Step。
 func classifyWorkflowSteps(plan WorkflowRequest) map[string]StepOwnership {
 	out := make(map[string]StepOwnership, len(plan.Steps))
 	for _, step := range plan.Steps {

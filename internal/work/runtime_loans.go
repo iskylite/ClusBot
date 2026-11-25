@@ -1,6 +1,6 @@
 package work
 
-// P4-19：借出冻结、在途核对与交接事务。
+// 借出冻结、在途核对与交接事务。
 //
 // 本文件实现管理责任转移时旧工作不能继续新写，未知在途效果不被隐藏：
 //   - 先登记交接意图与冻结并递增 ownership_epoch；交接意图不是新增资产末级
@@ -45,7 +45,7 @@ type LoanHandover struct {
 	UpdatedAt           int64
 }
 
-// initiateLoanHandover 发起交接意图（P4-19.1）。
+// initiateLoanHandover 发起交接意图。
 // 先登记交接意图与冻结并递增 ownership_epoch；交接意图不是新增资产末级状态。
 func initiateLoanHandover(tx *sql.Tx, h LoanHandover, now int64) (LoanHandover, error) {
 	if h.ObjectRef == "" || h.Intent == "" {
@@ -93,7 +93,7 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 // ErrConflictWritesPending 是冲突写未决的错误。
 var ErrConflictWritesPending = errors.New("冻结前已派发的冲突写未决")
 
-// reconcileConflictWrites 核对冲突写（P4-19.2）。
+// reconcileConflictWrites 核对冲突写。
 // 列出冻结前已派发的冲突写并逐项核对完成/停止和效果；已登记未派发的旧
 // 操作拒绝继续。
 func reconcileConflictWrites(tx *sql.Tx, handoverID string, objectRef string, now int64) (reconciled bool, pending []string, err error) {
@@ -149,7 +149,7 @@ type Loan struct {
 	ReturnedAt         int64
 }
 
-// confirmLoanHandover 确认交接（P4-19.4）。
+// confirmLoanHandover 确认交接。
 // 实际交接确认时再次递增 epoch，同事务建立唯一有效借用并改为借出；保持状态
 // 与有效 loan 双向一致；提交中断不出现状态借出却无有效 loan，或两个有效 loan。
 func confirmLoanHandover(tx *sql.Tx, handoverID string, lender, borrower string, dueAt int64, readOnlyScope string, now int64) (Loan, error) {
@@ -212,7 +212,7 @@ type LoanException struct {
 	CreatedAt             int64
 }
 
-// recordLoanException 记录人工例外（P4-19.5）。
+// recordLoanException 记录人工例外。
 // 人工例外必须完整记录授权、接收人、未知效果与后续责任；无外部 fencing
 // 不保证旧在途请求不再生效。
 func recordLoanException(tx *sql.Tx, e LoanException, now int64) (LoanException, error) {

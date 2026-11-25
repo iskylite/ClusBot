@@ -1,6 +1,6 @@
 package work
 
-// P1-07：版本化 Wait 与事件唤醒。
+// 版本化 Wait 与事件唤醒。
 //
 // 本文件把人工、外部结果、依赖和时间等待变成独立持久记录：
 //   - wait_id + wait_version；同一开放版本只能关闭一次；重复或旧事件可以
@@ -56,7 +56,7 @@ type Wait struct {
 // OpenWait（与 Task/Step 状态变更同事务）
 // ---------------------------------------------------------------------------
 
-// openWait 在事务内开启一个版本化 Wait（P1-07.2）。
+// openWait 在事务内开启一个版本化 Wait。
 // 等待不保留模型调用或执行工作者：它是独立的持久记录，唤醒由后续事件驱动。
 func openWait(tx *sql.Tx, w Wait) (Wait, error) {
 	if w.WaitID == "" {
@@ -99,7 +99,7 @@ type ResolveResult struct {
 	Reason     string
 }
 
-// resolveWait 以 wait_id + version + open 条件更新关闭 Wait（P1-07.3）。
+// resolveWait 以 wait_id + version + open 条件更新关闭 Wait。
 // 两个并发事件最多一个关闭开放版本，另一个仍可存证；旧版本事件、错误目标
 // 或未授权决定不能关闭新等待。
 func resolveWait(tx *sql.Tx, waitID string, version int, source, eventID, resolution, evidenceRef, closedBy string, now int64) (ResolveResult, error) {
@@ -124,7 +124,7 @@ timeout_policy,state,closed_at,resolution,evidence_ref,closed_by FROM waits WHER
 		return ResolveResult{}, err
 	}
 	w.StepID = stepID.String
-	// 版本不匹配：旧版本事件不能关闭新等待（P1-07 反例）。
+	// 版本不匹配：旧版本事件不能关闭新等待。
 	if version != w.WaitVersion {
 		if err := leaveEvidence(false); err != nil {
 			return ResolveResult{}, err
@@ -194,8 +194,8 @@ resolution='', evidence_ref='', closed_by='', deadline_at=?, timeout_policy=? WH
 // ---------------------------------------------------------------------------
 
 // wakeWait 唤醒一个已关闭的 Wait：只生成需重新核对的就绪工作，不跳过当前
-// 合同、权限及未知操作检查（P1-07.4）。
-// 返回需要重新核对的 Task ID 与后续命令；实际资格重评由 P1-03 的状态机执行。
+// 合同、权限及未知操作检查。
+// 返回需要重新核对的 Task ID 与后续命令；实际资格重评由 的状态机执行。
 func wakeWait(tx *sql.Tx, waitID string, now int64) (taskID string, followUp []string, err error) {
 	var w Wait
 	var stepID sql.NullString
@@ -214,7 +214,7 @@ func wakeWait(tx *sql.Tx, waitID string, now int64) (taskID string, followUp []s
 }
 
 // ---------------------------------------------------------------------------
-// 旧 task_waits 迁移适配（P1-07.5）
+// 旧 task_waits 迁移适配
 // ---------------------------------------------------------------------------
 
 // migrateLegacyWait 把旧 task_waits 人工等待转换为对应有限等待。

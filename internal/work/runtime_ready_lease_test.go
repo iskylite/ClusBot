@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestV31ReadyClaimFiltersBeforeLimit(t *testing.T) {
-	s, taskID, unitID := setupV3P202(t, "ready-filter")
-	stamp := v3P102Now()
-	workerID, cred := registerV3P202Worker(t, s, "scoped", []WorkUnitKind{WorkUnitModel}, "POD7")
+func TestReadyClaimFiltersBeforeLimit(t *testing.T) {
+	s, taskID, unitID := setupLeasesStore(t, "ready-filter")
+	stamp := recordsTestNow()
+	workerID, cred := registerLeaseWorker(t, s, "scoped", []WorkUnitKind{WorkUnitModel}, "POD7")
 	req := ClaimRequest{WorkerID: workerID, Credential: cred, Kind: WorkUnitModel, Scope: "POD7", LeaseTTL: 5000, QuotaAvailable: true}
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -28,9 +28,12 @@ func TestV31ReadyClaimFiltersBeforeLimit(t *testing.T) {
 	}
 	ctx := context.Background()
 	for i := 0; i < 12; i++ {
-		other := setupV3P208Task(t, s, "other scope")
+		otherRun, err := s.Submit(ctx, "ready-filter-other-"+id(), "other task", "other scope", "", true)
+		if err != nil {
+			t.Fatal(err)
+		}
 		exec("INSERT INTO work_units(unit_id,task_id,kind,ready_at,state,created_at,updated_at) VALUES(?,?,'model',?,'ready',?,?)",
-			id(), other, stamp-1, stamp, stamp)
+			id(), otherRun.TaskID, stamp-1, stamp, stamp)
 	}
 	claim := func(at int64) (ClaimResult, error) {
 		t.Helper()
@@ -61,10 +64,10 @@ func TestV31ReadyClaimFiltersBeforeLimit(t *testing.T) {
 	}
 }
 
-func TestV31ReadyRecoveryGuardsAndKeepsExistingWork(t *testing.T) {
-	s, taskID := setupV3P113(t, "ready-recovery")
+func TestReadyRecoveryGuardsAndKeepsExistingWork(t *testing.T) {
+	s, taskID := setupRecoveryStore(t, "ready-recovery")
 	ctx := context.Background()
-	stamp := v3P102Now()
+	stamp := recordsTestNow()
 	exec := func(q string, args ...any) {
 		t.Helper()
 		if _, err := s.db.Exec(q, args...); err != nil {
@@ -111,7 +114,7 @@ func TestV31ReadyRecoveryGuardsAndKeepsExistingWork(t *testing.T) {
 	check(0) // recovery must not silently recreate a cancelled execution
 }
 
-func TestV31ReadyIndexMigration(t *testing.T) {
+func TestReadyIndexMigration(t *testing.T) {
 	ctx := context.Background()
 	db := filepath.Join(t.TempDir(), "v90.sqlite")
 	s, err := Open(db)
@@ -136,8 +139,8 @@ func TestV31ReadyIndexMigration(t *testing.T) {
 	}
 }
 
-func TestV31ReadyRecoveryRollsBackWholeBatch(t *testing.T) {
-	s, taskID := setupV3P113(t, "ready-rollback")
+func TestReadyRecoveryRollsBackWholeBatch(t *testing.T) {
+	s, taskID := setupRecoveryStore(t, "ready-rollback")
 	ctx := context.Background()
 	add := func(q string, args ...any) {
 		t.Helper()
@@ -164,9 +167,9 @@ WHEN NEW.step_id='b' BEGIN SELECT RAISE(ABORT,'test write failed'); END`)
 	}
 }
 
-func TestV31ReadyActionWaitsForReconciliation(t *testing.T) {
-	s, task, unit := setupV3P202(t, "reconcile-claim")
-	stamp := v3P102Now()
+func TestReadyActionWaitsForReconciliation(t *testing.T) {
+	s, task, unit := setupLeasesStore(t, "reconcile-claim")
+	stamp := recordsTestNow()
 	add := func(q string, args ...any) {
 		t.Helper()
 		if _, err := s.db.Exec(q, args...); err != nil {
@@ -182,7 +185,7 @@ func TestV31ReadyActionWaitsForReconciliation(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer tx.Rollback()
-		got, err := selectParallelReadyUnits(tx, WorkUnitAction, stamp, 1)
+		got, err := selectReadyUnits(tx, WorkUnitAction, "", stamp, 1)
 		if err != nil || len(got) != want {
 			t.Fatalf("action eligibility = %v, %v; want %d", got, err, want)
 		}

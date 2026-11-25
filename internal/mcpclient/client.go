@@ -125,14 +125,17 @@ func (cfg Config) CredentialBinding(key []byte) (string, error) {
 }
 
 type Tool struct {
-	Name         string          `json:"name"`
-	Title        string          `json:"title,omitempty"`
-	Description  string          `json:"description,omitempty"`
-	InputSchema  json.RawMessage `json:"input_schema"`
-	OutputSchema json.RawMessage `json:"output_schema,omitempty"`
-	SchemaError  string          `json:"schema_error,omitempty"`
-	Version      string          `json:"version"`
-	Allowed      bool            `json:"allowed"`
+	Name           string          `json:"name"`
+	Title          string          `json:"title,omitempty"`
+	Description    string          `json:"description,omitempty"`
+	InputSchema    json.RawMessage `json:"input_schema"`
+	OutputSchema   json.RawMessage `json:"output_schema,omitempty"`
+	SchemaError    string          `json:"schema_error,omitempty"`
+	Version        string          `json:"version"`
+	Allowed        bool            `json:"allowed"`
+	ReadOnly       bool            `json:"read_only"`
+	ServerReadOnly *bool           `json:"server_read_only,omitempty"`
+	Destructive    bool            `json:"destructive,omitempty"`
 }
 
 type Catalog struct {
@@ -232,6 +235,13 @@ func Discover(ctx context.Context, session *mcp.ClientSession) (Catalog, error) 
 			hash := sha256.Sum256(identity)
 			seen[t.Name] = true
 			tool := Tool{Name: t.Name, Title: t.Title, Description: t.Description, InputSchema: schema, Version: hex.EncodeToString(hash[:])}
+			if t.Annotations != nil {
+				sro := t.Annotations.ReadOnlyHint
+				tool.ServerReadOnly = &sro
+				if t.Annotations.DestructiveHint != nil {
+					tool.Destructive = *t.Annotations.DestructiveHint
+				}
+			}
 			if t.OutputSchema != nil {
 				tool.OutputSchema, err = json.Marshal(t.OutputSchema)
 				if err != nil || len(tool.OutputSchema) > 24*1024 {

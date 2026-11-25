@@ -74,7 +74,7 @@ AND i.payload_digest=? AND e.closed_wait=0
 		case c.matchKey != c.operation:
 			disposition, detail = "dead", "外部等待不匹配本次基准操作"
 		case (c.phase == "following" || c.phase == "submitting") &&
-			(c.opState == string(V3OperationDispatched) || c.opState == string(V3OperationRunning) || c.opState == string(V3OperationReconcile)):
+			(c.opState == string(RuntimeOperationDispatched) || c.opState == string(RuntimeOperationRunning) || c.opState == string(RuntimeOperationReconcile)):
 			if c.leaseUntil > stamp {
 				if _, err := tx.ExecContext(ctx, "UPDATE outbox_commands SET next_attempt_at=? WHERE command_id=?", c.leaseUntil, c.key); err != nil {
 					return err

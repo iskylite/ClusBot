@@ -2,11 +2,11 @@ package work
 
 // A2+A3：本地嵌入执行单元消费路径（只读领域任务闭环）。
 //
-// 本文件把 V3 work_units 的领取、执行、回报接进启动后的执行链：
+// 本文件把 work_units 的领取、执行、回报接进启动后的执行链：
 //   - 注册本地嵌入 Worker（宿主可信身份），循环领取 deterministic 就绪单元；
 //   - 领取 → 执行确定性处理器（只读查询）→ 结果落盘（result_receipt）→
 //     幂等应用 → 原子完成 step 与 work_unit；
-//   - 重启后 claimed/running 单元由 RecoverV3 置回 ready，可重新领取；
+//   - 重启后 claimed/running 单元由 RecoverRuntime 置回 ready，可重新领取；
 //     结果回执幂等：重复送达只应用一次，迟到回报不重复完成。
 
 import (
@@ -94,7 +94,7 @@ coalesce(input_ref,''),state FROM steps WHERE step_id=?`, claim.Unit.StepID).
 	if err != nil {
 		return DeterministicResult{}, err
 	}
-	step.State = V3StepState(state)
+	step.State = RuntimeStepState(state)
 	handler, err := deterministicHandler(step.DefinitionKey)
 	if err != nil {
 		return DeterministicResult{}, err
@@ -153,7 +153,7 @@ AND l.state='active' AND l.lease_until>? AND w.lease_generation=l.lease_generati
 	if execErr != nil {
 		// 失败：标记 step 与 unit 失败，任务进入失败收尾。
 		if _, err := tx.Exec(`UPDATE steps SET state=?, error=?, updated_at=? WHERE step_id=?`,
-			string(V3StepFailed), execErr.Error(), nowV, claim.Unit.StepID); err != nil {
+			string(RuntimeStepFailed), execErr.Error(), nowV, claim.Unit.StepID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`UPDATE work_units SET state='failed', error=?, updated_at=? WHERE unit_id=?`,
@@ -167,17 +167,17 @@ AND l.state='active' AND l.lease_until>? AND w.lease_generation=l.lease_generati
 		if err != nil {
 			return err
 		}
-		if state.State == V3TaskPending || state.State == V3TaskRunning {
+		if state.State == RuntimeTaskPending || state.State == RuntimeTaskRunning {
 			guard := TaskGuard{ExpectedStorageRevision: state.StorageRevision, Actor: e.workerID}
 			if _, err := transitionTaskState(tx, claim.Unit.TaskID, EventFail, guard, nowV); err != nil {
 				return err
 			}
 			guard.ExpectedStorageRevision++
-			guard.FinalState = V3TaskFailed
+			guard.FinalState = RuntimeTaskFailed
 			if _, err := transitionTaskState(tx, claim.Unit.TaskID, EventFinalized, guard, nowV); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(`UPDATE tasks SET status='interrupted',status_reason='execution_failed',reason=?,updated_at=? WHERE id=?`, summary, nowV, claim.Unit.TaskID); err != nil {
+			if err := projectTaskFromRuntimeState(tx, claim.Unit.TaskID, RuntimeTaskFailed, "execution_failed", summary, nowV); err != nil {
 				return err
 			}
 		}
@@ -185,7 +185,7 @@ AND l.state='active' AND l.lease_until>? AND w.lease_generation=l.lease_generati
 	}
 	// 3. 成功：完成 step、unit，租约归还，任务进入完成判定。
 	if _, err := tx.Exec(`UPDATE steps SET state=?, result_ref=?, updated_at=? WHERE step_id=?`,
-		string(V3StepCompleted), evidenceRef, nowV, claim.Unit.StepID); err != nil {
+		string(RuntimeStepCompleted), evidenceRef, nowV, claim.Unit.StepID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE work_units SET state='completed', result_ref=?, updated_at=? WHERE unit_id=?`,
@@ -201,15 +201,15 @@ AND l.state='active' AND l.lease_until>? AND w.lease_generation=l.lease_generati
 	if stateErr != nil {
 		return stateErr
 	}
-	if state.State == V3TaskPending {
+	if state.State == RuntimeTaskPending {
 		// 领取（→running）。守卫拒绝则整体回滚，结果留 received 供恢复重试。
 		if _, err := transitionTaskState(tx, claim.Unit.TaskID, EventClaim, TaskGuard{ExpectedStorageRevision: state.StorageRevision, Actor: e.workerID}, nowV); err != nil {
 			return err
 		}
 		state.StorageRevision++
-		state.State = V3TaskRunning
+		state.State = RuntimeTaskRunning
 	}
-	if state.State == V3TaskRunning {
+	if state.State == RuntimeTaskRunning {
 		// 必需 Step 全完成判定：仍存在的非可选未完成 Step 数。
 		var incompleteRequired int
 		if err := tx.QueryRow(`SELECT COUNT(*) FROM steps WHERE task_id=? AND optional=0 AND state<>'completed'`,
@@ -243,7 +243,7 @@ AND l.state='active' AND l.lease_until>? AND w.lease_generation=l.lease_generati
 				if _, err := transitionTaskState(tx, claim.Unit.TaskID, EventFinalized, guard, nowV); err != nil {
 					return err
 				}
-				if _, err := tx.Exec(`UPDATE tasks SET status='completed',status_reason='completed',reason=?,completed_at=?,updated_at=? WHERE id=?`, summary, nowV, nowV, claim.Unit.TaskID); err != nil {
+				if err := projectTaskFromRuntimeState(tx, claim.Unit.TaskID, RuntimeTaskSucceeded, "completed", summary, nowV); err != nil {
 					return err
 				}
 			}

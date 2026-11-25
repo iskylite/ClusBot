@@ -351,7 +351,6 @@ func (s *Store) Start(ctx context.Context, provider Provider, concurrency int, l
 func (s *Store) StartWhenModelAvailable(ctx context.Context, provider Provider, concurrency int, limits RunLimits, modelAvailable func() bool) *sync.WaitGroup {
 	s.configureRuntime(concurrency, limits)
 	var workers sync.WaitGroup
-	workers.Go(func() { s.runGoalScheduler(ctx) })
 	workers.Go(func() {
 		ticker := time.NewTicker(250 * time.Millisecond)
 		defer ticker.Stop()
@@ -458,8 +457,7 @@ func (s *Store) execute(ctx context.Context, provider Provider, run Run, limits 
 	if err == nil && run.TaskID != "" {
 		var goal, criteria, filename string
 		err = s.db.QueryRowContext(controlled, `SELECT goal,acceptance_criteria,required_filename,
-EXISTS(SELECT 1 FROM goal_tasks WHERE task_id=tasks.id)
-OR EXISTS(SELECT 1 FROM workflow_children WHERE task_id=tasks.id OR parent_id=tasks.id)
+EXISTS(SELECT 1 FROM workflow_children WHERE task_id=tasks.id OR parent_id=tasks.id)
 FROM tasks WHERE id=?`, run.TaskID).Scan(&goal, &criteria, &filename, &restrictAutoTools)
 		if err == nil {
 			if !restrictAutoTools {

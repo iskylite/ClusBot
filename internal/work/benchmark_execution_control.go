@@ -302,7 +302,7 @@ WHERE step_id=? AND task_id=? AND phase='queued' AND operation_id=''`, toJSON(ma
 	} else if n != 1 {
 		return BenchmarkExecutionControlReceipt{}, ErrBenchmarkCaseNotPending
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE steps SET state=?,updated_at=? WHERE step_id=? AND task_id=?", V3StepCancelled, stamp, step, task); err != nil {
+	if _, err := tx.ExecContext(ctx, "UPDATE steps SET state=?,updated_at=? WHERE step_id=? AND task_id=?", RuntimeStepCancelled, stamp, step, task); err != nil {
 		return BenchmarkExecutionControlReceipt{}, err
 	}
 	if err := appendBenchmarkExecutionControl(ctx, tx, actor, in.RequestID, fingerprint, out, stamp); err != nil {

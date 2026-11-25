@@ -1,4 +1,4 @@
--- P4-15：观测接入（V3 §4.2、§10.1、E02/E04、F03/F12）。
+-- 观测接入（§4.2、§10.1、E02/E04、F03/F12）。
 CREATE TABLE IF NOT EXISTS fault_segments (
   segment_id TEXT PRIMARY KEY,
   fault_key TEXT NOT NULL,

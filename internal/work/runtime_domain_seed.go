@@ -1,6 +1,6 @@
 package work
 
-// V3 领域台账演示种子数据（仅在 -demo 模式注入）。
+// 领域台账演示种子数据（仅在 -demo 模式注入）。
 //
 // 设计约束：
 //   - 幂等：只在 ops_assets 为空时插入；所有写用 INSERT OR IGNORE；
@@ -133,38 +133,6 @@ func (s *Store) SeedDomainDemo(ctx context.Context) error {
 			{"node-n-01", "计算节点", "待核对 / 无序列号", "待纳管", 1, 0, 0, "", "身份未核对，禁止写操作", "—", ago(1), ago(1)},
 			{"node-n-02", "GPU 节点", "待核对 / 无序列号", "待纳管", 1, 0, 0, "", "身份未核对，禁止写操作", "—", ago(1), ago(1)},
 			{"node-n-03", "GPU 节点", "待核对 / 无序列号", "待纳管", 1, 0, 0, "", "身份未核对，禁止写操作", "—", ago(1), ago(1)},
-		}},
-
-		// 2. 领域包（父表，必须先于 object_types / relation_types）。
-		{table: "domain_packages", cols: []string{
-			"package_id", "name", "version", "state", "definitions", "definitions_digest",
-			"compatibility", "impact_summary", "rollback_basis", "published_by", "published_at",
-			"created_at", "updated_at",
-		}, rows: [][]any{
-			{"pkg-core-v12", "ops-core", 12, "published", seedJSON(map[string]any{"spec": "v12", "types": []string{"node", "nic", "gpu"}}), "digest-v12", "兼容 v11 历史记录", "新增 NIC 错误率阈值", "回退到 pkg-core-v11", "u-lee", ago(30), ago(30), ago(13)},
-			{"pkg-core-v11", "ops-core", 11, "superseded", seedJSON(map[string]any{"spec": "v11"}), "digest-v11", "", "v12 发布前的基线", "", "u-lee", ago(90), ago(90), ago(30)},
-		}},
-
-		// 3. 8 条对象类型定义。
-		{table: "domain_object_types", cols: []string{
-			"package_id", "type_key", "fields", "cardinality", "identity_rule",
-			"data_binding", "config_spec", "test_spec", "created_at",
-		}, rows: [][]any{
-			{"pkg-core-v12", "node", seedJSON([]map[string]any{{"name": "kind", "type": "string"}, {"name": "identity", "type": "string"}}), "{}", "serial", "{}", "{}", "{}", ago(30)},
-			{"pkg-core-v12", "nic", seedJSON([]map[string]any{{"name": "speed", "type": "string", "unit": "Gb/s"}}), "{}", "serial", "{}", "{}", "{}", ago(30)},
-			{"pkg-core-v12", "gpu", seedJSON([]map[string]any{{"name": "count", "type": "int", "unit": "块"}}), "{}", "serial", "{}", "{}", "{}", ago(30)},
-			{"pkg-core-v12", "spec", seedJSON([]map[string]any{{"name": "version", "type": "string"}}), "{}", "name+version", "{}", "{}", "{}", ago(30)},
-			{"pkg-core-v11", "node", seedJSON([]map[string]any{{"name": "identity", "type": "string"}}), "{}", "serial", "{}", "{}", "{}", ago(90)},
-		}},
-
-		// 4. 7 条关系类型定义。
-		{table: "domain_relation_types", cols: []string{
-			"package_id", "relation_key", "source_type", "target_type",
-			"cardinality", "mutually_exclusive_with", "created_at",
-		}, rows: [][]any{
-			{"pkg-core-v12", "physical_component", "node", "nic", "{}", "[]", ago(30)},
-			{"pkg-core-v12", "physical_component_gpu", "node", "gpu", "{}", "[]", ago(30)},
-			{"pkg-core-v12", "applies_to", "spec", "node", "{}", "[]", ago(30)},
 		}},
 
 		// 5. 事实（含 authoritative / candidate / conflicting / unknown 四种权威）。
@@ -475,16 +443,6 @@ func (s *Store) SeedDomainDemo(ctx context.Context) error {
 			{"rp-operations", "operations", 180 * day, 0, 0, 365 * day, 0, ago(60), ago(30)},
 		}},
 
-		// 26. 2 条清理队列。
-		{table: "cleanup_queue", cols: []string{
-			"cleanup_id", "kind", "object_ref", "source_ref", "unreadable", "source_version",
-			"policy_version", "state", "retry_count", "next_retry_at", "failure_reason",
-			"created_at", "updated_at", "completed_at",
-		}, rows: [][]any{
-			{"cl-001", "invalidate", "fact-003", "source:switch-api", 0, 1, 1, "pending", 0, 0, "", ago(1), ago(1), 0},
-			{"cl-002", "delete", "node-n-01", "source:discovery", 1, 1, 1, "failed", 2, ago(-1), "源版本不匹配，等待重新核对", ago(2), ago(1), 0},
-		}},
-
 		// 27. 5 条能力。
 		{table: "capabilities", cols: []string{
 			"capability_id", "capability_key", "version", "kind", "input_schema", "output_schema",
@@ -530,32 +488,6 @@ func (s *Store) SeedDomainDemo(ctx context.Context) error {
 		}},
 		{table: "connection_calls", cols: []string{"id", "connection_id", "connection_revision", "tool_name", "tool_version", "status", "created_at", "evidence"}, rows: [][]any{
 			{"call-demo-1", "conn-runtime-1", 1, "cluster.node.read", "1", "completed", ago(1), nil},
-		}},
-
-		// 30. 4 个运维案例（父表，先于 case_events）。
-		{table: "operational_cases", cols: []string{
-			"case_id", "symptom", "object_ref", "environment", "hypothesis", "actual_action",
-			"independent_outcome", "unknowns", "source_refs", "applicability",
-			"contraindications", "invalidation_conditions", "counterexamples", "evidence_refs",
-			"review_at", "root_cause", "root_cause_proven", "state", "version", "supersedes",
-			"superseded_reason", "published_by", "published_at", "created_at", "updated_at",
-		}, rows: [][]any{
-			{"case-001", "NIC 错误率升高", "node-041", seedJSON(map[string]any{"firmware": "2.18", "kernel": "5.15"}), "固件缺陷", "按工单回滚固件", "独立指标恢复正常", seedJSON([]string{"回滚影响范围未评估"}), seedJSON([]string{"inc-121", "fact-004"}), seedJSON(map[string]any{"kind": "计算节点", "firmware": "2.18"}), seedJSON([]string{"借出资产", "身份未核对"}), seedJSON([]string{"固件版本变化"}), "[]", seedJSON([]string{"ev-8821", "ev-8824"}), ago(-30), "固件 2.18 缺陷", 1, "published", 1, "", "", "u-lee", ago(10), ago(10), ago(1)},
-			{"case-002", "心跳失联", "node-112", "{}", "监测代理崩溃", "等待人工核对", "未形成独立结果", seedJSON([]string{"代理版本", "在途写效果"}), seedJSON([]string{"inc-117"}), "{}", "[]", "[]", "[]", "[]", ago(-14), "", 0, "candidate", 1, "", "", "", 0, ago(1), ago(1)},
-			{"case-003", "NIC 错误率升高", "node-041", seedJSON(map[string]any{"firmware": "2.20"}), "交换机端口拥塞", "调整端口队列", "错误率恢复且无固件变更", seedJSON([]string{"队列参数长期影响"}), seedJSON([]string{"inc-121", "hyp-002"}), seedJSON(map[string]any{"kind": "计算节点"}), seedJSON([]string{"固件 2.18"}), seedJSON([]string{"拓扑变化"}), seedJSON([]string{"case-001"}), seedJSON([]string{"switch-counter-8821"}), ago(-30), "端口队列拥塞", 1, "published", 2, "case-001", "固件回滚假设被反证推翻", "u-lee", ago(3), ago(3), ago(1)},
-			{"case-004", "部署批次验证失败", "node-a3-05", seedJSON(map[string]any{"image": "golden-v3"}), "镜像与固件不兼容", "回滚到 golden-v2", "独立验证通过", seedJSON([]string{"新镜像兼容矩阵"}), seedJSON([]string{"inc-116"}), "{}", "[]", "[]", "[]", seedJSON([]string{"ev-9012"}), ago(-14), "镜像 v3 与固件不兼容", 1, "suspended", 1, "", "", "发布组", ago(4), ago(5), ago(4)},
-		}},
-
-		// 31. 案例事件。
-		{table: "case_events", cols: []string{
-			"event_id", "case_id", "kind", "task_id", "object_ref", "evidence_ref", "detail", "occurred_at",
-		}, rows: [][]any{
-			{"ce-001", "case-001", "recalled", "task-121", "node-041", "ev-8821", "召回用于 inc-121 调查", ago(1)},
-			{"ce-002", "case-001", "cited", "task-121", "node-041", "fact-004", "被假设 hyp-001 引用", ago(1)},
-			{"ce-003", "case-003", "verified_valid", "task-121", "node-041", "switch-counter-8821", "独立验证有效", ago(1)},
-			{"ce-004", "case-002", "filtered", "task-117", "node-112", "inc-117", "身份未知被过滤", ago(1)},
-			{"ce-005", "case-004", "assembled", "task-116", "node-a3-05", "ev-9012", "装入部署复盘上下文", ago(4)},
-			{"ce-006", "case-004", "verified_invalid", "task-116", "node-a3-05", "ev-9012", "镜像 v3 复测失败", ago(4)},
 		}},
 
 		// 32. 3 条 Operation；其中 deploy-* 幂等键用于还原 deployment_plans。

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestV31BenchmarkComparesOnlyFrozenIdenticalConditions(t *testing.T) {
+func TestBenchmarkComparesOnlyFrozenIdenticalConditions(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "comparison.db"))
 	if err != nil {
@@ -24,7 +24,7 @@ func TestV31BenchmarkComparesOnlyFrozenIdenticalConditions(t *testing.T) {
 	if err = s.PublishBenchmarkProfile(ctx, actor, p); err != nil {
 		t.Fatal(err)
 	}
-	execute := func(key string, value float64) (string, v31BenchReport) {
+	execute := func(key string, value float64) (string, benchReportJSON) {
 		t.Helper()
 		provider := &benchFixtureProvider{jobOverride: key, valueOverride: value}
 		task, err := s.SubmitBenchmarkRun(ctx, actor, BenchmarkRunRequest{RequestKey: key, Profile: p.Key, Version: p.Version}, provider)
@@ -40,7 +40,7 @@ func TestV31BenchmarkComparesOnlyFrozenIdenticalConditions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var report v31BenchReport
+		var report benchReportJSON
 		if err = json.Unmarshal(progress.Cases[0].Report, &report); err != nil {
 			t.Fatal(err)
 		}

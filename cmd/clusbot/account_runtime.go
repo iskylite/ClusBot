@@ -184,7 +184,7 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 	if err := db.Recover(); err != nil {
 		return nil, err
 	}
-	if _, err := db.RecoverV3(a.ctx, time.Now().UnixMilli()); err != nil {
+	if _, err := db.RecoverRuntime(a.ctx, time.Now().UnixMilli()); err != nil {
 		return nil, err
 	}
 	if err := db.ExpireApprovals(a.ctx); err != nil {
@@ -200,15 +200,16 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 			return nil, err
 		}
 	}
+	accountDiscovery := db.DynamicDiscoverySource(a.discovery)
 
-	available := func() bool { return a.api.ModelAvailable(a.ctx) }
+	available := func() bool {
+		return a.api.ModelAvailable(a.ctx) && a.api.Store.AccountIsActive(a.ctx, principal)
+	}
 	loop := work.NewRuntimeLoop(db, available)
 	a.background.Go(func() { loop.Run(a.ctx, 250*time.Millisecond, 0) })
 	a.background.Go(func() { executor.Run(a.ctx, 100*time.Millisecond) })
-	if a.discovery != nil {
-		source := accountDiscoverySource{a.discovery, a.api.Store, principal}
-		a.background.Go(func() { db.RunDiscovery(a.ctx, source) })
-	}
+	source := accountDiscoverySource{accountDiscovery, a.api.Store, principal}
+	a.background.Go(func() { db.RunDiscovery(a.ctx, source) })
 	limits := work.RunLimits{
 		ActiveTime:               time.Duration(a.cfg.Runtime.MaxRunSeconds) * time.Second,
 		ModelTimeout:             time.Duration(a.cfg.Runtime.ModelTimeoutSeconds) * time.Second,
@@ -265,7 +266,7 @@ func (a *accountRuntime) taskStores() map[string]*work.Store {
 // Recheck the instance account at dispatch so disabling or demoting an account
 // also removes its ability to run previously authorized discovery plans.
 type accountDiscoverySource struct {
-	*work.HTTPDiscoverySource
+	work.DiscoveryScanSource
 	accounts  *work.Store
 	principal string
 }
@@ -278,5 +279,5 @@ func (s accountDiscoverySource) ScanDiscovery(ctx context.Context, source, scope
 	if !allowed {
 		return nil, work.ErrAuthorizationDenied
 	}
-	return s.HTTPDiscoverySource.ScanDiscovery(ctx, source, scope)
+	return s.DiscoveryScanSource.ScanDiscovery(ctx, source, scope)
 }

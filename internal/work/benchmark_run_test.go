@@ -58,7 +58,7 @@ func (b *benchFixtureProvider) Get(_ context.Context, r BenchmarkJobRequest, job
 	return BenchmarkJobResult{JobID: job, State: "completed", Measurements: []BenchmarkMeasurement{m}}, nil
 }
 
-func TestV31BenchmarkLifecycle(t *testing.T) {
+func TestBenchmarkLifecycle(t *testing.T) {
 	ctx := context.Background()
 	for _, missing := range []bool{false, true} {
 		name := "verified"
@@ -146,7 +146,7 @@ func TestV31BenchmarkLifecycle(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err = s.RecoverV3(ctx, now()); err != nil {
+			if _, err = s.RecoverRuntime(ctx, now()); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = s.db.Exec("UPDATE benchmark_cases SET next_at=0 WHERE task_id=?", task); err != nil {
@@ -260,7 +260,7 @@ func (b *stoppingBenchProvider) Get(_ context.Context, _ BenchmarkJobRequest, jo
 	return BenchmarkJobResult{JobID: job, State: state}, nil
 }
 
-func TestV31BenchmarkCancellationRetainsHold(t *testing.T) {
+func TestBenchmarkCancellationRetainsHold(t *testing.T) {
 	ctx := context.Background()
 	s, err := Open(filepath.Join(t.TempDir(), "cancel.db"))
 	if err != nil {

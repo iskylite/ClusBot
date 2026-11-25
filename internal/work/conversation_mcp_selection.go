@@ -44,25 +44,25 @@ type ConversationMCPSelection struct {
 func (s *Store) selectedMCPOption(ctx context.Context, tx *sql.Tx, sel MCPReadSelection) (TaskToolOption, error) {
 	var out TaskToolOption
 	var raw, config, credential, state string
-	var allowed, enabled bool
-	err := tx.QueryRowContext(ctx, `SELECT c.name,c.revision,c.enabled,c.status,c.config,c.credential_binding,t.definition,t.allowed
+	var allowed, readOnly, enabled bool
+	err := tx.QueryRowContext(ctx, `SELECT c.name,c.revision,c.enabled,c.status,c.config,c.credential_binding,t.definition,t.allowed,t.read_only
 FROM connections c JOIN connection_tools t ON t.connection_id=c.id WHERE c.id=? AND t.name=?
 AND EXISTS(SELECT 1 FROM (
  SELECT c0.id,t0.name FROM connections c0 JOIN connection_tools t0 ON t0.connection_id=c0.id
- WHERE c0.enabled=1 AND c0.status='ready' AND t0.allowed=1 ORDER BY c0.name,t0.name LIMIT 100
+ WHERE c0.enabled=1 AND c0.status='ready' AND t0.allowed=1 AND t0.read_only=1 ORDER BY c0.name,t0.name LIMIT 100
 ) catalog WHERE catalog.id=c.id AND catalog.name=t.name)`, sel.ConnectionID, sel.ToolName).
-		Scan(&out.ConnectionName, &out.Revision, &enabled, &state, &config, &credential, &raw, &allowed)
+		Scan(&out.ConnectionName, &out.Revision, &enabled, &state, &config, &credential, &raw, &allowed, &readOnly)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskToolOption{}, ErrToolPermission
 	}
 	if err != nil {
 		return TaskToolOption{}, err
 	}
-	if !allowed || !enabled || state != "ready" || out.Revision != sel.Revision {
+	if !allowed || !readOnly || isKnownUnsafeWriteTool(sel.ToolName) || !enabled || state != "ready" || out.Revision != sel.Revision {
 		return TaskToolOption{}, ErrToolPermission
 	}
 	if json.Unmarshal([]byte(raw), &out.Tool) != nil || out.Tool.Name != sel.ToolName || out.Tool.Version != sel.ToolVersion ||
-		mcpclient.ValidateToolSchemas(out.Tool) != nil {
+		isToolDisallowedForReadOnly(out.Tool) || mcpclient.ValidateToolSchemas(out.Tool) != nil {
 		return TaskToolOption{}, ErrToolPermission
 	}
 	var cfg mcpclient.Config
@@ -72,7 +72,7 @@ AND EXISTS(SELECT 1 FROM (
 	if current, err := cfg.CredentialBinding(s.connectionKey); err != nil || current != credential {
 		return TaskToolOption{}, ErrToolPermission
 	}
-	out.ConnectionID, out.Tool.Allowed = sel.ConnectionID, true
+	out.ConnectionID, out.Tool.Allowed, out.Tool.ReadOnly = sel.ConnectionID, true, true
 	return out, nil
 }
 

@@ -1,6 +1,6 @@
 package work
 
-// P1-13：启动恢复与统一推进循环。
+// 启动恢复与统一推进循环。
 //
 // 本文件实现重启按持久状态恢复扫描、核对和就绪工作，避免所有中断一律
 // 人工重启：
@@ -15,8 +15,8 @@ package work
 //   - 控制面模型不可用仍能处理输入回执、到期和核对；健康检查展示恢复阶段
 //     与失败原因。
 //
-// 与旧恢复的关系：本文件编排 P1-05 至 P1-12 的持久结构，旧 `Recover()` 仍
-// 负责旧五态的收尾；本文件是 V3 结构的统一恢复与推进，P1-14 接入完整观测。
+// 与旧恢复的关系：本文件编排 至 的持久结构，旧 `Recover()` 仍
+// 负责旧五态的收尾；本文件是 结构的统一恢复与推进，接入完整观测。
 
 import (
 	"context"
@@ -62,10 +62,10 @@ type RecoveryReport struct {
 // 统一恢复（每步幂等）
 // ---------------------------------------------------------------------------
 
-// RecoverV3 按持久状态恢复扫描、核对和就绪工作（P1-13.1）。
+// RecoverRuntime 按持久状态恢复扫描、核对和就绪工作。
 // 每步幂等：连续两次恢复不产生重复 Task、Timer 唤醒或结果应用。
 // 在不同恢复步骤中止再启动，仍可从持久记录继续。
-func (s *Store) RecoverV3(ctx context.Context, now int64) (*RecoveryReport, error) {
+func (s *Store) RecoverRuntime(ctx context.Context, now int64) (*RecoveryReport, error) {
 	report := &RecoveryReport{Phase: PhaseValidateMigrate}
 	// 步骤 1：校验/迁移（Open 已完成；此处核对版本）。
 	if err := s.validateMigrated(); err != nil {
@@ -134,13 +134,6 @@ AND state='received' AND payload_ref<>''`); err != nil {
 		report.Failure = err.Error()
 		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
 	}
-	triggered, err := scanDueSchedules(s.db, now, 20)
-	if err != nil {
-		report.FailedPhase = PhaseWaitsTimers
-		report.Failure = err.Error()
-		return report, fmt.Errorf("%s: %w", PhaseWaitsTimers, err)
-	}
-	report.TriggeredSchedules = triggered.Triggered
 	report.CompletedPhases = append(report.CompletedPhases, PhaseWaitsTimers)
 	report.Phase = PhaseReadyUnits
 
@@ -219,7 +212,7 @@ JOIN runs r ON r.id=rr.run_id WHERE rr.result_key=?`, key).Scan(&currentGen); er
 	return recovered, nil
 }
 
-// reconcileRunningRuns 核对未决执行（P1-13.3：替换旧粗粒度恢复）。
+// reconcileRunningRuns 核对未决执行。
 // 能确定安全的继续，不明的保留核对，不能把失联视为未执行（P1-2 修复）。
 //
 // 区分单元类型处理：
@@ -352,7 +345,7 @@ ORDER BY s.created_at,s.step_id LIMIT 50`)
 // 统一推进循环（后台，有取消/分批/退避/退出期限）
 // ---------------------------------------------------------------------------
 
-// RuntimeLoop 是统一推进循环（P1-13.4）。
+// RuntimeLoop 是统一推进循环。
 // 后台循环有上下文取消、分批扫描、退避和退出期限；退出保存已持久责任，
 // 不能依赖内存 map 才能恢复。
 type RuntimeLoop struct {
@@ -412,9 +405,6 @@ func (l *RuntimeLoop) tick(ctx context.Context) {
 	if _, err := l.store.expirePendingApprovals(ctx, now, approvalExpiryBatch); err != nil {
 		l.recordFailure()
 	}
-	if _, err := scanDueSchedules(l.store.db, now, 20); err != nil {
-		l.recordFailure()
-	}
 	if err := l.store.reclaimExpiredEmbeddedReads(ctx, now); err != nil {
 		l.recordFailure()
 	}
@@ -458,7 +448,7 @@ type HealthStatus struct {
 	DatabaseWritable bool
 }
 
-// Health 返回运行时健康状态（P1-13.5：模型不可用仍能处理输入回执/到期/核对）。
+// Health 返回运行时健康状态。
 func (s *Store) Health(modelAvailable bool) (HealthStatus, error) {
 	var h HealthStatus
 	h.ModelAvailable = modelAvailable

@@ -257,6 +257,8 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/experience-candidates/from-acceptance", s.captureAcceptedExperience)
 	api.HandleFunc("POST /api/v1/experience-candidates/from-correction", s.captureExperienceCorrection)
 	api.HandleFunc("POST /api/v1/experience-candidates/{id}/review", s.reviewExperience)
+	api.HandleFunc("GET /api/v1/experience-evaluations", s.experienceEvaluations)
+	api.HandleFunc("POST /api/v1/experience-evaluations", s.runExperienceEvaluation)
 	api.HandleFunc("GET /api/v1/memories", s.memories)
 	api.HandleFunc("POST /api/v1/memories", s.saveMemory)
 	api.HandleFunc("GET /api/v1/memories/source/{message}", s.memorySource)
@@ -272,6 +274,8 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/connections/{id}/call", s.callConnectionTool)
 	api.HandleFunc("GET /api/v1/tool-results/{id}/content", s.connectionEvidence)
 	api.HandleFunc("GET /api/v1/task-tools", s.taskTools)
+	api.HandleFunc("GET /api/v1/capabilities/bindings", s.listCapabilityBindings)
+	api.HandleFunc("POST /api/v1/capabilities/bindings", s.upsertCapabilityBinding)
 
 	api.HandleFunc("GET /api/v1/skill-proposals", s.skillProposals)
 	api.HandleFunc("POST /api/v1/skill-proposals", s.proposeSkill)
@@ -283,9 +287,6 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/skills/import", s.importSkillDocument)
 	api.HandleFunc("POST /api/v1/skills/{id}/activate", s.activateSkill)
 	api.HandleFunc("POST /api/v1/skills/{id}/disable", s.disableSkill)
-	api.HandleFunc("GET /api/v1/goals", s.listGoals)
-	api.HandleFunc("POST /api/v1/goals", s.createGoal)
-	api.HandleFunc("POST /api/v1/goals/{id}/stop", s.stopGoal)
 	api.HandleFunc("POST /api/v1/workflows", s.createWorkflow)
 	api.HandleFunc("GET /api/v1/tasks/{id}/workflow", s.workflow)
 	api.HandleFunc("GET /api/v1/admissions", s.pendingAdmissions)
@@ -344,6 +345,14 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/incidents", s.createIncident)
 	api.HandleFunc("GET /api/v1/incidents/{id}/workflow", s.incidentWorkflow)
 	api.HandleFunc("GET /api/v1/incidents/{id}/steps/{step}/logs", s.incidentStepLogs)
+	api.HandleFunc("POST /api/v1/incidents/{id}/hypotheses", s.addIncidentHypothesis)
+	api.HandleFunc("POST /api/v1/incidents/{id}/hypotheses/{hid}/evidence", s.addIncidentHypothesisEvidence)
+	api.HandleFunc("POST /api/v1/incidents/{id}/self-heal", s.executeIncidentSelfHeal)
+	api.HandleFunc("POST /api/v1/incidents/{id}/resolve", s.resolveIncident)
+	api.HandleFunc("GET /api/v1/self-heal/policies", s.listSelfHealPolicies)
+	api.HandleFunc("POST /api/v1/self-heal/policies", s.upsertSelfHealPolicy)
+	api.HandleFunc("POST /api/v1/domain/fault-segments", s.recordFaultSegment)
+	api.HandleFunc("POST /api/v1/domain/fault-segments/sync", s.syncFaultSegments)
 	api.HandleFunc("GET /api/v1/incidents/{id}/ticket/options", s.incidentTicketOptions)
 	api.HandleFunc("POST /api/v1/incidents/{id}/ticket/preview", s.previewIncidentTicket)
 	api.HandleFunc("POST /api/v1/incidents/{id}/ticket/confirm", s.confirmIncidentTicket)
@@ -855,7 +864,7 @@ func (s Server) admission(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, body)
 }
 
-// submitAssetAcceptance 受理一个资产验收状态只读查询（A2：Chat 明确意图 → V3 Task/Step）。
+// submitAssetAcceptance 受理一个资产验收状态只读查询（A2：Chat 明确意图 → Task/Step）。
 // 支持两种输入：JSON object_ref 直接指定，或 text 中的明确"查询某资产验收状态"意图。
 func (s Server) submitAssetAcceptance(w http.ResponseWriter, r *http.Request) {
 	var in struct {

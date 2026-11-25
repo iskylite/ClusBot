@@ -18,7 +18,7 @@ func incidentWorkflowStage(t *testing.T, workflow IncidentWorkflowView, key stri
 }
 
 func TestIncidentWorkflowReflectsRecordedEvidence(t *testing.T) {
-	store := setupV3P416(t, "workflow-evidence.db")
+	store := setupIncidentsStore(t, "workflow-evidence.db")
 	ctx := t.Context()
 	if _, err := store.db.ExecContext(ctx, `INSERT INTO incidents(incident_id,symptoms,created_at,updated_at)
 		VALUES ('incident','节点失联',10,20)`); err != nil {
@@ -82,7 +82,7 @@ func TestIncidentWorkflowReflectsRecordedEvidence(t *testing.T) {
 }
 
 func TestIncidentWorkflowDistinguishesProposalFromExecution(t *testing.T) {
-	store := setupV3P416(t, "workflow-proposal.db")
+	store := setupIncidentsStore(t, "workflow-proposal.db")
 	ctx := t.Context()
 	statements := []string{
 		`INSERT INTO incidents(incident_id,symptoms,state,created_at,updated_at)
@@ -161,7 +161,7 @@ func TestIncidentWorkflowDistinguishesProposalFromExecution(t *testing.T) {
 }
 
 func TestIncidentWorkflowTicketUsesTicketStateAndTimestamp(t *testing.T) {
-	store := setupV3P416(t, "workflow-ticket.db")
+	store := setupIncidentsStore(t, "workflow-ticket.db")
 	ctx := t.Context()
 	for _, stmt := range []string{
 		`INSERT INTO incidents(incident_id,symptoms,created_at,updated_at) VALUES ('incident','节点失联',1,99)`,

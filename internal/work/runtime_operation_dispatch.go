@@ -1,6 +1,6 @@
 package work
 
-// P3-08：最终准入网关与提交后执行。
+// 最终准入网关与提交后执行。
 //
 // 本文件实现任何新外部写都有持久意图和最新准入，网络调用不占写事务：
 //   - 最终事务核对主体授权、Task/Step 控制、合同、租约代际、资产版本/epoch、
@@ -40,7 +40,7 @@ type FinalAdmissionCheck struct {
 	ConfirmationOK     bool
 }
 
-// checkFinalAdmission 最终准入核对（P3-08.1）。
+// checkFinalAdmission 最终准入核对。
 // 最终事务核对主体授权、Task/Step 控制、合同、租约代际、资产版本/epoch、
 // 冻结、参数、预算和必要确认；冻结/撤权先提交则新准入拒绝。
 func checkFinalAdmission(tx *sql.Tx, op Operation, subject string, now int64) (FinalAdmissionCheck, error) {
@@ -62,8 +62,8 @@ func checkFinalAdmission(tx *sql.Tx, op Operation, subject string, now int64) (F
 		check.Reason = "任务状态无法读取"
 		return check, nil
 	}
-	if taskState.State == V3TaskCancelled || taskState.State == V3TaskPaused ||
-		taskState.State == V3TaskFinalizing || taskState.State == V3TaskFailed || taskState.State == V3TaskSucceeded {
+	if taskState.State == RuntimeTaskCancelled || taskState.State == RuntimeTaskPaused ||
+		taskState.State == RuntimeTaskFinalizing || taskState.State == RuntimeTaskFailed || taskState.State == RuntimeTaskSucceeded {
 		check.TaskControlOK = false
 		check.Reason = fmt.Sprintf("任务已 %s，不能派发", taskState.State)
 		return check, nil
@@ -113,7 +113,7 @@ func checkFinalAdmission(tx *sql.Tx, op Operation, subject string, now int64) (F
 		return check, nil
 	}
 	check.ParamsOK = true
-	// 6. 预算（预算核对由调用方注入，P2-04 接入）。
+	// 6. 预算（预算核对由调用方注入，接入）。
 	check.BudgetOK = true
 	// 7. 必要确认（确认通过与派发分开；需要确认的动作必须有确认记录）。
 	check.ConfirmationOK = true
@@ -135,7 +135,7 @@ type DispatchResult struct {
 	Reason    string
 }
 
-// dispatchOperationCommitted 提交后执行派发（P3-08.2/P3-08.3）。
+// dispatchOperationCommitted 提交后执行派发。
 // 条件更新已登记→已派发并写 attempt/审计，事务提交后才执行提供者调用；
 // 临发前再检查当前可见撤权/控制；若已派发提交后崩溃，恢复视为未知而非
 // 断言未发送。
@@ -196,7 +196,7 @@ type ReplayGuardResult struct {
 	Operation     Operation
 }
 
-// guardOperationReplay 核对命令重投（P3-08.4）。
+// guardOperationReplay 核对命令重投。
 // 受控命令重投必须通过当前 Operation 状态守卫；已派发/待核对只核对，不自动
 // 执行 Start。
 func guardOperationReplay(tx *sql.Tx, operationID string, now int64) (ReplayGuardResult, error) {
@@ -205,14 +205,14 @@ func guardOperationReplay(tx *sql.Tx, operationID string, now int64) (ReplayGuar
 		return ReplayGuardResult{}, err
 	}
 	// 已派发/待核对：只核对，不自动执行 Start。
-	if op.State == V3OperationDispatched || op.State == V3OperationReconcile {
+	if op.State == RuntimeOperationDispatched || op.State == RuntimeOperationReconcile {
 		return ReplayGuardResult{
 			ReconcileOnly: true, Operation: op,
 			Reason: fmt.Sprintf("Operation %s 已派发/待核对，只核对不自动执行 Start", operationID),
 		}, nil
 	}
 	// 已登记/已取消：可重投（未派发）。
-	if op.State == V3OperationRegistered || op.State == V3OperationCancelled {
+	if op.State == RuntimeOperationRegistered || op.State == RuntimeOperationCancelled {
 		return ReplayGuardResult{ReconcileOnly: false, Operation: op, Reason: "可重投（未派发）"}, nil
 	}
 	// 执行中/成功/失败：终态或执行中，只核对。
@@ -229,7 +229,7 @@ func guardOperationReplay(tx *sql.Tx, operationID string, now int64) (ReplayGuar
 // ErrWorkerBypass 是 Worker 绕过准入的错误。
 var ErrWorkerBypass = errors.New("worker 不能绕过最终准入网关")
 
-// ensureWorkerNotBypassAdmission 核对 Worker 不能绕过准入（P3-08.5）。
+// ensureWorkerNotBypassAdmission 核对 Worker 不能绕过准入。
 // Worker 不持有能绕过该入口的特权；适配器不得暗中重试未经许可的副作用。
 func ensureWorkerNotBypassAdmission(subject string, op Operation, now int64) error {
 	// Worker 主体必须经过最终准入网关（不能绕过）。
@@ -244,7 +244,7 @@ func ensureWorkerNotBypassAdmission(subject string, op Operation, now int64) err
 // 恢复（已派发提交后崩溃视为未知）
 // ---------------------------------------------------------------------------
 
-// recoverDispatchedOperation 恢复已派发提交后崩溃的 Operation（P3-08.3）。
+// recoverDispatchedOperation 恢复已派发提交后崩溃的 Operation。
 // 若已派发提交后崩溃，恢复视为未知而非断言未发送。
 func recoverDispatchedOperation(tx *sql.Tx, operationID string, now int64) error {
 	op, err := readOperation(tx, operationID)
@@ -252,8 +252,8 @@ func recoverDispatchedOperation(tx *sql.Tx, operationID string, now int64) error
 		return err
 	}
 	// 已派发但未完成：恢复视为未知（待核对，不断言未发送）。
-	if op.State == V3OperationDispatched || op.State == V3OperationRunning {
-		if _, err := transitionOperation(tx, operationID, V3OperationReconcile, now); err != nil {
+	if op.State == RuntimeOperationDispatched || op.State == RuntimeOperationRunning {
+		if _, err := transitionOperation(tx, operationID, RuntimeOperationReconcile, now); err != nil {
 			return err
 		}
 	}

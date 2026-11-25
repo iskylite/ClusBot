@@ -1,6 +1,6 @@
 package work
 
-// P1-12：Router 持久受理与现有个人助手兼容。
+// Router 持久受理与现有个人助手兼容。
 //
 // 本文件实现 Chat 仍是入口，但持久受理、模型路由和任务执行各有独立结果：
 //   - 在模型分类前登记可信输入及请求键，返回可查询受理标识；尚未分类不声称
@@ -51,7 +51,7 @@ type AdmissionReceipt struct {
 	RouterModel         *RouterModelProvenance
 }
 
-// admitChatInput 在模型分类前登记可信输入及请求键（P1-12.1）。
+// admitChatInput 在模型分类前登记可信输入及请求键。
 // 返回可查询受理标识；尚未分类不声称 Task 已建立。
 // 重试同键得到同一受理，不重复调用无依据的模型分类。
 func admitChatInput(tx *sql.Tx, requestKey, principal, conversationID, text, scope string, materialIDs []string, now int64) (AdmissionReceipt, error) {
@@ -72,7 +72,7 @@ func admitChatInputWithFingerprint(tx *sql.Tx, requestKey, principal, text, fing
 	if text == "" {
 		return AdmissionReceipt{}, errors.New("受理缺少输入内容")
 	}
-	// 登记可信输入到公共 Inbox（复用 P1-05 的受理链）。
+	// 登记可信输入到公共 Inbox（复用 的受理链）。
 	result, err := receiveInbox(tx, InboxEvent{
 		Source:        "chat",
 		EventID:       requestKey,
@@ -103,7 +103,7 @@ func admitChatInputWithFingerprint(tx *sql.Tx, requestKey, principal, text, fing
 // 受理状态查询
 // ---------------------------------------------------------------------------
 
-// readAdmission 查询一个受理的当前状态（P1-12.5）。
+// readAdmission 查询一个受理的当前状态。
 // 需要等待或用户决定时返回具体原因和对象；禁止因请求已受理就显示执行完成。
 func readAdmission(q recordsQuerier, requestKey string) (AdmissionReceipt, error) {
 	return readAdmissionForPrincipal(q, requestKey, "")
@@ -177,7 +177,7 @@ type IntentCommand struct {
 	ClarificationReason string
 }
 
-// convertIntents 把 Router 的多意图转换为运行时命令（P1-12.2/P1-12.3）。
+// convertIntents 把 Router 的多意图转换为运行时命令。
 // 不让 Router 独立改运行中状态：所有变更经运行时命令（状态机/控制记录）。
 // 每个意图保留片段、目标和回执；一项澄清不阻断无依赖的其他项。
 func convertIntents(intents []RouterIntent, existingTasks map[string]string) []IntentCommand {
@@ -227,33 +227,33 @@ func convertIntents(intents []RouterIntent, existingTasks map[string]string) []I
 // 状态映射适配（旧 API 字段用明确映射，不混用旧/新终态）
 // ---------------------------------------------------------------------------
 
-// MapLegacyStatusForAPI 把旧五态映射为 API 展示状态（P1-12.4）。
+// MapLegacyStatusForAPI 把旧五态映射为 API 展示状态。
 // 旧 API 字段用明确映射适配，不混用旧/新终态；保持普通问答、材料整理、
 // 成果保存和人工验收的兼容展示。
 func MapLegacyStatusForAPI(legacyStatus, legacyReason string) (apiPhase, reason string) {
-	// 用 P0-02 的映射结论，转为 API 展示阶段（不直接暴露 V3 内部状态名）。
+	// 用 的映射结论，转为 API 展示阶段（不直接暴露 内部状态名）。
 	mapping := MapLegacyTask(LegacyTaskSnapshot{Status: legacyStatus, StatusReason: legacyReason})
 	switch mapping.State {
-	case V3TaskPending:
+	case RuntimeTaskPending:
 		return "待执行", mapping.Reason
-	case V3TaskRunning:
+	case RuntimeTaskRunning:
 		if mapping.ReconcileRequired {
 			return "执行中（待核对）", mapping.Reason
 		}
 		return "执行中", mapping.Reason
-	case V3TaskWaiting:
+	case RuntimeTaskWaiting:
 		return "等待中", mapping.Reason
-	case V3TaskPaused:
+	case RuntimeTaskPaused:
 		return "已暂停", mapping.Reason
-	case V3TaskAcceptance:
+	case RuntimeTaskAcceptance:
 		return "待验收", mapping.Reason
-	case V3TaskFinalizing:
+	case RuntimeTaskFinalizing:
 		return "收尾中", mapping.Reason
-	case V3TaskSucceeded:
+	case RuntimeTaskSucceeded:
 		return "成功", mapping.Reason
-	case V3TaskFailed:
+	case RuntimeTaskFailed:
 		return "失败", mapping.Reason
-	case V3TaskCancelled:
+	case RuntimeTaskCancelled:
 		return "已取消", mapping.Reason
 	default:
 		return "待核对", mapping.Reason
@@ -567,13 +567,13 @@ func (s *Store) RunChatAdmissions(ctx context.Context, modelAvailable func() boo
 }
 
 // ---------------------------------------------------------------------------
-// 终态新委托（P1-12.5：终态新委托返回新 Task ID）
+// 终态新委托
 // ---------------------------------------------------------------------------
 
 // SubmitTerminalFollowup 处理终态任务的新委托：返回新 Task ID（不复活原任务）。
 // 历史页仍显示原成果与控制记录。
-func SubmitTerminalFollowup(tx *sql.Tx, predecessorID string, req ControlRequest, template ScheduleTemplate, now int64) (SuccessorTask, error) {
-	// 复用 P1-11 的关联新任务（不复活原任务，返回明确新 ID）。
+func SubmitTerminalFollowup(tx *sql.Tx, predecessorID string, req ControlRequest, template SuccessorTemplate, now int64) (SuccessorTask, error) {
+	// 复用 的关联新任务（不复活原任务，返回明确新 ID）。
 	return createSuccessorTask(tx, predecessorID, req, template, now)
 }
 

@@ -1,6 +1,6 @@
 package work
 
-// P5-11：SQLite 混合负载和对象查询容量。
+// SQLite 混合负载和对象查询容量。
 //
 // 本文件实现测清瓶颈、恢复与成本，证明范围内的多任务/多工作者表现：
 //   - 构造 1k/10k/100k 节点档，单独记录部件/关系、历史、原始观测/有效事件、
@@ -44,7 +44,7 @@ type LoadFixture struct {
 	MaterialBytes    int64
 }
 
-// buildLoadFixture 构造负载夹具（P5-11.1）。
+// buildLoadFixture 构造负载夹具。
 // 构造 1k/10k/100k 节点档，单独记录部件/关系、历史、原始观测/有效事件、
 // 等待/活跃 Task、模型并发/在途 Operation 和材料大小。
 func buildLoadFixture(nodeCount int) LoadFixture {
@@ -72,7 +72,7 @@ type LoadScenario struct {
 	ExternalLatencyMS int64
 }
 
-// ensureLoadScenarioRecorded 核对负载场景记录（P5-11.2）。
+// ensureLoadScenarioRecorded 核对负载场景记录。
 // 分别构造稀疏/密集拓扑、热点资产、只读/写混合、告警风暴和撤权重建；记录
 // 硬件、配置、版本和外部延迟。
 func ensureLoadScenarioRecorded(s LoadScenario) error {
@@ -89,7 +89,7 @@ func ensureLoadScenarioRecorded(s LoadScenario) error {
 // ErrInsufficientWarmup 是热身不足的错误。
 var ErrInsufficientWarmup = errors.New("热身后稳定运行至少一小时")
 
-// ensureStableRunBeforeFault 核对稳定运行（P5-11.3）。
+// ensureStableRunBeforeFault 核对稳定运行。
 // 热身后稳定运行至少一小时，再注入控制面/Worker 重启、提供者故障、积压
 // 和恢复；超出资源范围的档位标未测。
 func ensureStableRunBeforeFault(warmupMS int64, stableMS int64, resourceLimitExceeded bool) error {
@@ -143,7 +143,7 @@ func computePercentiles(latencies []int64) (p50, p95, p99 int64) {
 	return p50, p95, p99
 }
 
-// reportLoad 报告负载（P5-11.4）。
+// reportLoad 报告负载。
 // 报告吞吐、P50/P95/P99、错误/超时、最老积压、公平性、WAL/锁等待、内存和
 // 恢复时间，不能只看平均值；模型/外部等待与控制面调度延迟分开统计。
 func reportLoad(latencies []int64, modelWaitMS int64, controlPlaneLatencyMS int64) LoadReport {
@@ -162,7 +162,7 @@ func reportLoad(latencies []int64, modelWaitMS int64, controlPlaneLatencyMS int6
 // ErrLoadViolation 是负载违例的错误。
 var ErrLoadViolation = errors.New("负载违例")
 
-// ensureLoadCorrectness 核对负载正确性（P5-11 验收）。
+// ensureLoadCorrectness 核对负载正确性。
 // 无越权、错误成功、非法重复和状态冲突；限流发生在受理确认前。
 func ensureLoadCorrectness(tx *sql.Tx, violations int, errorSuccesses int, illegalDuplicates int, stateConflicts int, now int64) error {
 	// 无越权、错误成功、非法重复和状态冲突。

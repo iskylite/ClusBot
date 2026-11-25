@@ -53,13 +53,13 @@ FROM experience_routes WHERE run_id=?`, run.ID).Scan(&source, &hash, &revision)
 }
 
 func loadExperience(ctx context.Context, tx *sql.Tx, source, hash string, revision int64) (*ExperienceRef, error) {
-	var example, title string
-	err := tx.QueryRowContext(ctx, `SELECT a.content,t.title FROM artifacts a
+	var example, title, criteria string
+	err := tx.QueryRowContext(ctx, `SELECT a.content,t.title,x.criteria FROM artifacts a
 JOIN tasks t ON t.id=a.task_id
 JOIN task_acceptances x ON x.artifact_id=a.id AND x.task_id=t.id AND x.sha256=a.sha256
 JOIN conversations c ON c.id=t.conversation_id
 WHERE a.id=? AND a.sha256=? AND x.revision=? AND c.archived=0 AND NOT `+revokedMCPReply("a.run_id"),
-		source, hash, revision).Scan(&example, &title)
+		source, hash, revision).Scan(&example, &title, &criteria)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrReadCheckpoint
 	}
@@ -69,9 +69,21 @@ WHERE a.id=? AND a.sha256=? AND x.revision=? AND c.archived=0 AND NOT `+revokedM
 	if digest(example) != hash {
 		return nil, ErrReadCheckpoint
 	}
-	excerpt := []rune(example)
+	// Inject only structural cues and acceptance criteria — never inject raw
+	// historical body text or facts/numbers from an earlier accepted output.
+	cues := acceptedFormatCues(example)
+	var parts []string
+	if len(cues) > 0 {
+		parts = append(parts, "参考章节结构："+strings.Join(cues, "、"))
+	}
+	if strings.TrimSpace(criteria) != "" {
+		parts = append(parts, "历史验收条件："+strings.TrimSpace(criteria))
+	}
+	if len(parts) == 0 {
+		return nil, nil
+	}
 	ref := &ExperienceRef{ArtifactID: source, Digest: hash, Revision: int(revision), Title: title,
-		Example: string(excerpt[:min(len(excerpt), 800)])}
+		Example: "仅参考历史交付结构（不含历史事实数值，当前结论须以本次证据为准）：" + strings.Join(parts, "；")}
 	return ref, nil
 }
 

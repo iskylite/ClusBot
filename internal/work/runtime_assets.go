@@ -1,6 +1,6 @@
 package work
 
-// P3-02：最小资产身份、版本与执行准入。
+// 最小资产身份、版本与执行准入。
 //
 // 本文件实现任何集群写操作都能回答目标是谁、当前谁管理、是否允许执行：
 //   - 资产保存稳定 ObjectRef、唯一当前末级状态、revision、ownership_epoch、
@@ -40,7 +40,7 @@ type OpsAsset struct {
 	UpdatedAt     int64
 }
 
-// upsertAsset 登记/更新一个资产（P3-02.1）。
+// upsertAsset 登记/更新一个资产。
 // 资产保存稳定 ObjectRef、唯一当前末级状态、revision、ownership_epoch、冻结
 // 和必要占用；未知身份不能写。
 func upsertAsset(tx *sql.Tx, a OpsAsset, now int64) (OpsAsset, error) {
@@ -100,7 +100,7 @@ type AssetAdmissionResult struct {
 	OwnershipEpoch  int
 }
 
-// checkAssetAdmission 核对资产领域准入（P3-02.2）。
+// checkAssetAdmission 核对资产领域准入。
 // 授权与领域准入分离：授权回答"谁可以做"，领域准入回答"当前资产状态和证据
 // 下能不能做"；不能只用字符串 scope_label；未知身份不能写。
 func checkAssetAdmission(tx *sql.Tx, subject, action, objectRef string, now int64) (AssetAdmissionResult, error) {
@@ -154,7 +154,7 @@ func checkAssetAdmission(tx *sql.Tx, subject, action, objectRef string, now int6
 // 冻结（冻结先提交阻止新冲突写；已派发保留在途）
 // ---------------------------------------------------------------------------
 
-// freezeAsset 冻结一个资产（P3-02.4）。
+// freezeAsset 冻结一个资产。
 // 冻结先提交阻止新冲突写；已派发保留在途；此阶段只做协议级冻结测试，不
 // 假装完整借还业务已实现。
 func freezeAsset(tx *sql.Tx, objectRef, frozenBy, reason string, now int64) error {
@@ -178,7 +178,7 @@ WHERE object_ref=? AND frozen_at=0`, now, frozenBy, reason, now, objectRef)
 // 批量对象逐一核对版本/代际
 // ---------------------------------------------------------------------------
 
-// checkBatchVersions 批量核对对象版本/代际（P3-02.3）。
+// checkBatchVersions 批量核对对象版本/代际。
 // 批量对象逐一核对版本/代际，不能用单个版本代表全部。
 func checkBatchVersions(tx *sql.Tx, objects []string, expectedRevisions map[string]int, now int64) (allMatch bool, mismatches []string, err error) {
 	for _, obj := range objects {
@@ -205,7 +205,7 @@ func checkBatchVersions(tx *sql.Tx, objects []string, expectedRevisions map[stri
 // ErrNoExternalFence 是无外部 fencing 的错误。
 var ErrNoExternalFence = errors.New("无外部 fencing：迟到外部效果可能发生，SQL 版本不能冒充设备侧撤销")
 
-// recordExternalEffectUncertainty 记录无外部 fencing 的迟到效果边界（P3-02.5）。
+// recordExternalEffectUncertainty 记录无外部 fencing 的迟到效果边界。
 func recordExternalEffectUncertainty(tx *sql.Tx, objectRef, effectRef string, now int64) error {
 	return recordAudit(tx, AuditEvent{
 		Event: "external_effect_uncertain", Actor: "system",

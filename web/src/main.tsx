@@ -43,7 +43,7 @@ import {AssistantNoticeMessage, FeedbackCallout} from './Feedback'
 import '@fontsource-variable/noto-sans-sc'
 import '@fontsource-variable/jetbrains-mono'
 import './styles.css'
-import './v31.css'
+import './workspace.css'
 import './Feedback.css'
 import './Composer.css'
 
@@ -53,7 +53,7 @@ const SettingsPage = lazy(()=>import('./SettingsPage').then(module=>({default:mo
 const OperationsPage = lazy(()=>import('./OperationsPage').then(module=>({default:module.OperationsPage})))
 const TeamTasksPage = lazy(()=>import('./TeamTasksPage').then(module=>({default:module.TeamTasksPage})))
 const TaskNotices = lazy(()=>import('./TeamTasksPage').then(module=>({default:module.TaskNotices})))
-const loadingPage = <main className="main v31-wide"><LoaderCircle className="spin" aria-label="正在加载"/></main>
+const loadingPage = <main className="main app-wide"><LoaderCircle className="spin" aria-label="正在加载"/></main>
 
 const VisionContext = createContext(false)
 
@@ -553,7 +553,7 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
     return()=>window.removeEventListener('keydown',shortcut)
   },[chatView,showBackInHeader])
   return <VisionContext.Provider value={Boolean(settings?.attributes?.vision && settings.mode !== 'demo' && settings.mode !== 'unconfigured')}>
-    <div className={'workspace v31-workspace' + (sidebarCollapsed?' rail-collapsed':'') + (isOverview && !focused ? ' overview-without-detail' : '')} data-section={section} data-settings={settingsArea||undefined} data-chat-view={chatView}
+    <div className={'workspace app-workspace' + (sidebarCollapsed?' rail-collapsed':'') + (isOverview && !focused ? ' overview-without-detail' : '')} data-section={section} data-settings={settingsArea||undefined} data-chat-view={chatView}
       onKeyDown={event=>{
         if(!currentItemsOpen||event.key!=='Escape'||event.defaultPrevented||event.nativeEvent.isComposing)return
         const target=event.target as Node
@@ -562,14 +562,14 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
         setCurrentItemsOpen(false)
         currentItemsTrigger.current?.focus()
       }}>
-    {menu && <button className="scrim v31-scrim" onClick={() => setMenu(false)} aria-label={t('关闭导航','Close navigation')}/>}
+    {menu && <button className="scrim app-scrim" onClick={() => setMenu(false)} aria-label={t('关闭导航','Close navigation')}/>}
     <WorkspaceSidebar menu={menu} collapsed={sidebarCollapsed} section={section} settingsArea={settingsArea}
       personalTaskItems={personalTaskItems} allTaskCount={allTaskCount} superadmin={superadmin} user={session.user}
       t={t} taskReasonIcons={taskReasonIcons} taskStatusIcons={taskStatusIcons}
       onToggleCollapsed={()=>setSidebarCollapsed(value=>!value)} onReturnToChat={returnToChat}
       onNavigate={navigate} onOpenTask={openSidebarTask}/>
     <header className="unified-toolbar">
-      <div className="toolbar-title"><button type="button" className="icon-button v31-mobile-nav" aria-label={t('打开导航','Open navigation')} aria-controls="workspace-sidebar" aria-expanded={menu} onClick={()=>setMenu(!menu)}><PanelLeft size={14}/></button><strong>{sectionTitle}</strong>
+      <div className="toolbar-title"><button type="button" className="icon-button app-mobile-nav" aria-label={t('打开导航','Open navigation')} aria-controls="workspace-sidebar" aria-expanded={menu} onClick={()=>setMenu(!menu)}><PanelLeft size={14}/></button>{sidebarCollapsed&&<button type="button" className="icon-button app-desktop-expand sidebar-collapse" aria-label={t('展开侧栏','Expand sidebar')} title={t('展开侧栏','Expand sidebar')} aria-expanded={false} onClick={()=>setSidebarCollapsed(false)}><PanelLeft size={15}/></button>}<strong>{sectionTitle}</strong>
         {settingsArea&&<Breadcrumb>{settingsTabs.find(item=>item.id===settingsTab)?.text}</Breadcrumb>}
         {section==='account'&&session.user&&<Breadcrumb>{superadmin&&hash==='users'?t('用户管理','User management'):t('本人账号','My account')}</Breadcrumb>}
         {section==='chat'&&<><Breadcrumb conversation>{chatBreadcrumb}</Breadcrumb>
@@ -721,11 +721,11 @@ function Workspace({session,logout,onAccountChange}: {session:Session; logout:()
       <aside className="preference-outside-alert" role="alert"><CircleAlert size={15} aria-hidden="true"/><span>{t('偏好设置尚未保存。','Preferences are not saved yet.')}</span><button type="button" className="text-button" onClick={()=>navigate('/settings')}>{t('查看','Review')}</button></aside>}
     {section==='connections'&&<ConnectionsPage selected={id} navigate={navigate}/>}
     {section==='settings'&&(
-      settingsTab==='diagnostics'?<main className="main v31-wide settings-diagnostics">
+      settingsTab==='diagnostics'?<main className="main app-wide settings-diagnostics">
           <h1 className="settings-sr-only">{t('数据与诊断','Data and diagnostics')}</h1>
           <SettingsDiagnostics workspacePath={multiuser?undefined:settings?.workspace_path} multiuser={multiuser} english={english}/>
         </main> : settingsTab==='model'||settingsTab==='skills'?<Suspense fallback={loadingPage}><SettingsPage key={settingsTab+':'+(params.get('provider')??'')+':'+(params.get('model')??'')} view={settingsTab} onSaved={value=>{setSettings(value);setModelStatusAttempt(attempt=>attempt+1)}} openConnections={()=>navigate('/connections')} openProposals={()=>navigate('/memory/skill-proposals')}/></Suspense> :
-        <main className="main v31-wide general-settings">
+        <main className="main app-wide general-settings">
           <GeneralPreferencesPage view={settingsTab==='execution'?'execution':'general'} modelConcurrency={settings?.model_concurrency} state={preferenceState}
             onChange={(key,value)=>preferencesController.update(key,value)} onRetry={()=>preferencesController.retry()} onResolve={keep=>preferencesController.resolveConflicts(keep)} multiuser={multiuser}/>
         </main>
@@ -1887,7 +1887,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
       <button type="button" className="outline" onClick={event=>{taskTrigger.current=event.currentTarget;setSelectedTask(taskReference.taskID)}} aria-haspopup="dialog">
         <PanelRight size={13} aria-hidden="true"/>当前任务 <span>{taskReference.title}</span>
       </button>,toolbarActions)}
-    <main className="main work-detail"><h1 className="v31-screen-reader">{conversation?.title||'对话'}</h1>
+    <main className="main work-detail"><h1 className="app-screen-reader">{conversation?.title||'对话'}</h1>
       <div className="chat-log-wrap">
         <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
           <div className="chat-log-content" ref={chatContentRef}>

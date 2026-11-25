@@ -2,8 +2,8 @@ package work
 
 // A2+A3：只读领域任务闭环——查询某资产的验收状态。
 //
-// 本文件把"查询某资产的验收状态"这类明确只读意图接入 V3 执行链：
-//   - 受理时建立 V3 Task（pending）+ 一个确定性 Step（ready）+ 就绪 work_unit；
+// 本文件把"查询某资产的验收状态"这类明确只读意图接入 执行链：
+//   - 受理时建立 Task（pending）+ 一个确定性 Step（ready）+ 就绪 work_unit；
 //   - 本地嵌入执行单元消费：claim → 执行只读查询 → 结果落盘（result_receipt）
 //     → 原子完成 step 与 work_unit；
 //   - 结果是只读快照（ops_assets + acceptance_coverage + delivery_records），
@@ -107,7 +107,7 @@ func queryAssetAcceptance(q recordsQuerier, objectRef string) (AssetAcceptanceSt
 }
 
 // ---------------------------------------------------------------------------
-// 确定性处理器（只读查询，接入 V3 执行链）
+// 确定性处理器（只读查询，接入 执行链）
 // ---------------------------------------------------------------------------
 
 // assetAcceptanceHandlerKey 是资产验收状态查询的确定性处理器标识。
@@ -158,7 +158,7 @@ func registerAssetAcceptanceHandler(s *Store) {
 }
 
 // ---------------------------------------------------------------------------
-// 只读领域任务受理（建立 V3 Task + Step + 就绪 work_unit）
+// 只读领域任务受理（建立 Task + Step + 就绪 work_unit）
 // ---------------------------------------------------------------------------
 
 // AssetQueryTask 是一个资产验收状态查询任务。
@@ -169,7 +169,7 @@ type AssetQueryTask struct {
 }
 
 // SubmitAssetAcceptanceQuery 受理一个资产验收状态只读查询（A2+A3）。
-// 建立 V3 Task（pending）+ 一个确定性 Step（ready）+ 就绪 work_unit；
+// 建立 Task（pending）+ 一个确定性 Step（ready）+ 就绪 work_unit；
 // 幂等：同请求键返回同一任务。只读：不修改任何领域状态。
 func (s *Store) SubmitAssetAcceptanceQuery(ctx context.Context, requestKey, objectRef, principal string) (AssetQueryTask, error) {
 	if requestKey == "" || principal == "" {
@@ -214,7 +214,7 @@ func submitAssetAcceptanceQuery(tx *sql.Tx, requestKey, objectRef, principal str
 	if !errors.Is(err, sql.ErrNoRows) {
 		return AssetQueryTask{}, err
 	}
-	// 建立旧 tasks/conversations 行（V3 结构经外键引用 tasks.id；旧表保留持久记录）。
+	// 建立旧 tasks/conversations 行（结构经外键引用 tasks.id；旧表保留持久记录）。
 	conversationID := id()
 	if _, err := tx.Exec(`INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)`,
 		conversationID, "资产验收状态查询 "+objectRef, nowV); err != nil {
@@ -226,7 +226,7 @@ VALUES(?,?,?,?,?,'active','queued','已受理',?)`,
 		taskID, conversationID, "查询资产验收状态", "查询 "+objectRef+" 的验收状态", "领域查询", nowV); err != nil {
 		return AssetQueryTask{}, err
 	}
-	// 建立 V3 Task（pending）。
+	// 建立 Task（pending）。
 	if _, err := transitionTaskState(tx, taskID, EventCreate, TaskGuard{ExpectedStorageRevision: 0, Actor: principal, Input: "资产验收状态查询 " + objectRef}, nowV); err != nil {
 		return AssetQueryTask{}, err
 	}
@@ -235,7 +235,7 @@ VALUES(?,?,?,?,?,'active','queued','已受理',?)`,
 	if err := insertStep(tx, Step{
 		StepID: stepID, TaskID: taskID, ContractRevision: 1,
 		DefinitionKey: assetAcceptanceHandlerKey, DefinitionVersion: 1,
-		InputRef: objectRef, State: V3StepReady, Position: 1, CreatedAt: nowV, UpdatedAt: nowV,
+		InputRef: objectRef, State: RuntimeStepReady, Position: 1, CreatedAt: nowV, UpdatedAt: nowV,
 	}); err != nil {
 		return AssetQueryTask{}, err
 	}
@@ -373,7 +373,7 @@ func (s *Store) ReadAssetAcceptanceQuery(ctx context.Context, taskID, principal 
 	if err := tx.QueryRowContext(ctx, `SELECT state FROM work_units WHERE task_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1`, taskID).Scan(&p.UnitState); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return p, err
 	}
-	p.Done = p.StepState == string(V3StepCompleted) || p.StepState == string(V3StepFailed)
+	p.Done = p.StepState == string(RuntimeStepCompleted) || p.StepState == string(RuntimeStepFailed)
 	// 结果落盘：从 result_receipts 读取该任务已应用的验收状态快照。
 	if p.Done {
 		var summary, evidenceRef string
@@ -385,7 +385,7 @@ WHERE s.task_id=? AND rr.state='applied' ORDER BY rr.applied_at DESC LIMIT 1`, t
 			return p, err
 		}
 		p.Summary = summary
-		if p.StepState == string(V3StepCompleted) {
+		if p.StepState == string(RuntimeStepCompleted) {
 			var status AssetAcceptanceStatus
 			if err := json.Unmarshal([]byte(evidenceRef), &status); err != nil {
 				return p, err
@@ -402,7 +402,7 @@ WHERE s.task_id=? AND rr.state='applied' ORDER BY rr.applied_at DESC LIMIT 1`, t
 
 // EnableAssetAcceptanceQuery 注册资产验收状态查询处理器并启动本地嵌入执行器（A2+A3）。
 // 返回执行器；调用方用 go executor.Run(ctx, interval) 启动消费循环。
-// 重启后 claimed/running 单元由 RecoverV3 置回 ready，执行器可重新领取。
+// 重启后 claimed/running 单元由 RecoverRuntime 置回 ready，执行器可重新领取。
 func (s *Store) EnableAssetAcceptanceQuery(ctx context.Context) (*EmbeddedExecutor, error) {
 	registerAssetAcceptanceHandler(s)
 	return s.StartEmbeddedExecutor(ctx)

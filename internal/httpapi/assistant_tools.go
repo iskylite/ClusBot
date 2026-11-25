@@ -428,7 +428,7 @@ func (s Server) invokeAssistantTool(w http.ResponseWriter, r *http.Request, in a
 
 func assistantRequestKeyField(tool string) string {
 	switch tool {
-	case "create_task", "resume_task", "admin_resume_task", "create_workflow", "create_goal",
+	case "create_task", "resume_task", "admin_resume_task", "create_workflow",
 		"request_task_publication", "query_asset_acceptance", "request_ticket":
 		return "client_request_id"
 	case "submit_benchmark":

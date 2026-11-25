@@ -1,5 +1,5 @@
 /* Shared split-pane treatment for connection and Skill settings. */
-.workspace.v31-workspace > main.connections-workspace {
+.workspace.app-workspace > main.connections-workspace {
   grid-column:2 / -1;
   display:grid;
   grid-template-columns:minmax(260px,340px) minmax(0,1fr);
@@ -105,21 +105,21 @@
   .settings-switch input {inset:0}
 }
 @media (max-width:1050px) {
-  .workspace.v31-workspace > main.connections-workspace {grid-template-columns:1fr}
+  .workspace.app-workspace > main.connections-workspace {grid-template-columns:1fr}
   .connection-list-panel.connection-mobile-hidden,.connection-detail-panel:not(.connection-mobile-open) {display:none}
   .connection-back {display:inline-flex;align-items:center;gap:6px;margin-bottom:8px}
   .skill-directory {grid-template-columns:minmax(230px,36%) minmax(0,1fr)}
 }
 @media (max-width:700px) {
-  .workspace.v31-workspace > main.connections-workspace {padding:10px 16px 16px}
+  .workspace.app-workspace > main.connections-workspace {padding:10px 16px 16px}
   .skill-directory {grid-template-columns:1fr;min-height:0}
   .skill-list-panel,.skill-detail-panel {overflow:visible}
   .connection-detail-heading {flex-direction:column;align-items:flex-start}
   .settings-split-panel :is(.outline,.primary) {min-height:38px}
   .skill-review-actions button+button {margin-inline-start:0}
 }
-.workspace.v31-workspace .connection-back { display:none; }
-@media (max-width:1050px) { .workspace.v31-workspace .connection-back { display:inline-flex; } }
+.workspace.app-workspace .connection-back { display:none; }
+@media (max-width:1050px) { .workspace.app-workspace .connection-back { display:inline-flex; } }
 .connection-detail-panel .connection-tools { margin:0; padding:0; border:0; }
 .connection-list-panel {gap:8px;padding-left:13px;padding-right:13px}
 .connection-detail-panel {padding:13px 15px 12px}
@@ -129,10 +129,10 @@
 .connection-list-item .connection-status {min-height:20px;padding:2px 7px;line-height:16px}
 .connection-tool-card {min-height:80px}
 .connection-tool-top strong,.connection-list-item :is(strong,small),.connection-detail-heading .settings-tag,.skill-list-select :is(strong,.settings-tag),.skill-review-title :is(h3,.settings-tag),.connection-tool-details summary,.skill-review .skill-instructions {font-family:var(--font-mono,ui-monospace),monospace}
-.workspace.v31-workspace[data-settings="true"] > main.settings-skills-page {padding-top:10px}
+.workspace.app-workspace[data-settings="true"] > main.settings-skills-page {padding-top:10px}
 .skill-list-panel,.skill-detail-panel {padding:13px 15px}
 .skill-review-actions .outline {min-height:28px;padding:4px 9px}
 @media (min-width:701px) {
-  .workspace.v31-workspace .settings-split-panel :is(.outline,.primary) {min-height:32px}
-  .workspace.v31-workspace .skill-review-actions .outline {min-height:32px}
+  .workspace.app-workspace .settings-split-panel :is(.outline,.primary) {min-height:32px}
+  .workspace.app-workspace .skill-review-actions .outline {min-height:32px}
 }

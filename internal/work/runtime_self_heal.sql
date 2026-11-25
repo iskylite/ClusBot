@@ -1,4 +1,4 @@
--- P4-17：有界自动自愈策略与 E02（V3 §10.1.1、E02、F02/F06/F07/F08）。
+-- 有界自动自愈策略与 E02（§10.1.1、E02、F02/F06/F07/F08）。
 --
 -- 授权范围内自动推进，超出条件准确停止和交接：
 --   - 策略固定 ID/版本、主体、资产范围、有效期、前置、动作与验证标准；
@@ -38,16 +38,6 @@ CREATE TABLE IF NOT EXISTS self_heal_policies (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE(policy_key, version)
-);
-
--- 策略执行计数（按稳定策略 ID 持久计数，重启/新任务/修订不清零）。
-CREATE TABLE IF NOT EXISTS self_heal_counters (
-  policy_id TEXT NOT NULL,
-  counter_key TEXT NOT NULL,       -- per_node:<object_ref> 或 cluster_concurrent
-  window_start INTEGER NOT NULL,
-  count INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (policy_id, counter_key, window_start)
 );
 
 -- 策略执行记录（动作与效果有独立账本）。

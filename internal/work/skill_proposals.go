@@ -9,8 +9,24 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
+
+const (
+	SkillMatchGoalExact     = "goal_exact"
+	SkillMatchScopeKeywords = "scope_keywords"
+	SkillMatchScopeAll      = "scope_all"
+)
+
+type SkillProposalOptions struct {
+	EvaluationRunID string
+	MatchMode       string
+	MatchKeywords   []string
+	Synthesize      bool
+	Provider        Provider
+	ModelConfig     ExperienceEvaluationConfig
+}
 
 var ErrSkillProposalConfirmation = errors.New("请从对应 Skill 提案确认生效")
 
@@ -40,6 +56,11 @@ type SkillProposal struct {
 	Goal             string                       `json:"goal"`
 	ReportDigest     string                       `json:"report_sha256"`
 	SnapshotDigest   string                       `json:"snapshot_sha256"`
+	SuiteDigest      string                       `json:"suite_sha256,omitempty"`
+	EvaluationRunID  string                       `json:"evaluation_run_id,omitempty"`
+	MatchMode        string                       `json:"match_mode,omitempty"`
+	MatchKeywords    []string                     `json:"match_keywords,omitempty"`
+	DraftMode        string                       `json:"draft_mode,omitempty"`
 	Model            string                       `json:"model"`
 	Evidence         SkillProposalEvidence        `json:"evidence"`
 	Sources          []ExperienceEvaluationSource `json:"sources"`
@@ -49,8 +70,13 @@ type SkillProposal struct {
 
 func skillProposalEvidence(report ExperienceEvaluationReport, scope, goal string) (SkillProposalEvidence, []ExperienceEvaluationSource, error) {
 	var evidence SkillProposalEvidence
-	if report.Version != 1 || report.Tools != "disabled" || report.Scoring != "literal_required_and_forbidden/v1" ||
-		report.PolicyVersions["candidate"] != "approved_exact_goal/v1" ||
+	candidatePolicyVer := report.PolicyVersions[approvedCandidateExperiencePolicy]
+	if candidatePolicyVer == "" {
+		candidatePolicyVer = report.PolicyVersions[legacyCandidateExperiencePolicy]
+	}
+	scoringOK := report.Scoring == scoringLiteralV1 || report.Scoring == scoringStructuredV2
+	if report.Version != 1 || report.Tools != "disabled" || !scoringOK ||
+		candidatePolicyVer != "approved_exact_goal/v1" ||
 		len(report.CaseContexts) == 0 || len(report.CaseContexts) > 32 || len(report.Results) != len(report.CaseContexts)*3 ||
 		strings.TrimSpace(report.Model.Model) == "" || len(report.Model.Model) > 200 {
 		return evidence, nil, ErrSkillProposal
@@ -68,13 +94,15 @@ func skillProposalEvidence(report ExperienceEvaluationReport, scope, goal string
 		pairs[item.ID] = make(map[string]ExperienceEvaluationResult)
 	}
 	for _, result := range report.Results {
+		policy := normalizeExperiencePolicy(result.Policy)
 		pair, exists := pairs[result.CaseID]
-		if !exists || !slices.Contains(evaluationPolicies[:], result.Policy) || pair[result.Policy].Policy != "" ||
+		if !exists || !slices.Contains(evaluationPolicies[:], policy) || pair[policy].Policy != "" ||
 			(result.Success && (result.Status != "completed" || result.WrongReuse != nil && *result.WrongReuse ||
 				len(result.MissingRequired) > 0 || len(result.ForbiddenHits) > 0)) || len(result.Sources) > 3 {
 			return evidence, nil, ErrSkillProposal
 		}
-		pair[result.Policy] = result
+		result.Policy = policy
+		pair[policy] = result
 	}
 	var sources []ExperienceEvaluationSource
 	seen := make(map[string]ExperienceEvaluationSource)
@@ -83,7 +111,7 @@ func skillProposalEvidence(report ExperienceEvaluationReport, scope, goal string
 			continue
 		}
 		pair := pairs[item.ID]
-		none, current, candidate := pair[noExperiencePolicy], pair[currentExperiencePolicy], pair[candidateExperiencePolicy]
+		none, current, candidate := pair[noExperiencePolicy], pair[acceptedExperiencePolicy], pair[approvedCandidateExperiencePolicy]
 		if none.Status != "completed" || current.Status != "completed" || candidate.Status != "completed" {
 			evidence.IncompletePairs++
 			continue
@@ -107,12 +135,12 @@ func skillProposalEvidence(report ExperienceEvaluationReport, scope, goal string
 				evidence.CandidateWrongReuse++
 			}
 		}
+		if !candidate.Success && current.Success {
+			evidence.Regressions = append(evidence.Regressions, item.ID)
+		}
 		if current.InputTokens != nil && current.OutputTokens != nil && candidate.InputTokens != nil && candidate.OutputTokens != nil {
 			evidence.TokenPairs++
 			evidence.TokenDelta += *candidate.InputTokens + *candidate.OutputTokens - *current.InputTokens - *current.OutputTokens
-		}
-		if !candidate.Success && current.Success {
-			evidence.Regressions = append(evidence.Regressions, item.ID)
 		}
 		if !candidate.Success || current.Success || len(candidate.Sources) == 0 {
 			continue
@@ -131,6 +159,15 @@ func skillProposalEvidence(report ExperienceEvaluationReport, scope, goal string
 			seen[source.CandidateID] = source
 			sources = append(sources, source)
 		}
+	}
+	if evidence.IncompletePairs > 0 {
+		return evidence, nil, fmt.Errorf("%w：存在 %d 项未完整配对用例", ErrSkillProposal, evidence.IncompletePairs)
+	}
+	if len(evidence.Regressions) > 0 {
+		return evidence, nil, fmt.Errorf("%w：候选策略在 %s 上存在退步", ErrSkillProposal, strings.Join(evidence.Regressions, "、"))
+	}
+	if evidence.CandidateWrongReuse > evidence.CurrentWrongReuse {
+		return evidence, nil, fmt.Errorf("%w：候选策略新增了错误复用", ErrSkillProposal)
 	}
 	if len(evidence.Gains) == 0 {
 		return evidence, nil, ErrSkillProposal
@@ -154,10 +191,127 @@ func proposalCandidate(tx *sql.Tx, source ExperienceEvaluationSource) (Experienc
 	return item, nil
 }
 
+func normalizeSkillMatchOptions(mode string, keywords []string) (string, []string, error) {
+	mode = strings.TrimSpace(mode)
+	if mode == "" {
+		mode = SkillMatchGoalExact
+	}
+	switch mode {
+	case SkillMatchGoalExact, SkillMatchScopeAll:
+		return mode, nil, nil
+	case SkillMatchScopeKeywords:
+		seen := make(map[string]bool)
+		var out []string
+		for _, kw := range keywords {
+			kw = strings.TrimSpace(kw)
+			if kw == "" {
+				continue
+			}
+			if utf8.RuneCountInString(kw) > 40 {
+				return "", nil, fmt.Errorf("%w：匹配关键词过长", ErrSkillProposal)
+			}
+			lower := strings.ToLower(kw)
+			if !seen[lower] {
+				seen[lower] = true
+				out = append(out, kw)
+			}
+		}
+		if len(out) == 0 || len(out) > 10 {
+			return "", nil, fmt.Errorf("%w：关键词匹配模式需要 1 至 10 个关键词", ErrSkillProposal)
+		}
+		return mode, out, nil
+	default:
+		return "", nil, fmt.Errorf("%w：不支持的适用范围模式 %q", ErrSkillProposal, mode)
+	}
+}
+
+func skillProposalMatchesGoal(mode string, keywords []string, proposalGoal, taskGoal string) bool {
+	taskGoal = strings.TrimSpace(taskGoal)
+	proposalGoal = strings.TrimSpace(proposalGoal)
+	switch mode {
+	case SkillMatchScopeAll:
+		return true
+	case SkillMatchScopeKeywords:
+		if strings.EqualFold(taskGoal, proposalGoal) {
+			return true
+		}
+		lowerTask := strings.ToLower(taskGoal)
+		for _, kw := range keywords {
+			if kw != "" && strings.Contains(lowerTask, strings.ToLower(kw)) {
+				return true
+			}
+		}
+		return false
+	default:
+		return strings.EqualFold(taskGoal, proposalGoal)
+	}
+}
+
+func synthesizeSkillDraft(ctx context.Context, provider Provider, cfg ExperienceEvaluationConfig, scope, goal, base string, tips []string) (string, bool) {
+	if provider == nil {
+		return "", false
+	}
+	prompt := fmt.Sprintf("你是 Skill 规范整理助手。请把【现行 Skill】与【新采纳经验】综合整理为一版去重、精炼、结构化的 Skill 指示。\n"+
+		"要求：\n1. 仅输出整理后的 Skill 正文，不要解释或寒暄；\n2. 总长度严格不超过 3800 字符；\n3. 保留原有核心约束，新经验仅补充方法与检查要求，不得放宽权限或跳过证据。\n\n"+
+		"工作范围：%s\n适用目标：%s\n\n【现行 Skill】\n%s\n\n【新采纳经验】\n%s",
+		scope, goal, base, strings.Join(tips, "\n"))
+	timeout := cfg.RequestTimeout
+	if timeout < 10*time.Second || timeout > 45*time.Second {
+		timeout = 30 * time.Second
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	maxOut := cfg.MaxOutput
+	if maxOut < 256 || maxOut > 2048 {
+		maxOut = 1024
+	}
+	var out strings.Builder
+	_, err := provider.Stream(callCtx, []Message{{Role: "user", Text: prompt}}, false, maxOut, func(delta string) error {
+		if out.Len()+len(delta) > 16*1024 {
+			return ErrOutputBudget
+		}
+		out.WriteString(delta)
+		return nil
+	})
+	if err != nil {
+		return "", false
+	}
+	draft := strings.TrimSpace(out.String())
+	if draft == "" || utf8.RuneCountInString(draft) > 4000 {
+		return "", false
+	}
+	return draft, true
+}
+
 func (s *Store) ProposeSkill(ctx context.Context, scope, goal string, report ExperienceEvaluationReport) (SkillProposal, error) {
+	return s.ProposeSkillWithOptions(ctx, scope, goal, report, SkillProposalOptions{})
+}
+
+func (s *Store) ProposeSkillWithOptions(ctx context.Context, scope, goal string, report ExperienceEvaluationReport, opts SkillProposalOptions) (SkillProposal, error) {
 	scope, goal = strings.TrimSpace(scope), strings.TrimSpace(goal)
 	if scope == "" || goal == "" || utf8.RuneCountInString(scope) > 40 || utf8.RuneCountInString(goal) > 1000 {
 		return SkillProposal{}, ErrSkillProposal
+	}
+	matchMode, matchKeywords, err := normalizeSkillMatchOptions(opts.MatchMode, opts.MatchKeywords)
+	if err != nil {
+		return SkillProposal{}, err
+	}
+	evalRunID := strings.TrimSpace(opts.EvaluationRunID)
+	if evalRunID != "" {
+		var rawReport, runSuiteDigest string
+		err := s.db.QueryRowContext(ctx, `SELECT report_json,suite_digest FROM skill_evaluation_runs WHERE id=?`, evalRunID).Scan(&rawReport, &runSuiteDigest)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SkillProposal{}, fmt.Errorf("%w：未找到对应的服务端评测记录", ErrSkillProposal)
+		}
+		if err != nil {
+			return SkillProposal{}, err
+		}
+		if err := json.Unmarshal([]byte(rawReport), &report); err != nil {
+			return SkillProposal{}, err
+		}
+		if report.SuiteDigest == "" {
+			report.SuiteDigest = runSuiteDigest
+		}
 	}
 	evidence, sources, err := skillProposalEvidence(report, scope, goal)
 	if err != nil {
@@ -196,6 +350,13 @@ WHERE s.scope_label=?`, scope).Scan(&revision, &baseVersion, &base)
 		return SkillProposal{}, err
 	}
 	var tips []string
+	seenTip := make(map[string]bool)
+	addTip := func(tip string) {
+		if tip != "" && !seenTip[tip] {
+			seenTip[tip] = true
+			tips = append(tips, tip)
+		}
+	}
 	for index, source := range sources {
 		item, err := proposalCandidate(tx, source)
 		if err != nil {
@@ -206,23 +367,39 @@ WHERE s.scope_label=?`, scope).Scan(&revision, &baseVersion, &base)
 		}
 		sources[index].TaskID = item.TaskID
 		if item.Correction != "" {
-			tips = append(tips, "- 用户纠正原文："+item.Correction)
+			addTip("- 用户纠正原文：" + item.Correction)
 		}
 		if item.Criteria != "" {
-			tips = append(tips, "- 交付检查："+item.Criteria)
+			addTip("- 交付检查：" + item.Criteria)
 		}
 		if len(item.FormatCues) > 0 {
-			tips = append(tips, "- 参考文档结构："+strings.Join(item.FormatCues, "、"))
+			addTip("- 参考文档结构：" + strings.Join(item.FormatCues, "、"))
 		}
 	}
 	if len(tips) == 0 {
 		return SkillProposal{}, ErrSkillProposal
 	}
-	guidance := fmt.Sprintf("仅当任务目标为 %q 时参考以下要求。以本次要求和证据为准，旧经验不改变事实或工具权限。\n%s", goal, strings.Join(tips, "\n"))
-	if strings.Contains(base, guidance) {
-		return SkillProposal{}, fmt.Errorf("%w：现行版本已包含这组建议", ErrSkillProposal)
+	scopeDesc := fmt.Sprintf("仅当任务目标为 %q 时参考以下要求", goal)
+	if matchMode == SkillMatchScopeKeywords {
+		scopeDesc = fmt.Sprintf("当 %q 范围的任务目标匹配关键词（%s）时参考以下要求", scope, strings.Join(matchKeywords, "、"))
+	} else if matchMode == SkillMatchScopeAll {
+		scopeDesc = fmt.Sprintf("在 %q 范围的所有任务中参考以下要求", scope)
 	}
-	instructions := strings.TrimSpace(base + "\n\n" + guidance)
+	guidance := fmt.Sprintf("%s。以本次要求和证据为准，旧经验不改变事实或工具权限。\n%s", scopeDesc, strings.Join(tips, "\n"))
+	draftMode := "template"
+	var instructions string
+	if opts.Synthesize && opts.Provider != nil {
+		if synthesized, ok := synthesizeSkillDraft(ctx, opts.Provider, opts.ModelConfig, scope, goal, base, tips); ok {
+			instructions = synthesized
+			draftMode = "synthesized"
+		}
+	}
+	if instructions == "" {
+		if strings.Contains(base, guidance) {
+			return SkillProposal{}, fmt.Errorf("%w：现行版本已包含这组建议", ErrSkillProposal)
+		}
+		instructions = strings.TrimSpace(base + "\n\n" + guidance)
+	}
 	if utf8.RuneCountInString(instructions) > 4000 {
 		return SkillProposal{}, ErrSkill
 	}
@@ -238,10 +415,19 @@ WHERE s.scope_label=?`, scope).Scan(&revision, &baseVersion, &base)
 	if err != nil {
 		return SkillProposal{}, err
 	}
+	keywordsJSON, err := json.Marshal(matchKeywords)
+	if err != nil {
+		return SkillProposal{}, err
+	}
+	if matchKeywords == nil {
+		keywordsJSON = []byte("[]")
+	}
 	proposalID := id()
-	if _, err = tx.Exec("INSERT INTO skill_proposals VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+	if _, err = tx.Exec(`INSERT INTO skill_proposals
+(id,skill_id,version,base_version,goal,guidance,report_digest,snapshot_digest,model,evidence,sources,created_at,suite_digest,evaluation_run_id,match_mode,match_keywords,draft_mode)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		proposalID, skill.SkillID, skill.Version, baseVersion, goal, guidance, reportDigest, report.Snapshot,
-		report.Model.Model, string(evidenceJSON), string(sourcesJSON), now()); err != nil {
+		report.Model.Model, string(evidenceJSON), string(sourcesJSON), now(), report.SuiteDigest, evalRunID, matchMode, string(keywordsJSON), draftMode); err != nil {
 		return SkillProposal{}, err
 	}
 	result, err := readSkillProposal(tx, proposalID)
@@ -289,11 +475,12 @@ func checkProposalSourceJSON(tx *sql.Tx, raw string) error {
 // Keep each addition scoped to its evaluated goal, including when a later
 // proposal is based on a previously activated generated version.
 func applicableSkillInstructions(tx *sql.Tx, skill string, version int, taskGoal string) (string, error) {
-	var instructions, hash, goal, guidance, sources string
+	var instructions, hash, goal, guidance, sources, matchMode, keywordsRaw, draftMode string
 	var base sql.NullInt64
-	err := tx.QueryRow(`SELECT v.instructions,v.sha256,coalesce(p.goal,''),coalesce(p.guidance,''),coalesce(p.sources,''),p.base_version
+	err := tx.QueryRow(`SELECT v.instructions,v.sha256,coalesce(p.goal,''),coalesce(p.guidance,''),coalesce(p.sources,''),p.base_version,
+coalesce(p.match_mode,'goal_exact'),coalesce(p.match_keywords,'[]'),coalesce(p.draft_mode,'template')
 FROM personal_skill_versions v LEFT JOIN skill_proposals p ON p.skill_id=v.skill_id AND p.version=v.version
-WHERE v.skill_id=? AND v.version=?`, skill, version).Scan(&instructions, &hash, &goal, &guidance, &sources, &base)
+WHERE v.skill_id=? AND v.version=?`, skill, version).Scan(&instructions, &hash, &goal, &guidance, &sources, &base, &matchMode, &keywordsRaw, &draftMode)
 	if err != nil {
 		return "", err
 	}
@@ -302,6 +489,10 @@ WHERE v.skill_id=? AND v.version=?`, skill, version).Scan(&instructions, &hash, 
 	}
 	if goal == "" {
 		return instructions, nil
+	}
+	var keywords []string
+	if keywordsRaw != "" {
+		_ = json.Unmarshal([]byte(keywordsRaw), &keywords)
 	}
 	var current string
 	if base.Valid {
@@ -313,11 +504,14 @@ WHERE v.skill_id=? AND v.version=?`, skill, version).Scan(&instructions, &hash, 
 			return "", err
 		}
 	}
-	if strings.TrimSpace(taskGoal) != goal {
+	if !skillProposalMatchesGoal(matchMode, keywords, goal, taskGoal) {
 		return current, nil
 	}
 	if err := checkProposalSourceJSON(tx, sources); err != nil {
 		return "", err
+	}
+	if draftMode == "synthesized" {
+		return instructions, nil
 	}
 	return strings.TrimSpace(current + "\n\n" + guidance), nil
 }
@@ -333,16 +527,23 @@ WHERE v.approved_at IS NULL AND v.base_revision=s.revision`).Scan(&count)
 
 func readSkillProposal(tx *sql.Tx, proposal string) (SkillProposal, error) {
 	p := SkillProposal{ID: proposal}
-	var skill, evidence, sources, replay string
+	var skill, evidence, sources, replay, keywordsRaw string
 	var version int
-	err := tx.QueryRow(`SELECT p.skill_id,p.version,p.base_version,p.goal,p.report_digest,p.snapshot_digest,p.model,
-p.evidence,p.sources,coalesce(v.instructions,''),coalesce(v.sha256,''),coalesce(r.report,'')
+	err := tx.QueryRow(`SELECT p.skill_id,p.version,p.base_version,p.goal,p.report_digest,p.snapshot_digest,
+coalesce(p.suite_digest,''),coalesce(p.evaluation_run_id,''),coalesce(p.match_mode,'goal_exact'),coalesce(p.match_keywords,'[]'),coalesce(p.draft_mode,'template'),
+p.model,p.evidence,p.sources,coalesce(v.instructions,''),coalesce(v.sha256,''),coalesce(r.report,'')
 FROM skill_proposals p LEFT JOIN personal_skill_versions v ON v.skill_id=p.skill_id AND v.version=p.base_version
 LEFT JOIN skill_proposal_replays r ON r.proposal_id=p.id
-WHERE p.id=?`, proposal).Scan(&skill, &version, &p.BaseVersion, &p.Goal, &p.ReportDigest, &p.SnapshotDigest, &p.Model,
-		&evidence, &sources, &p.BaseInstructions, &p.BaseDigest, &replay)
+WHERE p.id=?`, proposal).Scan(&skill, &version, &p.BaseVersion, &p.Goal, &p.ReportDigest, &p.SnapshotDigest,
+		&p.SuiteDigest, &p.EvaluationRunID, &p.MatchMode, &keywordsRaw, &p.DraftMode,
+		&p.Model, &evidence, &sources, &p.BaseInstructions, &p.BaseDigest, &replay)
 	if err != nil {
 		return p, err
+	}
+	if keywordsRaw != "" && keywordsRaw != "[]" {
+		if err := json.Unmarshal([]byte(keywordsRaw), &p.MatchKeywords); err != nil {
+			return p, err
+		}
 	}
 	p.Skill, err = scanSkill(tx.QueryRow(skillSelect+" WHERE s.id=? AND v.version=?", skill, version))
 	if err != nil {

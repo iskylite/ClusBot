@@ -1,8 +1,8 @@
 package work
 
-// P1-05：通用 Inbox 与幂等应用。
+// 通用 Inbox 与幂等应用。
 //
-// 本文件实现 V3 §5.3 的持久输入箱：先可靠受理事件，再以单事务应用到
+// 本文件实现 §5.3 的持久输入箱：先可靠受理事件，再以单事务应用到
 // 当前权威状态。
 //   - (source, event_id) 唯一；同 ID 同摘要返回原受理结果，同 ID 不同摘要
 //     隔离并审计，不覆盖原事件；
@@ -11,8 +11,8 @@ package work
 //   - 未知关联、不能判定顺序和处理失败保存明确原因与重试安排；
 //   - 现有 Chat 输入以适配方式进入公共处理链，避免新旧表各自确认同一输入。
 //
-// 与现有 input_events 的关系：本文件是 V3 通用入口，HTTP/Worker 后续接入；
-// 现有 Chat 的 input_events/input_deliveries 继续服务旧路径，P1-12 适配接入
+// 与现有 input_events 的关系：本文件是 通用入口，HTTP/Worker 后续接入；
+// 现有 Chat 的 input_events/input_deliveries 继续服务旧路径，适配接入
 // 公共链，不在本项删除旧结构。
 
 import (
@@ -62,7 +62,7 @@ type ReceiveResult struct {
 	Quarantined bool  // 同 ID 不同摘要：已隔离
 }
 
-// receiveInbox 先持久受理事件（P1-05.1）。
+// receiveInbox 先持久受理事件。
 // 同 ID 同内容返回既有受理结果（幂等）；同 ID 不同内容隔离并审计，不覆盖原事件。
 func receiveInbox(tx *sql.Tx, e InboxEvent) (ReceiveResult, error) {
 	if e.Source == "" || e.EventID == "" {
@@ -93,7 +93,7 @@ FROM inbox_events WHERE source=? AND event_id=?`, e.Source, e.EventID).
 		existing.WaitID = waitID.String
 		// 同 ID：核对内容摘要一致性。
 		if existing.PayloadDigest != e.PayloadDigest {
-			// 同 ID 不同摘要：隔离并审计，不覆盖原事件（P1-05.2）。
+			// 同 ID 不同摘要：隔离并审计，不覆盖原事件。
 			quarantined := e
 			quarantined.State = "quarantined"
 			quarantined.QuarantineReason = fmt.Sprintf("同 ID 不同摘要：已有 %s，新到 %s",
@@ -145,7 +145,7 @@ type ApplyResult struct {
 	RetryAfter int64 // 处理失败时的重试时间（毫秒时间戳）
 }
 
-// applyInboxEvent 以单事务应用事件到当前权威状态（P1-05.3）。
+// applyInboxEvent 以单事务应用事件到当前权威状态。
 // 应用时核对主体/关联/版本，更新目标、写审计、登记后续 Outbox 并标记已处理。
 // applier 是业务应用函数：在事务内执行实际状态更新，返回后续命令或失败原因。
 func applyInboxEvent(tx *sql.Tx, source, eventID string, applier func(tx *sql.Tx, e InboxEvent) (ApplyResult, error), now int64) (ApplyResult, error) {
@@ -175,7 +175,7 @@ WHERE source=? AND event_id=? AND state IN ('received','failed')`, source, event
 		// 并发竞争：另一处理者已取得，保留可审计信息。
 		return ApplyResult{}, ErrState
 	}
-	// 核对关联：未知关联隔离待查，不丢弃（P1-05.4）。
+	// 核对关联：未知关联隔离待查，不丢弃。
 	if err := validateInboxAssociation(tx, e); err != nil {
 		markInboxFailed(tx, source, eventID, "quarantined", err.Error(), 0, now)
 		return ApplyResult{Failure: err.Error()}, err
@@ -183,7 +183,7 @@ WHERE source=? AND event_id=? AND state IN ('received','failed')`, source, event
 	// 业务应用。
 	result, err := applier(tx, e)
 	if err != nil {
-		// 处理失败：保存明确原因与重试安排（P1-05.4）。
+		// 处理失败：保存明确原因与重试安排。
 		retryAt := now + retryBackoff(e.Attempts)
 		markInboxFailed(tx, source, eventID, "failed", err.Error(), retryAt, now)
 		return ApplyResult{Failure: err.Error(), RetryAfter: retryAt}, err
@@ -250,12 +250,12 @@ func retryBackoff(attempts int) int64 {
 }
 
 // ---------------------------------------------------------------------------
-// Chat 输入适配（P1-05.5）
+// Chat 输入适配
 // ---------------------------------------------------------------------------
 
 // AdaptChatInput 把现有 Chat 输入适配为公共 Inbox 事件。
 // 避免新旧表各自确认同一输入：Chat 的 input_events 是旧路径的受理记录，
-// 本函数把它映射为 Inbox 事件进入公共处理链；完整切换在 P1-12。
+// 本函数把它映射为 Inbox 事件进入公共处理链；完整切换在 。
 func AdaptChatInput(tx *sql.Tx, source, requestKey, principal, taskID, summary string, payloadDigest string, receivedAt int64) (ReceiveResult, error) {
 	return receiveInbox(tx, InboxEvent{
 		Source:        source,

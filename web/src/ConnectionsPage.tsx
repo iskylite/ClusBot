@@ -1,6 +1,6 @@
 import {useEffect,useState,type FormEvent} from 'react'
 import {ArrowLeft,KeyRound,LoaderCircle,Play,Plug,Plus,RefreshCw,Search,Wrench} from 'lucide-react'
-import {api,type MCPConfig,type MCPConnection,type MCPResult,type MCPTool} from './api'
+import {api,type CapabilityBinding,type CapabilityBindingInput,type MCPConfig,type MCPConnection,type MCPResult,type MCPTool} from './api'
 import {ToolResultDownload} from './TaskRead'
 import './ConnectionSkillSettings.css'
 
@@ -109,12 +109,12 @@ function ConnectionEditor({item,updated}:{item?:MCPConnection;updated:(result:MC
     catch(e){setError(errorText(e))}
     finally{setBusy('')}
   }
-  async function grant(tool:MCPTool) {
+  async function grant(tool:MCPTool, nextAllowed:boolean, nextReadOnly:boolean) {
     if(!item || busy || dirty)return
-    if(!tool.allowed && !window.confirm(`允许调用 ${tool.name}？请确认这个工具只读取数据。`))return
+    if(nextReadOnly && !window.confirm(`允许将 ${tool.name} 加入只读自动工具集？请确认这个工具只读取数据、无副作用。`))return
     setBusy('permission');setError('')
     try {
-      await api('/connections/'+item.id+'/permission',{name:tool.name,version:tool.version,revision:item.revision,allowed:!tool.allowed})
+      await api('/connections/'+item.id+'/permission',{name:tool.name,version:tool.version,revision:item.revision,allowed:nextAllowed,read_only:nextReadOnly})
       updated(await api<MCPConnection>('/connections/'+item.id))
     }catch(e){setError(errorText(e))}
     finally{setBusy('')}
@@ -145,13 +145,16 @@ function ConnectionEditor({item,updated}:{item?:MCPConnection;updated:(result:MC
           <button type="button" className="outline" disabled={Boolean(busy)} onClick={()=>setEditing(true)}><KeyRound size={14} aria-hidden="true"/>编辑凭据</button></div></header>
       {item.detail && <p className="error" role="alert">{item.detail}</p>}
       {!item.tools?.length && <p className="settings-split-empty">{item.enabled?'暂无已发现的工具。':'连接已停用。'}</p>}
-      {item.tools?.map(tool=><ToolCard key={tool.name+tool.version} connection={item} tool={tool} blocked={Boolean(busy)||dirty} grant={()=>void grant(tool)}/>)}
+      {item.tools?.map(tool=><ToolCard key={tool.name+tool.version} connection={item} tool={tool} blocked={Boolean(busy)||dirty}
+        toggleAllowed={()=>void grant(tool,!tool.allowed,false)}
+        toggleReadOnly={nextReadOnly=>void grant(tool,tool.allowed,nextReadOnly)}/>)}
+      <CapabilityBindingsPanel connection={item} blocked={Boolean(busy)||dirty}/>
     </section>}
     {error && <p className="error" role="alert">{error}</p>}
   </>
 }
 
-function ToolCard({connection,tool,blocked,grant}:{connection:MCPConnection;tool:MCPTool;blocked:boolean;grant:()=>void}) {
+function ToolCard({connection,tool,blocked,toggleAllowed,toggleReadOnly}:{connection:MCPConnection;tool:MCPTool;blocked:boolean;toggleAllowed:()=>void;toggleReadOnly:(readOnly:boolean)=>void}) {
   const [input,setInput]=useState('{}')
   const [result,setResult]=useState<MCPResult>()
   const [error,setError]=useState('')
@@ -169,8 +172,9 @@ function ToolCard({connection,tool,blocked,grant}:{connection:MCPConnection;tool
   }
   const ready=connection.enabled && connection.status==='ready'
   return <article className="connection-tool-card">
-    <div className="connection-tool-top"><div><Wrench size={14} aria-hidden="true"/><strong>{tool.name}</strong><span className={'settings-tag'+(tool.allowed&&!tool.schema_error?' connection-read-only':'')}>{tool.schema_error?'定义不兼容':tool.allowed?'只读':'未授权'}</span></div>
-      <label className="settings-switch"><input type="checkbox" checked={tool.allowed} aria-label={`${tool.allowed?'撤销':'允许'} ${tool.name} 的读取权限`} disabled={blocked||busy||((!ready||Boolean(tool.schema_error))&&!tool.allowed)} onChange={grant}/><span/></label></div>
+    <div className="connection-tool-top"><div><Wrench size={14} aria-hidden="true"/><strong>{tool.name}</strong><span className={'settings-tag'+(tool.allowed&&tool.read_only&&!tool.schema_error?' connection-read-only':'')}>{tool.schema_error?'定义不兼容':tool.allowed?(tool.read_only?'只读自动可用':'受控工具（不进自动工具集）'):'未授权'}</span></div>
+      <label className="settings-switch"><input type="checkbox" checked={tool.allowed} aria-label={`${tool.allowed?'撤销':'允许'} ${tool.name} 的连接权限`} disabled={blocked||busy||((!ready||Boolean(tool.schema_error))&&!tool.allowed)} onChange={toggleAllowed}/><span/></label></div>
+    {tool.allowed && ready && !tool.schema_error && <label className="muted"><input type="checkbox" checked={Boolean(tool.read_only)} disabled={blocked||busy} onChange={e=>toggleReadOnly(e.target.checked)}/> 允许作为只读自动工具（写工具如 run/setpwd/bench_run 禁止勾选，须走受控能力绑定）</label>}
     {(tool.description||tool.title!==tool.name&&tool.title)&&<p>{tool.description||tool.title}</p>}
     {tool.schema_error&&<p className="error" role="alert">{tool.schema_error}</p>}
     <details className="connection-tool-details"><summary aria-label="展开参数定义与手动调用">Schema: <code>{schemaSummary(tool.input_schema)}</code></summary>
@@ -189,4 +193,62 @@ function ToolCard({connection,tool,blocked,grant}:{connection:MCPConnection;tool
       </div>}
     </details>
   </article>
+}
+
+function CapabilityBindingsPanel({connection,blocked}:{connection:MCPConnection;blocked:boolean}) {
+  const [bindings,setBindings]=useState<CapabilityBinding[]>([])
+  const [capabilityKey,setCapabilityKey]=useState('benchmark.run')
+  const [kind,setKind]=useState<'query'|'action'>('action')
+  const [mode,setMode]=useState<'sync'|'async'>('async')
+  const [startTool,setStartTool]=useState('')
+  const [lookupTool,setLookupTool]=useState('')
+  const [getTool,setGetTool]=useState('')
+  const [cancelTool,setCancelTool]=useState('')
+  const [busy,setBusy]=useState(false)
+  const [error,setError]=useState('')
+  const allowedTools=(connection.tools??[]).filter(t=>t.allowed&&!t.schema_error)
+
+  useEffect(()=>{
+    let cancelled=false
+    api<CapabilityBinding[]>('/capabilities/bindings').then(items=>{
+      if(!cancelled)setBindings(items.filter(b=>b.connection_id===connection.id))
+    }).catch(()=>{})
+    return()=>{cancelled=true}
+  },[connection.id,connection.revision])
+
+  useEffect(()=>{
+    if(!startTool && allowedTools.length>0)setStartTool(allowedTools[0].name)
+  },[connection.id,allowedTools.length])
+
+  async function submitBinding(event:FormEvent) {
+    event.preventDefault()
+    if(busy||blocked||!startTool)return
+    setBusy(true);setError('')
+    try {
+      const payload:CapabilityBindingInput={
+        capability_key:capabilityKey.trim(),kind,execution_mode:mode,connection_id:connection.id,
+        start_tool:startTool,lookup_tool:lookupTool||undefined,get_tool:getTool||undefined,cancel_tool:cancelTool||undefined,
+        idempotent:'supported',supports_get:getTool?'supported':'unknown',supports_cancel:cancelTool?'supported':'unknown'
+      }
+      const saved=await api<CapabilityBinding>('/capabilities/bindings',payload)
+      setBindings(prev=>[...prev.filter(b=>b.capability_key!==saved.capability_key||b.version!==saved.version),saved])
+    }catch(e){setError(errorText(e))}
+    finally{setBusy(false)}
+  }
+
+  return <section className="connection-tool-card" aria-label="受控能力绑定">
+    <div className="connection-tool-top"><div><strong>受控能力绑定（Operation 网关）</strong></div></div>
+    <p className="muted">将已授权工具（如 <code>bench_run</code> / <code>discover</code> / <code>fault_check</code>）绑定到标准能力键，供基准、发现与自愈流程受控调用。</p>
+    {bindings.length>0&&<ul>{bindings.map(b=><li key={b.capability_id}><code>{b.capability_key}</code> ({b.kind}/{b.execution_mode}) → <code>{b.start_tool}</code>{b.get_tool?` · get:${b.get_tool}`:''}{b.cancel_tool?` · cancel:${b.cancel_tool}`:''}</li>)}</ul>}
+    {allowedTools.length>0&&<form className="memory-form connection-form" onSubmit={submitBinding}>
+      <label>能力键<input value={capabilityKey} onChange={e=>setCapabilityKey(e.target.value)} placeholder="benchmark.run / asset.discover / ops.fault_check" required/></label>
+      <label>类型<select value={kind} onChange={e=>setKind(e.target.value as 'query'|'action')}><option value="action">action（受控写操作）</option><option value="query">query（只读查询）</option></select></label>
+      <label>执行模式<select value={mode} onChange={e=>setMode(e.target.value as 'sync'|'async')}><option value="async">async</option><option value="sync">sync</option></select></label>
+      <label>主工具 (start_tool)<select value={startTool} onChange={e=>setStartTool(e.target.value)}>{allowedTools.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select></label>
+      <label>查询/结果工具 (lookup / get)<select value={getTool} onChange={e=>{setGetTool(e.target.value);setLookupTool(e.target.value)}}><option value="">无</option>{allowedTools.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select></label>
+      <label>取消工具 (cancel_tool)<select value={cancelTool} onChange={e=>setCancelTool(e.target.value)}><option value="">无</option>{allowedTools.map(t=><option key={t.name} value={t.name}>{t.name}</option>)}</select></label>
+      <button type="submit" className="outline" disabled={busy||blocked}>保存能力绑定</button>
+      {error&&<p className="error" role="alert">{error}</p>}
+    </form>}
+  </section>
 }

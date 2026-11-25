@@ -45,7 +45,7 @@ func TestApprovalExpiryRuntimeBoundedWithoutModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := s.RecoverV3(ctx, stamp)
+	report, err := s.RecoverRuntime(ctx, stamp)
 	if err != nil || report.ExpiredApprovals != approvalExpiryBatch {
 		t.Fatalf("startup must process one bounded batch: %+v %v", report, err)
 	}

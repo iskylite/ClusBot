@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
 	"clusbot/internal/mcpclient"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 var (
@@ -90,8 +92,33 @@ func (s *Store) Connection(ctx context.Context, key string) (Connection, error) 
 	return c, tx.Commit()
 }
 
+func isKnownUnsafeWriteTool(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "run", "tree_run", "star_run", "copy", "setssh", "setpwd",
+		"power", "boot", "install", "relocate",
+		"save", "save_bmc", "save_redis", "save_gv",
+		"setbase", "setntp", "setnfs", "setall",
+		"star_cancel", "star_artifact", "tree_cancel", "tree_copy",
+		"bench_run", "bench_install", "bench_save", "local_probe",
+		"offline", "online", "ac", "update", "fault", "task_cancel":
+		return true
+	}
+	return strings.HasPrefix(lower, "update_") || (strings.HasPrefix(lower, "set") && lower != "settings")
+}
+
+func isToolDisallowedForReadOnly(tool mcpclient.Tool) bool {
+	if isKnownUnsafeWriteTool(tool.Name) || tool.Destructive {
+		return true
+	}
+	if tool.ServerReadOnly != nil && !*tool.ServerReadOnly {
+		return true
+	}
+	return false
+}
+
 func connectionTools(ctx context.Context, tx *sql.Tx, key string) ([]mcpclient.Tool, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT definition,allowed FROM connection_tools WHERE connection_id=? ORDER BY name", key)
+	rows, err := tx.QueryContext(ctx, "SELECT definition,allowed,read_only FROM connection_tools WHERE connection_id=? ORDER BY name", key)
 	if err != nil {
 		return nil, err
 	}
@@ -110,12 +137,13 @@ func connectionTools(ctx context.Context, tx *sql.Tx, key string) ([]mcpclient.T
 func scanTool(row scanner) (mcpclient.Tool, error) {
 	var tool mcpclient.Tool
 	var raw string
-	var allowed bool
-	err := row.Scan(&raw, &allowed)
+	var allowed, readOnly bool
+	err := row.Scan(&raw, &allowed, &readOnly)
 	if err == nil {
 		err = json.Unmarshal([]byte(raw), &tool)
 	}
 	tool.Allowed = allowed
+	tool.ReadOnly = readOnly && !isToolDisallowedForReadOnly(tool)
 	if err == nil {
 		if schemaErr := mcpclient.ValidateToolSchemas(tool); schemaErr != nil {
 			tool.SchemaError = schemaErr.Error()
@@ -169,7 +197,11 @@ status='untested',detail='',protocol='',checked_at=0,credential_binding='' WHERE
 	if err != nil {
 		return Connection{}, err
 	}
-	return saved, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return Connection{}, err
+	}
+	s.evictMCPSession(key)
+	return saved, nil
 }
 
 func updateConnection(ctx context.Context, tx *sql.Tx, query string, args ...any) error {
@@ -228,9 +260,11 @@ WHERE id=? AND revision=? AND enabled=1`, status, detail, catalog.Protocol, now(
 			return c, err
 		}
 		prior := map[string]string{}
+		priorReadOnly := map[string]bool{}
 		for _, tool := range c.Tools {
 			if tool.Allowed && c.credentialBinding == binding && c.Protocol == catalog.Protocol {
 				prior[tool.Name] = tool.Version
+				priorReadOnly[tool.Name] = tool.ReadOnly
 			}
 		}
 		for _, tool := range catalog.Tools {
@@ -238,7 +272,10 @@ WHERE id=? AND revision=? AND enabled=1`, status, detail, catalog.Protocol, now(
 			if err != nil {
 				return c, err
 			}
-			if _, err = tx.ExecContext(ctx, "INSERT INTO connection_tools VALUES(?,?,?,?)", key, tool.Name, string(definition), prior[tool.Name] == tool.Version && tool.SchemaError == ""); err != nil {
+			keepAllowed := prior[tool.Name] == tool.Version && tool.SchemaError == ""
+			keepReadOnly := keepAllowed && priorReadOnly[tool.Name] && !isToolDisallowedForReadOnly(tool)
+			if _, err = tx.ExecContext(ctx, "INSERT INTO connection_tools(connection_id,name,definition,allowed,read_only) VALUES(?,?,?,?,?)",
+				key, tool.Name, string(definition), keepAllowed, keepReadOnly); err != nil {
 				return c, err
 			}
 		}
@@ -246,10 +283,21 @@ WHERE id=? AND revision=? AND enabled=1`, status, detail, catalog.Protocol, now(
 	if err = tx.Commit(); err != nil {
 		return c, err
 	}
+	s.evictMCPSession(key)
 	return s.Connection(ctx, key)
 }
 
 func (s *Store) SetToolPermission(ctx context.Context, key, name, version string, revision int, allowed bool) error {
+	return s.SetToolPermissionWithMode(ctx, key, name, version, revision, allowed, allowed && !isKnownUnsafeWriteTool(name))
+}
+
+func (s *Store) SetToolPermissionWithMode(ctx context.Context, key, name, version string, revision int, allowed, readOnly bool) error {
+	if readOnly && isKnownUnsafeWriteTool(name) {
+		return fmt.Errorf("%w：写工具 %s 禁止加入只读自动工具集，请走受控能力绑定与 Operation 通道", ErrToolPermission, name)
+	}
+	if !allowed {
+		readOnly = false
+	}
 	s.connectionGrantMu.Lock()
 	defer s.connectionGrantMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -283,7 +331,7 @@ func (s *Store) SetToolPermission(ctx context.Context, key, name, version string
 			return mcpclient.ErrSchemaChanged
 		}
 	}
-	tool, err := scanTool(tx.QueryRowContext(ctx, "SELECT definition,allowed FROM connection_tools WHERE connection_id=? AND name=?", key, name))
+	tool, err := scanTool(tx.QueryRowContext(ctx, "SELECT definition,allowed,read_only FROM connection_tools WHERE connection_id=? AND name=?", key, name))
 	if err != nil {
 		return err
 	}
@@ -295,13 +343,17 @@ func (s *Store) SetToolPermission(ctx context.Context, key, name, version string
 			return err
 		}
 	}
-	if _, err = tx.ExecContext(ctx, "UPDATE connection_tools SET allowed=? WHERE connection_id=? AND name=?", allowed, key, name); err != nil {
+	if _, err = tx.ExecContext(ctx, "UPDATE connection_tools SET allowed=?,read_only=? WHERE connection_id=? AND name=?", allowed, readOnly, key, name); err != nil {
 		return err
 	}
 	if err = updateConnection(ctx, tx, "UPDATE connections SET revision=revision+1 WHERE id=? AND revision=?", key, revision); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	s.evictMCPSession(key)
+	return nil
 }
 
 type ConnectionResult struct {
@@ -383,14 +435,30 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 	}
 	deadline, cancel := context.WithTimeout(ctx, mcpclient.Timeout)
 	defer cancel()
-	session, err := mcpclient.Connect(deadline, c.Config)
-	if err != nil {
-		return ConnectionResult{}, err
-	}
-	defer session.Close()
-	catalog, err := mcpclient.Discover(deadline, session)
-	if err != nil {
-		return ConnectionResult{}, err
+	var (
+		session *mcp.ClientSession
+		catalog mcpclient.Catalog
+		pooled  *pooledMCPSession
+	)
+	if c.Config.Transport == "stdio" {
+		pooled, err = s.acquireMCPSession(deadline, c, binding)
+		if err != nil {
+			return ConnectionResult{}, err
+		}
+		pooled.callMu.Lock()
+		defer pooled.callMu.Unlock()
+		session = pooled.session
+		catalog = pooled.catalog
+	} else {
+		session, err = mcpclient.Connect(deadline, c.Config)
+		if err != nil {
+			return ConnectionResult{}, err
+		}
+		defer session.Close()
+		catalog, err = mcpclient.Discover(deadline, session)
+		if err != nil {
+			return ConnectionResult{}, err
+		}
 	}
 	valid := false
 	for _, tool := range catalog.Tools {
@@ -406,6 +474,9 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 		}
 	}
 	if !valid || catalog.Protocol != c.Protocol {
+		if pooled != nil {
+			s.evictMCPSession(key)
+		}
 		return ConnectionResult{}, mcpclient.ErrSchemaChanged
 	}
 	callID := id()
@@ -413,6 +484,9 @@ func (s *Store) executeConnectionTool(ctx context.Context, key, name string, rev
 		return ConnectionResult{}, err
 	}
 	outcome, evidence, callErr := mcpclient.Call(deadline, session, granted, args, c.Config)
+	if callErr != nil && pooled != nil {
+		s.evictMCPSession(key)
+	}
 	status := "completed"
 	if callErr != nil {
 		status = "unknown"

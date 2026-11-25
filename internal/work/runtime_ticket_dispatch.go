@@ -2,7 +2,7 @@ package work
 
 // B 步：测试工单系统的受控写路径（E03 首个切片）。
 //
-// 本文件把"创建工单"这条写路径接通到 V3 Operation 全生命周期：
+// 本文件把"创建工单"这条写路径接通到 Operation 全生命周期：
 //   - createTicket → registerOperation（capability=ticket.create）+ Outbox 同事务；
 //   - dispatchOperationCommitted 提交后，由真实 HTTP provider 执行 POST 创建工单；
 //   - 拿到 external_ticket_id/provider_job_id → normalizeJobStart 登记远端作业；
@@ -269,7 +269,7 @@ func (s *Store) submitTicketCreate(ctx context.Context, req TicketCreateRequest,
 			return TicketCreateResult{}, fmt.Errorf("%w：缺少工单派发授权", ErrAuthorizationDenied)
 		}
 	}
-	// 借出期间核对专项授权（P4-18.5）。
+	// 借出期间核对专项授权。
 	if err := ensureLentAssetRepairAuthorized(tx, req.ObjectRef, req.Subject, nowV); err != nil {
 		return TicketCreateResult{}, err
 	}
@@ -394,7 +394,7 @@ func (s *Store) DispatchTicketCreate(ctx context.Context, operationID, subject, 
 	if err != nil {
 		return TicketCreateResult{}, err
 	}
-	if op.State != V3OperationRegistered {
+	if op.State != RuntimeOperationRegistered {
 		return TicketCreateResult{OperationID: operationID, State: string(op.State), Duplicate: true}, nil
 	}
 	target, err := ticketOperationTarget(op)
@@ -464,13 +464,13 @@ func (s *Store) DispatchTicketCreate(ctx context.Context, operationID, subject, 
 }
 
 func (s *Store) cancelUnsentTicket(tx *sql.Tx, op Operation, reason string, stamp int64) (TicketCreateResult, error) {
-	if _, err := transitionOperation(tx, op.OperationID, V3OperationCancelled, stamp); err != nil {
+	if _, err := transitionOperation(tx, op.OperationID, RuntimeOperationCancelled, stamp); err != nil {
 		return TicketCreateResult{}, err
 	}
 	if _, err := tx.Exec(`UPDATE operations SET failure_reason=? WHERE operation_id=?`, reason, op.OperationID); err != nil {
 		return TicketCreateResult{}, err
 	}
-	return TicketCreateResult{OperationID: op.OperationID, State: string(V3OperationCancelled), Reason: reason}, tx.Commit()
+	return TicketCreateResult{OperationID: op.OperationID, State: string(RuntimeOperationCancelled), Reason: reason}, tx.Commit()
 }
 
 // settleTicketCreate 回写工单创建结果（B3）。
@@ -488,7 +488,7 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 	if err != nil {
 		return result, err
 	}
-	if current.State != V3OperationDispatched && current.State != V3OperationReconcile {
+	if current.State != RuntimeOperationDispatched && current.State != RuntimeOperationReconcile {
 		result.State = string(current.State)
 		return result, nil
 	}
@@ -496,8 +496,8 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 		res.StateVersion < 1 || res.ExternalState == "" || strings.ContainsAny(res.ExternalTicketID, "/\\?#") ||
 		res.ExternalTicketID == "." || res.ExternalTicketID == ".." {
 		// 网络错误/未知：转待核对（不断言未发送）。
-		if current.State == V3OperationDispatched {
-			if _, terr := transitionOperation(tx, op.OperationID, V3OperationReconcile, nowV); terr != nil {
+		if current.State == RuntimeOperationDispatched {
+			if _, terr := transitionOperation(tx, op.OperationID, RuntimeOperationReconcile, nowV); terr != nil {
 				return result, terr
 			}
 		}
@@ -506,7 +506,7 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 			return result, err
 		}
 		result.Reason = reason
-		result.State = string(V3OperationReconcile)
+		result.State = string(RuntimeOperationReconcile)
 		errMsg := "网络错误"
 		if callErr != nil {
 			errMsg = callErr.Error()
@@ -519,8 +519,8 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 		}
 		return result, tx.Commit()
 	}
-	if current.State == V3OperationDispatched {
-		if _, err := transitionOperation(tx, op.OperationID, V3OperationRunning, nowV); err != nil {
+	if current.State == RuntimeOperationDispatched {
+		if _, err := transitionOperation(tx, op.OperationID, RuntimeOperationRunning, nowV); err != nil {
 			return result, err
 		}
 	}
@@ -556,9 +556,9 @@ func (s *Store) settleTicketCreate(ctx context.Context, op Operation, subject, f
 	}
 	result.TicketID = ticket.TicketID
 	result.ExternalTicketID = res.ExternalTicketID
-	result.State = string(V3OperationRunning)
-	if current.State == V3OperationReconcile {
-		result.State = string(V3OperationReconcile)
+	result.State = string(RuntimeOperationRunning)
+	if current.State == RuntimeOperationReconcile {
+		result.State = string(RuntimeOperationReconcile)
 	}
 	if err := recordAudit(tx, AuditEvent{
 		TaskID: op.TaskID, Event: "ticket_created", Actor: subject,
@@ -699,7 +699,7 @@ WHERE external_system='ticket-system' AND external_ticket_id=?`,
 	}
 	// 工单 closed → Operation → succeeded（回执成功≠恢复，ticket 仍需独立效果验证）。
 	if res.ExternalState == "closed" || res.ExternalState == "resolved" {
-		if _, err := transitionOperation(tx, operationID, V3OperationSucceeded, nowV); err != nil {
+		if _, err := transitionOperation(tx, operationID, RuntimeOperationSucceeded, nowV); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(`UPDATE operation_jobs SET state='succeeded', updated_at=? WHERE operation_id=? AND provider_job_id=?`,
@@ -825,7 +825,7 @@ external_state_version=excluded.external_state_version,evidence=excluded.evidenc
 	return tx.Commit()
 }
 
-// ensureMaintenanceTask 确保对象有一个进行中的维护接管 V3 Task（幂等：同请求键复用）。
+// ensureMaintenanceTask 确保对象有一个进行中的维护接管 Task（幂等：同请求键复用）。
 // 工单挂到真实任务下，供最终准入的 Task 控制核对（任务未取消/暂停）。
 func (s *Store) ensureMaintenanceTask(tx *sql.Tx, req TicketCreateRequest, nowV int64) (string, error) {
 	// 幂等：同请求键复用既有任务。
@@ -837,7 +837,7 @@ func (s *Store) ensureMaintenanceTask(tx *sql.Tx, req TicketCreateRequest, nowV 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	// 旧 tasks/conversations 父行（V3 外键引用）。
+	// 旧 tasks/conversations 父行（外键引用）。
 	conversationID := id()
 	if _, err := tx.Exec(`INSERT INTO conversations(id,title,created_at) VALUES(?,?,?)`,
 		conversationID, "维护接管 "+req.ObjectRef, nowV); err != nil {
@@ -849,7 +849,7 @@ VALUES(?,?,?,?,?,'active','running','维护接管',?)`,
 		taskID, conversationID, "维护接管", "维修 "+req.ObjectRef+"："+req.FaultEvidence, "维修", nowV); err != nil {
 		return "", err
 	}
-	// V3 状态：创建并置 running（维修接管进行中）。
+	// 状态：创建并置 running（维修接管进行中）。
 	if _, err := transitionTaskState(tx, taskID, EventCreate, TaskGuard{ExpectedStorageRevision: 0, Actor: req.Subject, Input: "维护接管 " + req.ObjectRef}, nowV); err != nil {
 		return "", err
 	}
@@ -957,7 +957,7 @@ ORDER BY o.updated_at LIMIT 8`, provider.identity(), now())
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if item.state == string(V3OperationRegistered) {
+		if item.state == string(RuntimeOperationRegistered) {
 			if _, err := s.DispatchTicketCreate(ctx, item.id, item.subject, "", provider); err != nil {
 				_, deferErr := s.db.ExecContext(ctx, `UPDATE ticket_dispatch_inputs SET next_check_at=? WHERE operation_id=?`, now()+15000, item.id)
 				failures = errors.Join(failures, err, deferErr)

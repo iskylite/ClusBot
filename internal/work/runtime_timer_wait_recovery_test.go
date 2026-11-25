@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-func TestV31TimerDeliveryRollsBackAndRepairs(t *testing.T) {
-	s, taskID := setupV3P108(t, "atomic.db")
+func TestTimerDeliveryRollsBackAndRepairs(t *testing.T) {
+	s, taskID := setupTimersStore(t, "atomic.db")
 	stamp := now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -60,7 +60,7 @@ WHEN NEW.source='timer' BEGIN SELECT RAISE(ABORT,'injected'); END`)
 	}
 }
 
-func TestV31TimerBootSucceedsOnceAndDoesNotFailExternalJob(t *testing.T) {
+func TestTimerBootSucceedsOnceAndDoesNotFailExternalJob(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restart.db")
 	s, err := Open(path)
 	if err != nil {
@@ -111,7 +111,7 @@ func TestV31TimerBootSucceedsOnceAndDoesNotFailExternalJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, want := range []int{3, 0} {
-		r, err := s.RecoverV3(ctx, stamp)
+		r, err := s.RecoverRuntime(ctx, stamp)
 		if err != nil || r.AppliedTimerEvents != want {
 			t.Fatalf("boot %d: %+v, %v", i, r, err)
 		}
@@ -135,8 +135,8 @@ func TestV31TimerBootSucceedsOnceAndDoesNotFailExternalJob(t *testing.T) {
 	}
 }
 
-func TestV31TimerInboxRollbackIncludesWaitAndFollowUp(t *testing.T) {
-	s, taskID := setupV3P108(t, "wait-rollback.db")
+func TestTimerInboxRollbackIncludesWaitAndFollowUp(t *testing.T) {
+	s, taskID := setupTimersStore(t, "wait-rollback.db")
 	stamp := now()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -177,7 +177,7 @@ WHERE w.wait_id='atomic'`).Scan(&wait, &inbox); err != nil || wait != "open" || 
 	}
 }
 
-func TestV31BusinessTimeoutNeverSuppliesEvidenceOrDecision(t *testing.T) {
+func TestBusinessTimeoutNeverSuppliesEvidenceOrDecision(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		kind   WaitKind
@@ -190,7 +190,7 @@ func TestV31BusinessTimeoutNeverSuppliesEvidenceOrDecision(t *testing.T) {
 		{"dependency", WaitKindDependency, "fail", "wait_timeout_fail"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			s, task := setupV3P108(t, tt.name+".sqlite")
+			s, task := setupTimersStore(t, tt.name+".sqlite")
 			ctx, stamp := t.Context(), now()
 			tx, err := s.db.BeginTx(ctx, nil)
 			if err != nil {

@@ -116,7 +116,7 @@ func TestExplicitTaskAdmissionCapacityIsDurableAndBeforeAccept(t *testing.T) {
 	reopened, err := Open(path)
 	must(err)
 	s = reopened
-	_, err = s.RecoverV3(ctx, now())
+	_, err = s.RecoverRuntime(ctx, now())
 	must(err)
 	blocked(rejected)
 	_, err = s.AdmitChat(ctx, "generic-message", actor, "", "what is our status?", "", false, Delivery{}, nil, false)

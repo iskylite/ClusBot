@@ -41,7 +41,7 @@ func TestRunMCPBindingsDoNotConnectOrExposePayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec("INSERT INTO connection_tools VALUES(?,?,?,1)", conn.ID, tool.Name, string(definition))
+	exec("INSERT INTO connection_tools(connection_id,name,definition,allowed,read_only) VALUES(?,?,?,1,1)", conn.ID, tool.Name, string(definition))
 	unbound, err := s.Submit(ctx, "unbound", "summarize", "reports", "", true)
 	if err != nil {
 		t.Fatal(err)

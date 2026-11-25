@@ -102,7 +102,6 @@ WHERE id IN (SELECT task_id FROM runs WHERE status='queued')`, now()); err != ni
 		`UPDATE run_reads SET status='not_run',detail='从备份恢复，工具未调用'
 WHERE status='queued' AND run_id IN (SELECT id FROM runs WHERE status='queued')`,
 		`UPDATE runs SET status='interrupted',error='从备份恢复，等待你继续',error_code='restored' WHERE status='queued'`,
-		`UPDATE goals SET status='stopped',revision=revision+1 WHERE status='active'`,
 		`UPDATE connections SET enabled=0,status='untested',protocol='',credential_binding='',detail='',checked_at=0,revision=revision+1`,
 		`DELETE FROM connection_tools`,
 	} {

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const v31BenchmarkPlanSchema = `
+const benchmarkPlanSchema = `
 CREATE TABLE IF NOT EXISTS benchmark_profiles (
   profile_key TEXT NOT NULL,
   version INTEGER NOT NULL,
@@ -270,10 +270,10 @@ func benchmarkGrantConstraintsMatch(raw string, c BenchmarkCase) bool {
 	return true
 }
 
-func migrateV31Benchmark(tx *sql.Tx) error {
-	if _, err := tx.Exec(v31BenchmarkPlanSchema); err != nil {
+func migrateBenchmarkStorage(tx *sql.Tx) error {
+	if _, err := tx.Exec(benchmarkPlanSchema); err != nil {
 		return err
 	}
-	_, err := tx.Exec(v31BenchmarkRunSchema)
+	_, err := tx.Exec(benchmarkRunSchema)
 	return err
 }
