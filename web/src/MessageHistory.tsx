@@ -2,6 +2,7 @@ import {Fragment,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 
 import {LoaderCircle} from 'lucide-react'
 import {api,type Material,type Message,type MessagePage} from './api'
 import {Messages,type UserIdentity} from './ExecutionText'
+import type {QuoteMessage} from './MessageActions'
 import {MCPSetupCard} from './MCPSetupCard'
 import {OperationAdviceCard} from './OperationAdviceCard'
 import {BenchmarkAdmissionCard} from './BenchmarkAdmissionCard'
@@ -44,8 +45,9 @@ function mergeLatest(page:MessagePage,messages:Message[]):MessagePage {
 
 export type LocalMessageExchange = {id:string;afterMessageID:number;content:ReactNode}
 
-export function MessageHistory({conversationID,messages,live,liveReasoning,liveThinking,liveRunID,remember,omitRunID,omitAutomaticRevisionRunID,replyCard,previewMaterials,assistantName,userAccount,localExchanges=[],mcpSetup=false,personalReadCards=false,adviceNavigate,admissionArchived=false,admissionAccepted}:{
+export function MessageHistory({conversationID,messages,live,liveReasoning,liveThinking,liveRunID,remember,omitRunID,omitAutomaticRevisionRunID,replyCard,previewMaterials,assistantName,userAccount,localExchanges=[],mcpSetup=false,personalReadCards=false,adviceNavigate,admissionArchived=false,admissionAccepted,messageActions,onQuoteMessage}:{
   conversationID:string;messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;liveRunID?:string;remember?:(id:number)=>void;omitRunID?:string;omitAutomaticRevisionRunID?:string;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;localExchanges?:LocalMessageExchange[];mcpSetup?:boolean;personalReadCards?:boolean;adviceNavigate?:(path:string)=>void;admissionArchived?:boolean;admissionAccepted?:(task:string,run:string)=>void
+  messageActions?:boolean;onQuoteMessage?:QuoteMessage
 }) {
   const anchor=useMessageAnchor()
   const [page,setPage]=useState<MessagePage>()
@@ -161,6 +163,7 @@ export function MessageHistory({conversationID,messages,live,liveReasoning,liveT
         liveReasoning={index===segments.length-1?activeReasoning:undefined}
         liveThinking={index===segments.length-1?activeThinking:false}
         remember={remember}
+        messageActions={messageActions} onQuoteMessage={onQuoteMessage}
         replyCard={matchingReply?segment.items.includes(matchingReply)?visibleReply:undefined:index===segments.length-1?visibleReply:undefined}
         previewMaterials={previewMaterials} assistantName={assistantName} userAccount={userAccount}
         memoryConversation={personalReadCards?conversationID:undefined}

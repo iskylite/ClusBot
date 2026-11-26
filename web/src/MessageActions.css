@@ -1,0 +1,74 @@
+.chat-message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  align-self: start;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--muted);
+}
+.message-user > .chat-message-actions {
+  align-self: end;
+  justify-content: flex-end;
+}
+.chat-message-action {
+  display: inline-flex;
+  min-width: 32px;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.chat-message-action:hover,.chat-message-action:focus-visible {
+  color: var(--accent);
+  background: var(--selected);
+}
+.chat-message-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.chat-message-action-status {
+  font-size: 12px;
+  line-height: 16px;
+}
+.chat-message-action-status:empty {
+  width: 0;
+}
+.message-quote-reference {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 2px;
+  align-items: center;
+  background: var(--selected);
+  border-radius: 8px;
+  color: var(--accent);
+}
+.message-quote-reference > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px 7px;
+  font-size: 12px;
+  line-height: 16px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .message:not(:hover,:focus-within) .chat-message-actions {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+@media (hover: none), (pointer: coarse) {
+  .chat-message-action,.message-quote-reference > button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

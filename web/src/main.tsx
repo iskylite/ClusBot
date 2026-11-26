@@ -13,6 +13,7 @@ import { RunHistory } from './RunHistory'
 import { TaskEditor } from './TaskEditor'
 import { MaterialPicker } from './MaterialPicker'
 import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
+import {insertDraftQuote,removeDraftQuote,type DraftQuote} from './MessageActions'
 import { PublicationPanel } from './PublicationPanel'
 import { MemoryPage } from './MemoryPage'
 import { ExperienceCandidatesPage } from './ExperienceCandidatesPage'
@@ -1474,7 +1475,10 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
   const closeConfig=()=>{setConfigEntry(undefined);chatInput.current?.focus()}
   const [selectedTask,setSelectedTask]=useState<string>()
   const ordinaryDraftKey=accountDraftKey(account.principal_id,'chat:'+(id||'new'))
-  const {taskReference,materials:draftMaterials}=useComposerDraft(ordinaryDraftKey)
+  const ordinaryDraft=useComposerDraft(ordinaryDraftKey)
+  const {taskReference,materials:draftMaterials}=ordinaryDraft
+  const [messageQuote,setMessageQuote]=useState<DraftQuote>()
+  const quoteSource=messageQuote&&ordinaryDraft.text.includes(messageQuote.inserted)?messageQuote:undefined
   const pendingAdmissions=usePendingAdmissions(ordinaryDraftKey)
   const chatInput=useRef<HTMLTextAreaElement>(null)
   const [latestReceipt,setLatestReceipt]=useState<TaskLink>()
@@ -1535,6 +1539,42 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
   const run=data?.run
   const messageAnchor=useMessageAnchor()
   const chatLogRef=useRef<HTMLDivElement>(null)
+  function canEditQuote() {
+    return Boolean(conversation&&!conversation.archived&&!isolatedOpen&&!ordinaryDraft.request&&chatInput.current&&!chatInput.current.readOnly)
+  }
+  function quoteMessage(messageID:number,text:string) {
+    if(!canEditQuote())return '这会儿无法修改草稿，请稍后再引用。'
+    if(ordinaryDraft.benchmarkPlan!==undefined||ordinaryDraft.text.trimStart().startsWith('/'))
+      return '请先完成或移除指令，再引用消息。'
+    const draft=quoteSource?removeDraftQuote(ordinaryDraft.text,quoteSource):ordinaryDraft.text
+    const next=insertDraftQuote(draft,messageID,text)
+    if(next.text.length>16000)return '草稿过长，请选择要引用的段落。'
+    changeComposerDraft(ordinaryDraftKey,()=>({text:next.text}))
+    setMessageQuote(next.source)
+    const input=chatInput.current
+    input?.focus()
+    window.requestAnimationFrame(()=>{
+      if(input&&document.activeElement===input&&input.value===next.text)input.setSelectionRange(input.value.length,input.value.length)
+    })
+  }
+  function unquoteMessage() {
+    if(!quoteSource||!canEditQuote())return
+    changeComposerDraft(ordinaryDraftKey,draft=>({text:removeDraftQuote(draft.text,quoteSource)}))
+    setMessageQuote(undefined)
+    chatInput.current?.focus()
+  }
+  function locateQuote(sourceID:number) {
+    if(!id)return
+    const anchor='message-'+sourceID
+    navigate('/chat/'+encodeURIComponent(id)+'#'+anchor)
+    window.requestAnimationFrame(()=>{
+      const source=chatLogRef.current?.querySelector<HTMLElement>('#'+anchor)
+      if(source?.tabIndex===-1&&source.classList.contains('source-message')){
+        source.scrollIntoView({block:'center'})
+        source.focus({preventScroll:true})
+      }
+    })
+  }
   const chatContentRef=useRef<HTMLDivElement>(null)
   const pinnedToBottom=useRef(true)
   const [awayFromBottom,setAwayFromBottom]=useState(false)
@@ -1879,7 +1919,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
       <div className="chat-log-wrap">
         <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
           <div className="chat-log-content" ref={chatContentRef}>
-            {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} mcpSetup={assistantManage&&!data.conversation.archived} personalReadCards={!data.conversation.archived} adviceNavigate={navigate} admissionArchived={data.conversation.archived} admissionAccepted={(taskID,sourceRunID)=>{setLatestReceipt({taskID,benchmark:true,sourceRunID});void reload()}} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
+            {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} messageActions onQuoteMessage={!data.conversation.archived&&!isolatedOpen?quoteMessage:undefined} mcpSetup={assistantManage&&!data.conversation.archived} personalReadCards={!data.conversation.archived} adviceNavigate={navigate} admissionArchived={data.conversation.archived} admissionAccepted={(taskID,sourceRunID)=>{setLatestReceipt({taskID,benchmark:true,sourceRunID});void reload()}} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
             {id&&conversation?.id===id&&!conversation.archived&&<DiscoveryConfirmationRecovery principalID={account.principal_id} conversationID={id}/>}
             {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message"><MessageContent
               reference={item.taskRef?<MessageReference label={'@'+item.taskRef.title+' 只读引用'}/>:undefined}
@@ -1968,10 +2008,14 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
           setAssistantItems(previous=>[...previous,{id:entryID,cards,createdAt:Date.now(),afterMessageID,text:/(?:密码|密钥|凭据|password|passwd|secret|credential|token|api[_ -]?key|authorization)/i.test(text)?'助手工具请求（内容已隐藏）':text}])
         }}
         openIsolated={!conversation?.archived||isolatedRequest?(model,text)=>{setIsolatedModel(model);setIsolatedText(text);setIsolatedOpen(true)}:undefined}
-        referenceConversationID={id} onReferenceTask={id?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={taskReference&&<MessageReference
+        referenceConversationID={id} onReferenceTask={id?reference=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:reference}));chatInput.current?.focus()}:undefined} reference={(taskReference||quoteSource)&&<>{taskReference&&<MessageReference
         label={(taskReference.passive?'引用任务 · ':taskReference.purpose==='revision'?'修订目标 · ':'基准控制目标 · ')+taskReference.title+' · '+taskReference.taskID+(taskReference.planRevision!==undefined?' · 修订 '+taskReference.planRevision:'')}
         onOpen={button=>{taskTrigger.current=button;setSelectedTask(taskReference.taskID)}}
-        onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>} draftKey={ordinaryDraftKey}
+        onRemove={()=>{changeComposerDraft(ordinaryDraftKey,()=>({taskReference:undefined}));chatInput.current?.focus()}}/>}
+        {quoteSource&&<div className="message-quote-reference">
+          <button type="button" onClick={()=>locateQuote(quoteSource.messageID)}>返回原消息</button>
+          <button type="button" aria-label="移除消息引用" disabled={Boolean(ordinaryDraft.request||conversation?.archived)} onClick={unquoteMessage}><X size={14} aria-hidden="true"/></button>
+        </div>}</>} draftKey={ordinaryDraftKey}
         placeholder="输入消息，输入 / 调用指令，输入 @ 引用任务或成员…" label="发送消息" disabled={busy||saving||conversation?.archived||Boolean(id&&!data)}
         disabledReason={conversation?.archived?'恢复对话后可发送':busy?'本轮处理中，草稿可继续编辑':undefined} prepareDelivery={prepareChatDelivery} onSend={async(text,key,_scope,attachments,delivery,strategy)=>{
         if(/^\/(?:助手|assistant)(?: |$)/.test(text.trimStart()) && (attachments.length>0||delivery.task_ref))throw new Error('助手工具指令不能同时携带附件或任务引用，请移除后发送。')

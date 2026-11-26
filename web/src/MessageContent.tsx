@@ -11,8 +11,8 @@ export function MaterialTypeIcon({material,size=16}:{material:Material;size?:num
   return <Icon size={size} aria-hidden="true"/>
 }
 
-export function MessageContent({reference,body,attachments,command}:{reference?:ReactNode;body?:ReactNode;attachments?:ReactNode;command?:ReactNode}) {
-  return <div className="message-content">{(reference||attachments||command)&&<div className="message-context">{reference}{attachments}{command}</div>}{body&&<div className="message-content-body">{body}</div>}</div>
+export function MessageContent({reference,body,attachments,command,bodyRef}:{reference?:ReactNode;body?:ReactNode;attachments?:ReactNode;command?:ReactNode;bodyRef?:React.Ref<HTMLDivElement>}) {
+  return <div className="message-content">{(reference||attachments||command)&&<div className="message-context">{reference}{attachments}{command}</div>}{body&&<div ref={bodyRef} className="message-content-body">{body}</div>}</div>
 }
 
 export function MessageReference({label,onOpen,onRemove}:{

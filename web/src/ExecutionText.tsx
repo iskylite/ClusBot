@@ -3,6 +3,7 @@ import {Bookmark,BookmarkPlus,Gauge} from 'lucide-react'
 import Markdown, {type Components} from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
+import {MessageActions,type QuoteMessage} from './MessageActions'
 import clusbotIcon from './clusbot-brand.svg'
 import {MemoryProvenanceCard} from './TaskListProgressCard'
 import {RunModelUsageDisclosure} from './RunModelUsageDisclosure'
@@ -158,6 +159,8 @@ const MessageItem = memo(function MessageItem({
   previewMaterials,
   memoryConversation,
   modelReceiptConversation,
+  messageActions,
+  onQuoteMessage,
 }: {
   message: Message
   messageID?: number
@@ -171,26 +174,30 @@ const MessageItem = memo(function MessageItem({
   previewMaterials?: Material[]
   memoryConversation?: string
   modelReceiptConversation?: string
+  messageActions?: boolean
+  onQuoteMessage?: QuoteMessage
 }) {
+  const body=useRef<HTMLDivElement>(null)
   return <div className={'message message-'+message.role+(focused?' source-message':'')} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}>
     <span>{message.role==='user'?userLabel:assistantLabel}</span>
     {message.role==='assistant'
-      ? <div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs} scope={memoryConversation&&message.run_id?{conversation:memoryConversation,run:message.run_id}:undefined}/>
+      ? <div><div ref={body}><FormattedText text={message.text}/></div>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs} scope={memoryConversation&&message.run_id?{conversation:memoryConversation,run:message.run_id}:undefined}/>
         {message.has_model_receipt&&modelReceiptConversation&&message.run_id&&messageID!==undefined&&
           <RunModelUsageDisclosure conversation={modelReceiptConversation} run={message.run_id} message={messageID}/>}
         {matchingReply&&replyCardContent}</div>
       : <div className="user-message"><MessageContent
           reference={message.task_ref?.task_id?<MessageReference label={'@'+(message.task_ref.title||message.task_ref.task_id)+' 只读引用'}/>:
             message.asset_query_task_id&&<MessageReference label={'资产查询 · '+message.asset_query_task_id}/>}
-          body={message.text||message.replace_materials ? <>{message.text}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}</> : undefined}
+          body={message.text||message.replace_materials ? <>{message.text&&<div ref={body}>{message.text}</div>}{message.replace_materials&&<p className="muted">仅用本轮材料</p>}</> : undefined}
           attachments={Boolean(message.materials?.length)&&<MessageAttachments items={message.materials!} previewItems={previewMaterials}/>}/>
           {messageID!==undefined && remember && <button type="button" className="icon-button remember-message" aria-label="从这条消息新增记忆" title="新增记忆" onClick={()=>remember(messageID)}><BookmarkPlus size={16}/></button>}
         </div>}
+    {messageActions&&message.text.trim()&&<MessageActions body={body} text={message.text} quote={messageID!==undefined&&onQuoteMessage?text=>onQuoteMessage(messageID,text):undefined}/>}
   </div>
 })
 
-export function Messages({messages,live,liveReasoning,liveThinking,remember,anchors=true,replyCard,previewMaterials,assistantName,userAccount,memoryConversation,modelReceiptConversation}:{
-  messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;remember?:(id:number)=>void;anchors?:boolean;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;memoryConversation?:string;modelReceiptConversation?:string
+export function Messages({messages,live,liveReasoning,liveThinking,remember,anchors=true,replyCard,previewMaterials,assistantName,userAccount,memoryConversation,modelReceiptConversation,messageActions,onQuoteMessage}:{
+  messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;remember?:(id:number)=>void;anchors?:boolean;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;memoryConversation?:string;modelReceiptConversation?:string;messageActions?:boolean;onQuoteMessage?:QuoteMessage
 }) {
   const located=useRef('')
   const group=useRef<HTMLDivElement>(null)
@@ -224,6 +231,8 @@ export function Messages({messages,live,liveReasoning,liveThinking,remember,anch
       previewMaterials={previewMaterials}
       memoryConversation={memoryConversation}
       modelReceiptConversation={modelReceiptConversation}
+      messageActions={messageActions}
+      onQuoteMessage={onQuoteMessage}
     />
   })}{replyCard&&!matchingReply&&<div className="message message-assistant">
     <span>{assistantLabel}</span>{replyCard.content}
