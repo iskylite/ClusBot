@@ -31,10 +31,19 @@ func TestApprovalDecisionOwnerAndSnapshot(t *testing.T) {
 		return out
 	}
 	human := add("human", owner, owner, stamp+60000)
+	historic := add("already-decided", owner, owner, stamp+60000)
+	// Only the internal state-machine fixture provides all three expected
+	// versions. The public endpoint must not fake this provenance.
+	if _, err := decideApproval(tx, historic.RequestKey, "approved", owner, Approval{ContractRevision: 1, PolicyVersion: 1, AssetRevision: 1}, stamp); err != nil {
+		t.Fatal(err)
+	}
 	named := add("named", owner, other, stamp+60000)
 	elapsed := add("elapsed", owner, owner, stamp)
 	if _, err := decideApproval(tx, human.RequestKey, "approved", owner, Approval{PolicyVersion: 2}, stamp); !errors.Is(err, ErrApprovalStale) {
 		t.Fatalf("wrong policy version should not mutate: %v", err)
+	}
+	if _, err := decideApproval(tx, human.RequestKey, "rejected", owner, Approval{ContractRevision: 1, AssetRevision: 1}, stamp); !errors.Is(err, ErrApprovalSourceUnverified) {
+		t.Fatalf("an incomplete trusted snapshot was accepted: %v", err)
 	}
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
@@ -53,7 +62,11 @@ func TestApprovalDecisionOwnerAndSnapshot(t *testing.T) {
 	if err := s.db.QueryRow("SELECT decision FROM approvals WHERE approval_id=?", elapsed.ApprovalID).Scan(&state); err != nil || state != "pending" {
 		t.Fatalf("foreign caller persisted expiry: %q %v", state, err)
 	}
-	decide(human, owner, nil)
+	decide(human, owner, ErrApprovalSourceUnverified)
+	decide(historic, owner, nil)
+	if err := s.db.QueryRow("SELECT decision FROM approvals WHERE approval_id=?", human.ApprovalID).Scan(&state); err != nil || state != "pending" {
+		t.Fatalf("unbound pending decision was stored: %q %v", state, err)
+	}
 	decide(human, other, sql.ErrNoRows)
 	decide(elapsed, owner, ErrApprovalExpired)
 	decide(elapsed, other, sql.ErrNoRows)

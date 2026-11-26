@@ -28,6 +28,10 @@ type AttentionSource struct {
 }
 
 func (s *Store) ReadAttention(ctx context.Context, actor, itemID string, stamp int64) (AttentionDetail, error) {
+	return readAttention(ctx, s.db, actor, itemID, stamp)
+}
+
+func readAttention(ctx context.Context, reader attentionReader, actor, itemID string, stamp int64) (AttentionDetail, error) {
 	if actor == "" || actor == "user:anonymous" {
 		return AttentionDetail{}, ErrAuthorizationDenied
 	}
@@ -39,7 +43,7 @@ func (s *Store) ReadAttention(ctx context.Context, actor, itemID string, stamp i
 	switch kind {
 	case "approval":
 		var decision string
-		err := s.db.QueryRowContext(ctx, `SELECT action,object_ref,decision,created_at,expires_at,decided_at,contract_revision,policy_version,asset_revision
+		err := reader.QueryRowContext(ctx, `SELECT action,object_ref,decision,created_at,expires_at,decided_at,contract_revision,policy_version,asset_revision
 FROM approvals WHERE approval_id=? AND subject=? AND created_at<=?`, ref, actor, stamp).
 			Scan(&item.Action, &item.ObjectRef, &decision, &item.Source.RecordedAt, &item.ExpiresAt, &item.Source.DecisionAt,
 				&item.Source.ContractRevision, &item.Source.PolicyVersion, &item.Source.AssetRevision)
@@ -69,7 +73,7 @@ FROM approvals WHERE approval_id=? AND subject=? AND created_at<=?`, ref, actor,
 		var currentVersion int
 		var waitState, phase string
 		var stopping bool
-		err := s.db.QueryRowContext(ctx, attentionBenchmarkDetailQuery, ref, actor, stamp).
+		err := reader.QueryRowContext(ctx, attentionBenchmarkDetailQuery, ref, actor, stamp).
 			Scan(&item.TaskID, &item.StepID, &item.WaitID, &item.OperationID,
 				&item.OccurredAt, &item.Source.Ref, &item.Source.RecordedAt, &item.Source.WaitVersion,
 				&currentVersion, &waitState, &item.Source.OperationState, &phase, &stopping)

@@ -1,4 +1,4 @@
-import {useCallback,useEffect,useId,useRef,useState,type KeyboardEvent,type ReactNode} from 'react'
+import {useCallback,useEffect,useId,useLayoutEffect,useRef,useState,type KeyboardEvent,type ReactNode,type RefObject} from 'react'
 import {ArrowDownToLine,ChevronRight,FileText,LoaderCircle,MessageSquareQuote,Pause,Pencil,Play} from 'lucide-react'
 import {activeRun,api,awaitingPublication,type Artifact,type Detail,type RunRecord,type Task} from './api'
 import {benchmarkReadiness,useBenchmarkProgress,useBenchmarkTaskDispatch} from './BenchmarkExecution'
@@ -43,12 +43,68 @@ function artifactPath(task:Task,id:string) {
   return '/artifacts/'+encodeURIComponent(id)+'?'+query
 }
 
-export function ChatTaskDrawer({taskID,children,onChange,navigate,sourceConversationID,onReference,closeAction,readOnly=false}:{
+type DrawerProps={
   taskID:string;children?:ReactNode;onChange:()=>void;navigate:(path:string)=>void
   sourceConversationID?:string;onReference?:(task:TaskReference)=>void;closeAction?:ReactNode;readOnly?:boolean
-}) {
+}
+
+export function ChatTaskDrawer(props:DrawerProps) {
+  return <TaskDrawerReader key={props.taskID} {...props}/>
+}
+
+function TaskDrawerReader(props:DrawerProps) {
+  const {taskID,closeAction}=props
   const [data,setData]=useState<Detail>()
   const [error,setError]=useState('')
+  const [retrying,setRetrying]=useState(false)
+  const sequence=useRef(0)
+  const active=useRef(true)
+  const retryPending=useRef(false)
+  const returnToHeading=useRef(false)
+  const heading=useRef<HTMLHeadingElement>(null)
+  const reload=useCallback(async()=>{
+    if(!active.current)return
+    const request=++sequence.current
+    try {
+      const next=await api<Detail>('/tasks/'+encodeURIComponent(taskID))
+      if(request!==sequence.current)return
+      if(next?.task?.id!==taskID)throw new Error('返回的任务与所选任务不一致。')
+      setData(next);setError('')
+    }catch(error){
+      if(request!==sequence.current)return
+      // Never leave a snapshot, its nested artifact/editor, or its controls
+      // mounted after the authoritative read could not be verified.
+      setData(undefined);setError(errorText(error))
+    }
+  },[taskID])
+  useEffect(()=>{
+    active.current=true;void reload()
+    return()=>{active.current=false;sequence.current++}
+  },[reload])
+  useLayoutEffect(()=>{
+    if(!data||!returnToHeading.current)return
+    returnToHeading.current=false
+    if(document.activeElement===document.body)heading.current?.focus({preventScroll:true})
+  },[data])
+  async function retry(button:HTMLButtonElement) {
+    if(retryPending.current)return
+    returnToHeading.current=document.activeElement===button
+    retryPending.current=true;setRetrying(true)
+    try {await reload()}
+    finally {retryPending.current=false;if(active.current)setRetrying(false)}
+  }
+  if(!data?.task)return <div className="chat-task-view chat-task-view--loading">
+    <div className="chat-task-view__close">{closeAction}</div>
+    {error?<><p role="alert">无法读取当前任务：{error}</p>
+      <button type="button" className="chat-task-small-button" aria-disabled={retrying}
+        onClick={event=>void retry(event.currentTarget)}>{retrying?'正在重新读取…':'重新读取任务'}</button></>:
+      <span role="status"><LoaderCircle className="spin" aria-hidden="true"/> 正在读取任务…</span>}
+  </div>
+  return <TaskDrawerContent {...props} data={data} task={data.task} reload={reload} heading={heading}/>
+}
+
+function TaskDrawerContent({taskID,children,onChange,navigate,sourceConversationID,onReference,closeAction,readOnly=false,data,task,reload,heading}:
+  DrawerProps&{data:Detail;task:Task;reload:()=>Promise<void>;heading:RefObject<HTMLHeadingElement|null>}) {
   const [record,setRecord]=useState<RunRecord>()
   const [recordError,setRecordError]=useState('')
   const [tab,setTab]=useState<Tab>('overview')
@@ -58,25 +114,15 @@ export function ChatTaskDrawer({taskID,children,onChange,navigate,sourceConversa
   const [editing,setEditing]=useState(false)
   const [pending,setPending]=useState(false)
   const [actionError,setActionError]=useState('')
-  const sequence=useRef(0)
   const list=useRef<HTMLDivElement>(null)
   const id=useId()
   const {progress:benchmark,unavailable:ordinary,error:benchmarkError,refresh:refreshBenchmark}=useBenchmarkProgress(taskID)
-  const reload=useCallback(async()=>{
-    const request=++sequence.current
-    try {
-      const next=await api<Detail>('/tasks/'+encodeURIComponent(taskID))
-      if(request===sequence.current){setData(next);setError('')}
-    }catch(error){if(request===sequence.current)setError(errorText(error))}
-  },[taskID])
   const taskDispatch=useBenchmarkTaskDispatch(benchmark,refreshBenchmark,()=>{void reload();onChange()})
-  useEffect(()=>{void reload();return()=>{sequence.current++}},[reload])
   useEffect(()=>{
     if(!activeRun(data?.run)&&!awaitingPublication(data?.publication)&&!detailsOpen)return
     const timer=window.setInterval(()=>{if(!document.hidden)void reload()},2500)
     return()=>window.clearInterval(timer)
   },[data?.run?.status,data?.publication?.status,detailsOpen,reload])
-  const task=data?.task
   const run=data?.run
   useEffect(()=>{
     if(!run?.id){setRecord(undefined);setRecordError('');return}
@@ -111,7 +157,6 @@ export function ChatTaskDrawer({taskID,children,onChange,navigate,sourceConversa
     catch(error){setActionError(errorText(error));await reload()}
     finally{setPending(false)}
   }
-  if(!data||!task)return <div className="chat-task-view chat-task-view--loading"><div className="chat-task-view__close">{closeAction}</div>{error?<p role="alert">{error}</p>:<LoaderCircle className="spin" aria-label="正在加载任务"/>}</div>
   const status=benchmark&&!benchmarkError?benchmarkReadiness(benchmark):statusText(task,data)
   const currentStage=benchmark?.cases.findIndex(item=>item.phase==='submitting'||item.phase==='following'||item.operation?.state==='reconcile')??-1
   const busy=activeRun(run)
@@ -139,7 +184,7 @@ export function ChatTaskDrawer({taskID,children,onChange,navigate,sourceConversa
     <header className="chat-task-view__header">
       <div className="chat-task-view__close">{closeAction}</div>
       <div className="chat-task-view__badges"><span className="chat-task-view__id" title={task.id}>{task.id.slice(0,8)}</span><span className={'chat-task-view__status chat-task-view__status--'+task.status}>{status}</span></div>
-      <h2>{task.title}</h2>
+      <h2 ref={heading} tabIndex={-1}>{task.title}</h2>
     </header>
     <div className="chat-task-tabs" role="tablist" aria-label="任务详情" ref={list} onKeyDown={navigateTabs}>
       {tabs.map(item=><button type="button" role="tab" id={id+'-'+item.id} key={item.id} aria-selected={tab===item.id} tabIndex={tab===item.id?0:-1} onClick={()=>chooseTab(item.id)}>{item.label}</button>)}
@@ -181,7 +226,7 @@ export function ChatTaskDrawer({taskID,children,onChange,navigate,sourceConversa
     </footer>}
     {taskDispatch.notice&&<p className={taskDispatch.notice.error?'chat-task-action-error':'chat-task-action-notice'} role={taskDispatch.notice.error?'alert':'status'}>{taskDispatch.notice.text}</p>}
     {benchmark&&!benchmarkError&&benchmark.dispatch_control?.unavailable_reason&&<p className="chat-task-action-notice">{benchmark.dispatch_control.unavailable_reason}</p>}
-    {(actionError||error)&&<p className="chat-task-action-error" role="alert">{actionError||error}</p>}
+    {actionError&&<p className="chat-task-action-error" role="alert">{actionError}</p>}
     {editing&&<div onKeyDown={event=>{if(event.key==='Escape')event.stopPropagation()}}><TaskEditor task={task} blocked={blocked} reload={reload} onSaved={async()=>{await reload();onChange()}} onClose={()=>setEditing(false)}/></div>}
   </div>
 }

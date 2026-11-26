@@ -95,7 +95,7 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 		t.Fatal(err)
 	}
 	provider := &roleEntrancesBenchmark{allowResult: make(chan struct{})}
-	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}, BenchmarkProvider: provider, BenchmarkEvents: events}
+	server := Server{Store: store, Settings: settings, Hosts: []string{"127.0.0.1"}}
 	api := &a1Server{ts: httptest.NewServer(businessFixtureHandler(t, server)), store: store}
 	defer api.close()
 	api.cookie = api.login()
@@ -170,28 +170,53 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 		t.Fatalf("wrong model per user entry: got %v want %v", got, want)
 	}
 
-	actor := businessFixturePrincipal(t, store)
+	// The direct signed provider hook is not an account router and must not
+	// write to the authenticated business fixture. Use its supported isolated
+	// store while retaining the same model observer. Account-routed receipts
+	// are covered by the separate two-account runtime integration test.
+	receiptPath := filepath.Join(t.TempDir(), "provider-receipts.sqlite")
+	receiptStore, err := work.Open(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiptStore.Close()
+	receiptServer := Server{Store: receiptStore, Settings: settings, BenchmarkEvents: events}
+	receiptMux := http.NewServeMux()
+	receiptMux.HandleFunc("POST /api/v1/provider/benchmark-events", receiptServer.benchmarkEvent)
+	receiptEndpoint := httptest.NewServer(receiptMux)
+	defer receiptEndpoint.Close()
+	const actor = "user:session"
 	binding := work.BenchmarkBinding{Connection: "bench", Revision: 1, Tool: "test", Validator: "structured-metrics@1"}
-	grant := work.DomainBenchmarkGrant{Connection: "bench", Revision: 1, Tool: "test", ExpiresAt: time.Now().Add(time.Minute).UnixMilli()}
-	if err := store.ImportDomainAssetsForAccount(ctx, businessFixturePrincipal(t, store), []work.DomainAssetEntry{{ObjectRef: "node-1", Kind: "node", Identity: "fixture-node", Benchmark: []work.DomainBenchmarkGrant{grant}}}); err != nil {
+	if err := receiptStore.SeedAssetForTest("node-1", work.AssetStateRecheck); err != nil {
 		t.Fatal(err)
 	}
-
-	if err := store.PublishBenchmarkProfile(ctx, actor, work.BenchmarkProfile{Key: "entrances", Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Targets: []string{"node-1"}, Binding: binding, RequiredMetrics: map[string]string{"rate": "GB/s"}, NeedsRawEvidence: true}}}); err != nil {
+	db, err := sql.Open("sqlite", receiptPath)
+	if err != nil {
 		t.Fatal(err)
 	}
-	bench, err := store.SubmitBenchmarkRun(ctx, actor, work.BenchmarkRunRequest{RequestKey: "existing-benchmark-entrance", Profile: "entrances", Version: 1}, provider)
+	defer db.Close()
+	grantTime := time.Now()
+	if _, err = db.ExecContext(ctx, `INSERT INTO authorizations
+(auth_id,subject,action,object_ref,param_constraints,valid_from,expires_at,owner,created_at,updated_at)
+VALUES('fixture-benchmark-grant',?,'benchmark.execute','node-1','{"revision":1,"connection":"bench","tool":"test"}',?,?,?,?,?)`,
+		actor, grantTime.UnixMilli(), grantTime.Add(time.Minute).UnixMilli(), actor, grantTime.UnixMilli(), grantTime.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := receiptStore.PublishBenchmarkProfile(ctx, actor, work.BenchmarkProfile{Key: "entrances", Version: 1, Cases: []work.BenchmarkCase{{Key: "first", Targets: []string{"node-1"}, Binding: binding, RequiredMetrics: map[string]string{"rate": "GB/s"}, NeedsRawEvidence: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	bench, err := receiptStore.SubmitBenchmarkRun(ctx, actor, work.BenchmarkRunRequest{RequestKey: "existing-benchmark-entrance", Profile: "entrances", Version: 1}, provider)
 	if err != nil {
 		t.Fatal(err)
 	}
 	benchDone := make(chan struct{})
-	go func() { defer close(benchDone); store.RunBenchmarks(runCtx, provider) }()
+	go func() { defer close(benchDone); receiptStore.RunBenchmarks(runCtx, provider) }()
 	defer func() { cancel(); <-benchDone }()
 	readState := func(want string) work.BenchmarkRunProgress {
 		t.Helper()
 		deadline := time.Now().Add(4 * time.Second)
 		for time.Now().Before(deadline) {
-			out, err := store.BenchmarkProgress(ctx, actor, bench)
+			out, err := receiptStore.BenchmarkProgress(ctx, actor, bench)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -211,14 +236,14 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 	mac.Write([]byte(stamp + "\n" + payload))
 	deliver := func(wantDuplicate bool) {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, api.ts.URL+"/api/v1/provider/benchmark-events", strings.NewReader(payload))
+		req, err := http.NewRequest(http.MethodPost, receiptEndpoint.URL+"/api/v1/provider/benchmark-events", strings.NewReader(payload))
 		if err != nil {
 			t.Fatal(err)
 		}
 		req.Host = "127.0.0.1"
 		req.Header.Set("X-ClusBot-Timestamp", stamp)
 		req.Header.Set("X-ClusBot-Signature", fmt.Sprintf("%x", mac.Sum(nil)))
-		res, err := api.ts.Client().Do(req)
+		res, err := receiptEndpoint.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,11 +259,6 @@ func TestModelRoleEntrancesRouteChatButNotTaskFollowupOrProviderReceipt(t *testi
 	after := readState("verified")
 	// Benchmark state alone would also advance on ordinary polling. Check the
 	// actual persisted source event was consumed by its bound job matcher.
-	db, err := sql.Open("sqlite", path+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
 	var state string
 	deadline := time.Now().Add(4 * time.Second)
 	for state != "applied" && time.Now().Before(deadline) {

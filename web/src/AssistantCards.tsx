@@ -321,6 +321,9 @@ export function AssistantCard({item,navigate,canManageModels=false,modelConcurre
     '/api/v1/admin/tasks/'+encodeURIComponent(params.owner)+'/'+encodeURIComponent(params.id)+'/artifacts/'+encodeURIComponent(inputBody.artifact_id)+'/content':undefined
   const result=current.state==='completed'?previewText(current.result):undefined
   const form=current.state==='form_required'?trustedForm(current.tool,current.form):undefined
+  if(current.state==='form_required'&&current.tool==='configure_mcp_connection'&&current.form==='conversation_mcp_onboarding'){
+    return canManageModels?<article className="assistant-card"><h3>接入 MCP</h3><p>在对话中输入「接入 MCP」。服务地址、程序和凭据引用只在受信表单中填写。</p></article>:<p role="status">仅管理员能添加 MCP 连接。</p>
+  }
   if(current.state==='form_required'&&current.tool==='role_binding_prefill'&&isAssistantItem(current)){
     return canManageModels?<RoleBindingPrefillCard prefill={current.prefill as RoleBindingPrefill} navigate={navigate}/>:<p role="status">当前账号无权管理模型设置。</p>
   }

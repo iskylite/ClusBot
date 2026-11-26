@@ -78,7 +78,7 @@ func (s Server) serveAccountBusiness(w http.ResponseWriter, r *http.Request, rou
 		instance.ServeHTTP(w, r)
 		return
 	}
-	if !accountPersonalRoute(route) {
+	if !accountPersonalRoute(route) && !(s.AccountBenchmarkDispatch && accountBenchmarkDispatchRoute(route)) {
 		fail(w, 503, "account_feature_unavailable", "账号服务尚未接入此功能")
 		return
 	}
@@ -111,6 +111,18 @@ func accountPersonalRoute(route string) bool {
 	switch route {
 	case "GET /api/v1/preferences", "PUT /api/v1/preferences", "GET /api/v1/settings/data/storage",
 		"POST /api/v1/a2ui/discovery-candidates", "GET /api/v1/conversations/{id}/a2ui/discovery-candidates", "POST /api/v1/conversations/{id}/a2ui/actions",
+		"GET /api/v1/conversations/{id}/task-card/{run}", "POST /api/v1/conversations/{id}/task-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/task-card/{run}/records/{task}",
+		"GET /api/v1/conversations/{id}/asset-card/{run}", "POST /api/v1/conversations/{id}/asset-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/attention-card/{run}", "POST /api/v1/conversations/{id}/attention-card/{run}/actions",
+		"POST /api/v1/conversations/{id}/attention-card/{run}/approval-preview",
+		"GET /api/v1/conversations/{id}/skill-card/{run}", "POST /api/v1/conversations/{id}/skill-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/artifact-card/{run}", "POST /api/v1/conversations/{id}/artifact-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/memory-card/{run}", "POST /api/v1/conversations/{id}/memory-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/schedule-card/{run}", "POST /api/v1/conversations/{id}/schedule-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/report-card/{run}", "POST /api/v1/conversations/{id}/report-card/{run}/actions",
+		"GET /api/v1/conversations/{id}/operation-advice/{run}", "POST /api/v1/conversations/{id}/operation-advice/{run}/actions",
+		"GET /api/v1/conversations/{id}/mcp-setup/{run}", "POST /api/v1/conversations/{id}/mcp-setup/{run}/actions", "POST /api/v1/conversations/{id}/mcp-setup/{run}/preview", "POST /api/v1/conversations/{id}/mcp-setup/{run}/connection", "POST /api/v1/conversations/{id}/mcp-setup/{run}/operation",
 		"GET /api/v1/conversations/{id}/a2ui/actions/{key}",
 		"POST /api/v1/conversations/{id}/a2ui/actions/{key}/confirm",
 		"GET /api/v1/domain/snapshot", "GET /api/v1/domain/cluster-trends", "GET /api/v1/domain/cluster-inventory",
@@ -125,6 +137,7 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/assistant/composer-options",
 		"GET /api/v1/assistant/token-usage-stats",
 		"GET /api/v1/assistant/runs/{id}/model-receipt", "GET /api/v1/overview", "GET /api/v1/skills",
+		"GET /api/v1/conversations/{id}/runs/{run}/model-receipt/{message}",
 		"GET /api/v1/conversations/{id}/skill-binding", "PUT /api/v1/conversations/{id}/skill-binding",
 		"GET /api/v1/runs/{id}/skill-binding",
 		"GET /api/v1/workspace/files", "POST /api/v1/attachments/workspace",
@@ -149,6 +162,7 @@ func accountPersonalRoute(route string) bool {
 		"GET /api/v1/conversations/history", "GET /api/v1/conversations/{id}/history", "GET /api/v1/conversations/{id}/events",
 		"POST /api/v1/conversations/{id}/cancel", "PATCH /api/v1/conversations/{id}", "DELETE /api/v1/conversations/{id}",
 		"POST /api/v1/conversations/{id}/messages", "POST /api/v1/conversations/{id}/resume",
+		"GET /api/v1/conversations/{id}/a2ui/benchmark-revision/{run_id}", "POST /api/v1/conversations/{id}/a2ui/benchmark-revision/{run_id}",
 		"POST /api/v1/conversations/{id}/benchmark-revision-preview",
 		"GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}",
 		"GET /api/v1/conversations/{id}/benchmark-revision-preview/{run_id}",

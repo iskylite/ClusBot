@@ -33,7 +33,7 @@ import {IsolatedReplyComposer} from './IsolatedReplyComposer'
 import {BenchmarkExecutionConversation} from './BenchmarkExecutionConversation'
 import {AssistantCard,DiscoveryResult} from './AssistantCards'
 import {DiscoveryConfirmationRecovery} from './DiscoveryPanel'
-import {assistantReplyCards,isAssistantItem,type AssistantItem,type DiscoveryConversationSeed} from './assistantSurface'
+import {checkedBenchmarkPreview,assistantReplyCards,isAssistantItem,type AssistantItem,type DiscoveryConversationSeed} from './assistantSurface'
 import {ReplyStrategy,useComposerOptions,useComposerSuggestions,type ReplyModel} from './ComposerUI'
 import {AccountLogin, AccountPage, avatarText, decodeAccountSession, ForcedPasswordChange, type Account, type Session} from './AccountUI'
 import {applyPreferences, displayDate, GeneralPreferencesPage, uiLanguage, useTaskNotifications, type Preferences} from './GeneralPreferences'
@@ -1600,19 +1600,19 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
   },[messageAnchor])
   useEffect(()=>{
     setReopenedRevision(undefined)
-    if(!id||!run||!run.response.startsWith('已生成基准任务 '))return
+    const meta=run?.benchmark_revision_preview
+    if(!id||!run||!meta||!meta.task_id||meta.expected_revision<1)return
     let active=true
     const base='/conversations/'+encodeURIComponent(id)+'/benchmark-revision-preview/'+encodeURIComponent(run.id)
     void (async()=>{
       try {
-        const meta=await api<{task_id:string;source_run_id?:string;expected_revision:number;applied_revision?:number}>(base+'?metadata=1')
-        if(!active||!meta.task_id||meta.expected_revision<1)return
         const source:Run={...run,id:meta.source_run_id||run.id,benchmark_revision_suggestion:{task_id:meta.task_id,expected_revision:meta.expected_revision}}
         if(meta.applied_revision){setReopenedRevision({anchorRunID:run.id,source,applied:meta.applied_revision});return}
         try {
-          const preview=await api<RevisionPreview>(base)
-          if(active&&preview.task_id===meta.task_id&&preview.proposal.expected_revision===meta.expected_revision)
-            setReopenedRevision({anchorRunID:run.id,source,preview})
+          const raw=await api<RevisionPreview>(base)
+          if(raw.run_id!==run.id||raw.conversation_id!==id||raw.source_run_id!==meta.source_run_id||raw.task_id!==meta.task_id||raw.proposal.expected_revision!==meta.expected_revision)throw new Error('历史预演不属于原任务或会话。')
+          const preview=checkedBenchmarkPreview(raw,id,meta.source_run_id,meta.task_id,meta.expected_revision)
+          if(active)setReopenedRevision({anchorRunID:run.id,source,preview})
         } catch(e) {
           if(active&&e instanceof APIError&&e.status===409)setReopenedRevision({anchorRunID:run.id,source,stale:true})
           else if(active)setActionError(errorMessage(e))
@@ -1620,7 +1620,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
       } catch(e) {if(active)setActionError(errorMessage(e))}
     })()
     return()=>{active=false}
-  },[id,run?.id])
+  },[id,run?.id,run?.benchmark_revision_preview?.applied_revision])
   const executionSuggestion=run?.benchmark_execution_suggestion
   const executionTarget=taskReference?.planRevision!==undefined ? taskReference :
     executionSuggestion ? {taskID:executionSuggestion.task_id,title:'任务 '+executionSuggestion.task_id,planRevision:executionSuggestion.plan_revision} : undefined
@@ -1654,14 +1654,13 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
   }
   const canResume=Boolean(conversation && !conversation.archived && run && !run.task_id && data?.read_checkpoint==='ready')
   const chatError=actionError||error||(run?.error_code==='stop'?'':run?.error)
-  const cardRun=run?.benchmark_suggestion||run?.benchmark_revision_suggestion?run:reopenedRevision?.source
+  const cardRun=run?.benchmark_revision_suggestion?run:reopenedRevision?.source
   const benchmarkReply=id&&cardRun&&!busy?{
     runID:reopenedRevision?.source===cardRun?reopenedRevision.anchorRunID:cardRun.id,
     content:<BenchmarkConversation key={cardRun.id} conversationID={id} run={cardRun} archived={Boolean(conversation?.archived)}
       initialRevision={reopenedRevision?.source===cardRun?reopenedRevision.preview:undefined} initialStale={reopenedRevision?.source===cardRun?reopenedRevision.stale:undefined}
       initialAppliedRevision={reopenedRevision?.source===cardRun?reopenedRevision.applied:undefined}
-      alreadyAccepted={[...taskLinks.values()].some(link=>link.benchmark&&link.sourceRunID===cardRun.id)}
-      onAccepted={taskID=>{setLatestReceipt({taskID,benchmark:true,sourceRunID:cardRun.id});void reload()}} onApplied={()=>{if(!cardRun.benchmark_revision_suggestion)void reload()}}
+      onApplied={()=>{if(!cardRun.benchmark_revision_suggestion)void reload()}}
       onRestore={async(taskID,title)=>{
         const text=data?.messages.find(message=>message.run_id===cardRun.id&&message.role==='user')?.text
         if(!text)throw new Error('无法读取原修订要求，请从对话中复制后重新选择任务。')
@@ -1880,7 +1879,7 @@ function Chat({id,navigate,modelNotice,assistantManage,modelConcurrency,account,
       <div className="chat-log-wrap">
         <div className="discussion chat-log" ref={chatLogRef} onScroll={handleChatScroll}>
           <div className="chat-log-content" ref={chatContentRef}>
-            {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
+            {data?<MessageHistory conversationID={data.conversation.id} messages={data.messages} live={busy?liveOutputText:undefined} liveReasoning={busy&&!run?.task_id?reasoning:undefined} liveThinking={Boolean(busy&&!run?.task_id)} liveRunID={busy?run?.id:undefined} remember={rememberMessage} mcpSetup={assistantManage&&!data.conversation.archived} personalReadCards={!data.conversation.archived} adviceNavigate={navigate} admissionArchived={data.conversation.archived} admissionAccepted={(taskID,sourceRunID)=>{setLatestReceipt({taskID,benchmark:true,sourceRunID});void reload()}} replyCard={benchmarkReply} omitAutomaticRevisionRunID={reopenedRevision&&reopenedRevision.source.id!==reopenedRevision.anchorRunID?reopenedRevision.anchorRunID:undefined} previewMaterials={draftMaterials} assistantName="ClusBot" userAccount={account} localExchanges={localExchanges}/>:localExchanges.map(entry=><div className="messages" key={entry.id}>{entry.content}</div>)}
             {id&&conversation?.id===id&&!conversation.archived&&<DiscoveryConfirmationRecovery principalID={account.principal_id} conversationID={id}/>}
             {optimisticMessages.map(item=><div className="messages" key={'opt:'+item.key}><div className="message message-user"><span><time dateTime={new Date(item.createdAt).toISOString()}>{displayDate(item.createdAt,{hour:'2-digit',minute:'2-digit'})}</time>{account?.display_name||'你'}{account&&<i className="message-user-avatar" aria-hidden="true">{avatarText(account)}</i>}</span><div className="user-message"><MessageContent
               reference={item.taskRef?<MessageReference label={'@'+item.taskRef.title+' 只读引用'}/>:undefined}

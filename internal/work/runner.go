@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -860,6 +861,15 @@ func (s *Store) runEvents(runID string, after int64, validateCursor bool) ([]Eve
 		}
 		if privateReply && (e.Kind == "message.delta" || e.Kind == "reasoning.delta") {
 			e.Kind, e.Data = "message.content_unavailable", `{"reason":"source_unavailable"}`
+		}
+		// The card endpoints recheck current visibility. Generic SSE may
+		// replay the sequence marker, but not these private snapshot fields.
+		if e.Kind == assistantTaskListEvent || e.Kind == assistantAssetListEvent || e.Kind == assistantAttentionListEvent || e.Kind == assistantArtifactListEvent ||
+			e.Kind == assistantOperationAdviceEvent || e.Kind == assistantOperationChoiceEvent || e.Kind == assistantBenchmarkComparisonEvent || e.Kind == assistantDiscoveryScheduleEvent ||
+			strings.HasPrefix(e.Kind, assistantTaskProgressEvent) || strings.HasPrefix(e.Kind, assistantAssetStatusEvent) ||
+			strings.HasPrefix(e.Kind, assistantAttentionReasonEvent) || strings.HasPrefix(e.Kind, assistantApprovalPreviewEvent) ||
+			strings.HasPrefix(e.Kind, assistantArtifactPreviewEvent) || e.Kind == assistantSkillCardEvent || e.Kind == assistantSkillAppliedEvent || strings.HasPrefix(e.Kind, assistantSkillPreviewEvent) {
+			e.Data = `{}`
 		}
 		events = append(events, e)
 	}

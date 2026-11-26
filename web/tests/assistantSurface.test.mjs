@@ -8,7 +8,7 @@ const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES20
 const assistantSurfaceModule='data:text/javascript;base64,'+Buffer.from(js).toString('base64')
 const {parseSurfaces,assistantDetails,previewText,trustedForm,isAssistantItem,assistantReplyCards,createSurfaceAction,
   resolveSurfaceText,parseSurfaceReceipt,sendSurfaceAction,readSurfaceAction,confirmDiscoveryAdmission,
-  recoverDiscoveryConfirmation,discoveryConfirmationRef}=await import(assistantSurfaceModule)
+  recoverDiscoveryConfirmation,discoveryConfirmationRef,previewBenchmarkSurface,checkedBenchmarkPreview,readBenchmarkRevisionApplied,readBenchmarkRevisionSnapshot,benchmarkPreviewSurfaces,benchmarkSyncActualAction}=await import(assistantSurfaceModule)
 const catalog='https://a2ui.org/specification/v1_0/catalogs/basic/catalog.json'
 const makeSurface=()=>[
   {version:'1.0',createSurface:{surfaceId:'a',catalogId:catalog}},
@@ -83,6 +83,55 @@ test('A2UI supports bounded server data updates without enabling extra fields or
   }
   messages[1].updateDataModel.path='/constructor/prototype'
   assert.equal(parseSurfaces(messages),undefined)
+})
+
+test('memory provenance accepts only the original signed row reference and revision fields',()=>{
+  const make=(slot,extra={})=>{
+    const surface=makeSurface()
+    surface[1].updateComponents.components[2].action.event={
+      name:'review_memory_provenance',context:{memory_slot:slot,revision,...extra},
+    }
+    return surface
+  }
+  const [card]=parseSurfaces(make('16'))
+  const event=createSurfaceAction(card,'button',card.data,time)
+  assert.equal(event.version,'1.0')
+  assert.deepEqual(event.action.context,{memory_slot:'16',revision})
+  assert.equal(parseSurfaces(make('17')),undefined)
+  assert.equal(parseSurfaces(make('1',{memory_id:'external-target'})),undefined)
+  assert.equal(parseSurfaces(make('1',{source_text:'private text'})),undefined)
+})
+
+test('benchmark comparison cannot add or alter report identities in the standard preview action',()=>{
+  const make=(slot,extra={})=>{
+    const surface=makeSurface()
+    surface[1].updateComponents.components[2].action.event={
+      name:'preview_benchmark_comparison',context:{report_slot:slot,revision,...extra},
+    }
+    return surface
+  }
+  const [card]=parseSurfaces(make('1'))
+  const event=createSurfaceAction(card,'button',card.data,time)
+  assert.deepEqual(event.action.context,{report_slot:'1',revision})
+  assert.equal(parseSurfaces(make('2')),undefined)
+  assert.equal(parseSurfaces(make('1',{task_id:conversation})),undefined)
+  assert.equal(parseSurfaces(make('1',{publish:true})),undefined)
+})
+
+test('discovery schedule preview accepts only the one scoped read action',()=>{
+  const make=(slot,extra={})=>{
+    const surface=makeSurface()
+    surface[1].updateComponents.components[2].action.event={
+      name:'preview_discovery_schedule',context:{schedule_slot:slot,revision,...extra},
+    }
+    return surface
+  }
+  const [card]=parseSurfaces(make('1'))
+  const event=createSurfaceAction(card,'button',card.data,time)
+  assert.deepEqual(event.action.context,{schedule_slot:'1',revision})
+  assert.equal(parseSurfaces(make('2')),undefined)
+  assert.equal(parseSurfaces(make('1',{plan_id:'other'})),undefined)
+  assert.equal(parseSurfaces(make('1',{enable:true})),undefined)
 })
 
 test('renderer transport uses the current agent route and rejects mismatched candidates before showing confirmation',async()=>{
@@ -294,4 +343,133 @@ test('model setup receipts accept only local identifiers and revisions',()=>{
   assert.equal(isAssistantItem({...provider,prefill:{provider_id:id,provider_revision:3,api_key:'secret'}}),false)
   assert.equal(isAssistantItem({...provider,form:'https://attacker.example'}),false)
   assert.equal(isAssistantItem({...provider,prefill:{}}),true)
+})
+
+
+test('benchmark preview emits one standard event only for its source message, task and revision',async()=>{
+  const run='d'.repeat(32),task='e'.repeat(32)
+  const messages=[{version:'1.0',createSurface:{surfaceId:'benchmark_issued',catalogId:catalog,components:[
+    {id:'root',component:'Column',children:['preview_revision']},{id:'label',component:'Text',text:'查看方案修订预览'},
+    {id:'preview_revision',component:'Button',variant:'primary',child:'label',action:{event:{name:'preview_benchmark_revision',context:{source_run_id:run,task_id:task,revision:3}}}},
+  ]}}]
+  const [surface]=parseSurfaces(messages)
+  const action=createSurfaceAction(surface,'preview_revision',surface.data,time)
+  const receipt={run_id:'f'.repeat(32),conversation_id:conversation,source_run_id:run,task_id:task,
+    proposal:{state:'preview_only',expected_revision:3,interpretation:{action:'remove_case',case_key:'collective'},preview:{revision:4,changes:{added:[],removed:['collective'],changed:[],order_changed:false},frozen_cases:[]}}}
+  let calls=0
+  const transport=async(path,body,method,headers)=>{
+    calls++
+    assert.equal(path,'/conversations/'+conversation+'/a2ui/benchmark-revision/'+run)
+    assert.equal(method,'POST')
+    assert.deepEqual(headers,{'X-ClusBot-Request-Key':'same-browser-click'})
+    assert.deepEqual(body,{version:'1.0',action:{name:'preview_benchmark_revision',surfaceId:surface.id,sourceComponentId:'preview_revision',
+      timestamp:time.toISOString(),context:{source_run_id:run,task_id:task,revision:3}}})
+    return receipt
+  }
+  await assert.rejects(previewBenchmarkSurface(transport,conversation,run,task,4,action,'same-browser-click'))
+  await assert.rejects(sendSurfaceAction(transport,conversation,action,'same-browser-click'))
+  assert.equal(calls,0)
+  assert.deepEqual(await previewBenchmarkSurface(transport,conversation,run,task,3,action,'same-browser-click'),receipt)
+  assert.equal(calls,1)
+  await assert.rejects(previewBenchmarkSurface(async()=>({...receipt,task_id:run}),conversation,run,task,3,action,'same-browser-click'))
+  for(const mutate of [
+    r=>r.proposal.preview.revision++,
+    r=>r.proposal.preview.changes.added=['other'],
+    r=>r.proposal.preview.changes.removed=['wrong'],
+    r=>r.proposal.interpretation.change_expected_actual_config=true,
+    r=>r.proposal.preview.frozen_cases={},
+    r=>r.proposal.preview.asset_impact={scope_changed:false,baseline:{target_count:-1},proposed:{}},
+  ]){
+    const changed=structuredClone(receipt);mutate(changed)
+    assert.throws(()=>checkedBenchmarkPreview(changed,conversation,run,task,3))
+  }
+  messages[0].createSurface.components[2].action.event.context.source_run_id='custom://injected'
+  assert.equal(parseSurfaces(messages),undefined)
+})
+
+test('benchmark revision preserves the frozen asset diff and local holds as separate facts',()=>{
+  const source='d'.repeat(32),task='e'.repeat(32)
+  const scope=refs=>({source:'frozen_targets',target_count:refs.length,target_refs:refs})
+  const wire={run_id:'f'.repeat(32),conversation_id:conversation,source_run_id:source,task_id:task,proposal:{
+    state:'preview_only',expected_revision:3,interpretation:{action:'remove_case',case_key:'collective'},
+    preview:{revision:4,changes:{added:[],removed:['collective'],changed:[],order_changed:false},frozen_cases:['first'],
+      asset_impact:{source:'frozen_targets',base_revision:3,scope_limit:'within_original_task',scope_changed:true,
+        baseline:scope(['node-1','node-2']),proposed:scope(['node-1']),changed_cases:[{case_key:'collective',change:'removed',before_refs:['node-2'],after_refs:[]}],
+        current_local_holds:[{case_key:'first',target_refs:['node-1']}]}}}}
+  const parse=r=>checkedBenchmarkPreview(r,conversation,source,task,3)
+  const checked=parse(wire).proposal.preview.asset_impact
+  assert.deepEqual(checked.removed_refs,['node-2'])
+  assert.deepEqual(checked.changed_cases,wire.proposal.preview.asset_impact.changed_cases)
+  assert.deepEqual(checked.current_local_holds,[{case_key:'first',target_refs:['node-1']}])
+  const same=structuredClone(wire)
+  Object.assign(same.proposal.preview.asset_impact,{proposed:scope(['node-1','node-2']),scope_changed:false})
+  assert.deepEqual(parse(same).proposal.preview.asset_impact.removed_refs,[])
+  for(const corrupt of [
+    v=>v.base_revision--,
+    v=>v.scope_changed=false,
+    v=>v.proposed=scope(['new-unauthorized-node']),
+    v=>v.changed_cases[0].before_refs=['node-1'],
+    v=>v.current_local_holds[0].case_key='collective',
+    v=>v.current_local_holds[0].target_refs=['node-1','node-1'],
+    v=>v.baseline.target_count--,
+  ]){
+    const changed=structuredClone(wire);corrupt(changed.proposal.preview.asset_impact)
+    assert.throws(()=>parse(changed))
+  }
+})
+
+test('an uncertain application reads only the exact preview and cannot accept a mismatched receipt',async()=>{
+  const source='d'.repeat(32),task='e'.repeat(32),run='f'.repeat(32)
+  const wire={run_id:run,conversation_id:conversation,source_run_id:source,task_id:task,proposal:{
+    state:'preview_only',expected_revision:3,interpretation:{action:'remove_case',case_key:'collective'},
+    preview:{revision:4,changes:{added:[],removed:['collective'],changed:[],order_changed:false},frozen_cases:[]}}}
+  const value=checkedBenchmarkPreview(wire,conversation,source,task,3)
+  const base='/conversations/'+conversation+'/benchmark-revision-preview/'+run
+  const body={task_id:task,source_run_id:source,expected_revision:3}
+  for(const applied of [undefined,4]){
+    assert.equal(await readBenchmarkRevisionApplied(async(...args)=>{
+      assert.deepEqual(args,[base+'?metadata=1'])
+      return {...body,applied_revision:applied}
+    },value),applied)
+  }
+  for(const mismatch of [{task_id:source},{source_run_id:task},{expected_revision:4},{applied_revision:5},{applied_revision:'4'}]){
+    await assert.rejects(readBenchmarkRevisionApplied(async()=>({...body,...mismatch}),value))
+  }
+  await assert.rejects(readBenchmarkRevisionSnapshot(async(...args)=>{
+    assert.deepEqual(args,[base])
+    return wire // Durable replay does not retain a live authorization snapshot.
+  },value))
+})
+
+test('changing a checked benchmark parameter ties the request and frozen diff to the explicit choice', async()=>{
+  const run='1'.repeat(32),task='2'.repeat(32)
+  const mode='preview_benchmark_revision'
+  const create=(surfaceId,id,name)=>({version:'1.0',createSurface:{surfaceId,catalogId:catalog, components:[
+    {id:'root',component:'Column',children:[id]},{id:'label',component:'Text',text:'Review'},
+    {id,component:'Button',child:'label', action:{event:{name,context:{source_run_id:run,task_id:task,revision:2}}}},
+  ]}})
+  const opts={conversation_id:conversation,surface:[create('ordinary','preview_revision',mode),create('signedChoice','preview_with_actual',benchmarkSyncActualAction)]}
+  const {preview,sync}=benchmarkPreviewSurfaces(opts,conversation,run,task,2)
+  assert.notEqual(preview.id,sync.id)
+  assert.equal(benchmarkPreviewSurfaces(opts,conversation,task,task,2),undefined)
+  assert.equal(benchmarkPreviewSurfaces({...opts,surface:[opts.surface[0]]},conversation,run,task,2),undefined)
+  const action=createSurfaceAction(sync,'preview_with_actual',sync.data,time)
+  assert.deepEqual(action.action.context,{source_run_id:run,task_id:task,revision:2})
+  const wire={run_id:'3'.repeat(32),conversation_id:conversation,source_run_id:run,task_id:task,requested_action:benchmarkSyncActualAction,
+    proposal:{state:'preview_only',expected_revision:2,interpretation:{action:'set_parameter',case_key:'collective',parameter:'duration_sec',value:'90',change_expected_actual_config:true},
+      parameter_change:{before:'60',after:'90',expected_before:'60',expected_after:'90'},
+      preview:{revision:3,changes:{added:[],removed:[],changed:['collective'],order_changed:false},frozen_cases:[]}}}
+  const parsed=await previewBenchmarkSurface(async()=>wire,conversation,run,task,2,action,'chosen-checked-parameter')
+  assert.deepEqual(parsed.proposal.parameter_change,wire.proposal.parameter_change)
+  const ordinary=createSurfaceAction(preview,'preview_revision',preview.data,time)
+  await assert.rejects(previewBenchmarkSurface(async()=>wire,conversation,run,task,2,ordinary,'unconfirmed-checked-parameter'))
+  for(const mutate of [
+    r=>delete r.requested_action,
+    r=>r.proposal.interpretation.change_expected_actual_config=false,
+    r=>r.proposal.parameter_change.expected_after='100',
+    r=>delete r.proposal.parameter_change,
+  ]){
+    const bad=structuredClone(wire);mutate(bad)
+    assert.throws(()=>checkedBenchmarkPreview(bad,conversation,run,task,2))
+  }
 })

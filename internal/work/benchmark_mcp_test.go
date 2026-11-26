@@ -223,7 +223,7 @@ func TestBenchmarkMCPCancelAcknowledgementDoesNotReleaseHold(t *testing.T) {
 	const actor = "user:session"
 	binding := BenchmarkBinding{"cluster", 1, "bench_run", benchmarkValidatorV1}
 	seedBenchmarkMCPFixture(t, ctx, s, actor, binding)
-	terminal, cancels := false, 0
+	terminal, canceledLocally, cancels := false, false, 0
 	provider, err := NewMCPBenchmarkProvider("cluster", 1, MCPToolBinding{
 		StartTool: "bench_run", LookupTool: "task_status", GetTool: "task_status", CancelTool: "task_cancel",
 	}, func(_ context.Context, name string, args map[string]any) (mcpclient.Result, error) {
@@ -235,7 +235,10 @@ func TestBenchmarkMCPCancelAcknowledgementDoesNotReleaseHold(t *testing.T) {
 				t.Fatalf("query not scoped to original task: %v", args)
 			}
 			if terminal {
-				return mcpclient.Result{Text: `{"task_id":"job-1","state":"CANCELED","canceled":1}`}, nil
+				return mcpclient.Result{Text: `{"task_id":"job-1","state":"CANCELED","canceled":1,"remote_exit_verified":true,"remote_execution_state":"EXITED"}`}, nil
+			}
+			if canceledLocally {
+				return mcpclient.Result{Text: `{"task_id":"job-1","state":"CANCELED","canceled":1,"remote_exit_verified":false,"remote_execution_state":"UNKNOWN"}`}, nil
 			}
 			return mcpclient.Result{Text: `{"task_id":"job-1","state":"RUNNING"}`}, nil
 		case "task_cancel":
@@ -271,6 +274,16 @@ func TestBenchmarkMCPCancelAcknowledgementDoesNotReleaseHold(t *testing.T) {
 	got, err := s.BenchmarkProgress(ctx, actor, task)
 	if err != nil || cancels != 1 || got.State != "finalizing" || got.Cases[0].TargetHolds != 1 || got.Cases[0].Wait.State != "open" {
 		t.Fatalf("cancel acknowledgment falsely released original task: %+v (%d), %v", got, cancels, err)
+	}
+	canceledLocally = true
+	if _, err := s.db.ExecContext(ctx, "UPDATE benchmark_cases SET next_at=0 WHERE task_id=?", task); err != nil {
+		t.Fatal(err)
+	}
+	run()
+	got, err = s.BenchmarkProgress(ctx, actor, task)
+	if err != nil || got.State != "finalizing" || got.Cases[0].TargetHolds != 1 || got.Cases[0].Wait.State != "open" ||
+		got.Cases[0].Operation == nil || got.Cases[0].Operation.State != string(RuntimeOperationReconcile) {
+		t.Fatalf("local SSH cancellation settled an unverified remote process: %+v %v", got, err)
 	}
 	terminal = true
 	if _, err := s.db.ExecContext(ctx, "UPDATE benchmark_cases SET next_at=0 WHERE task_id=?", task); err != nil {

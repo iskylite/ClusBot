@@ -12,6 +12,9 @@ import (
 const benchmarkRevisionChatEvent = "benchmark.revision_preview"
 const benchmarkRevisionAppliedEvent = "benchmark.revision_applied"
 
+const BenchmarkRevisionPreviewAction = "preview_benchmark_revision"
+const BenchmarkRevisionSyncActualAction = "preview_benchmark_parameter_with_actual"
+
 type benchmarkRevisionAppliedReceipt struct {
 	TaskID   string `json:"task_id"`
 	Revision int    `json:"revision"`
@@ -26,11 +29,12 @@ type BenchmarkRevisionChatInput struct {
 }
 
 type BenchmarkRevisionChatReceipt struct {
-	RunID          string                    `json:"run_id"`
-	ConversationID string                    `json:"conversation_id"`
-	TaskID         string                    `json:"task_id"`
-	SourceRunID    string                    `json:"source_run_id,omitempty"`
-	Proposal       BenchmarkRevisionProposal `json:"proposal"`
+	RunID           string                    `json:"run_id"`
+	ConversationID  string                    `json:"conversation_id"`
+	TaskID          string                    `json:"task_id"`
+	SourceRunID     string                    `json:"source_run_id,omitempty"`
+	RequestedAction string                    `json:"requested_action,omitempty"`
+	Proposal        BenchmarkRevisionProposal `json:"proposal"`
 }
 
 type BenchmarkRevisionChatMetadata struct {
@@ -85,7 +89,31 @@ WHERE r.conversation_id=? AND r.id=? AND e.kind=?`, actor, conversation, run, be
 // the selected benchmark remains unchanged and is never dispatched here.
 func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversation string, input BenchmarkRevisionChatInput,
 	provider BenchmarkProvider, interpret BenchmarkRevisionModel) (BenchmarkRevisionChatReceipt, error) {
-	if input.Action != "preview_benchmark_revision" || conversation == "" || len(input.RequestID) < 8 || len(input.RequestID) > 128 {
+	return s.submitBenchmarkRevisionChat(ctx, actor, conversation, input, provider, interpret, "")
+}
+
+// An A2UI event points to an existing conversation message, never a
+// client-authored instruction, task, parameter list, or model destination.
+func (s *Store) PreviewBenchmarkRevisionAction(ctx context.Context, actor, conversation, run, request, action string, provider BenchmarkProvider, interpret BenchmarkRevisionModel) (BenchmarkRevisionChatReceipt, error) {
+	if action != BenchmarkRevisionPreviewAction && action != BenchmarkRevisionSyncActualAction {
+		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
+	}
+	var eventModel BenchmarkRevisionModel
+	if interpret != nil {
+		eventModel = func(ctx context.Context, input BenchmarkRevisionModelInput, limit int) (string, error) {
+			input.RequestedAction = action
+			return interpret(ctx, input, limit)
+		}
+	}
+	return s.submitBenchmarkRevisionChat(ctx, actor, conversation, BenchmarkRevisionChatInput{
+		Action: BenchmarkRevisionPreviewAction, SourceRunID: run, RequestID: request,
+	}, provider, eventModel, action)
+}
+
+func (s *Store) submitBenchmarkRevisionChat(ctx context.Context, actor, conversation string, input BenchmarkRevisionChatInput,
+	provider BenchmarkProvider, interpret BenchmarkRevisionModel, modelAction string) (BenchmarkRevisionChatReceipt, error) {
+	if input.Action != BenchmarkRevisionPreviewAction || (modelAction != "" && input.SourceRunID == "") ||
+		conversation == "" || len(input.RequestID) < 8 || len(input.RequestID) > 128 {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkInput
 	}
 	if input.SourceRunID != "" {
@@ -103,6 +131,12 @@ func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversa
 	}
 	key := benchmarkRevisionChatKey(input.RequestID)
 	fingerprint := digest(toJSON([]any{actor, conversation, input}))
+	switch modelAction {
+	case BenchmarkRevisionPreviewAction:
+		fingerprint = digest("a2ui-benchmark:" + fingerprint)
+	case BenchmarkRevisionSyncActualAction:
+		fingerprint = digest("a2ui-benchmark-checked-parameter:" + fingerprint)
+	}
 	prior := func() (BenchmarkRevisionChatReceipt, error) {
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
@@ -155,17 +189,25 @@ func (s *Store) SubmitBenchmarkRevisionChat(ctx context.Context, actor, conversa
 			s.interruptBenchmarkRevisionRequestOnExit(ctx, key)
 		}
 	}()
-	shortcut, deterministic, err := benchmarkRevisionChatShortcut(input.Text, input.AllowExpectedActualChange)
-	if err != nil {
-		return BenchmarkRevisionChatReceipt{}, err
-	}
 	var proposal BenchmarkRevisionProposal
-	if deterministic {
-		proposal, err = s.ProposeBenchmarkRevision(ctx, actor, input.TaskID, BenchmarkRevisionProposalInput{
-			ExpectedRevision: input.ExpectedRevision, Text: shortcut,
-		}, provider)
-	} else {
+	var err error
+	if modelAction != "" {
+		// The signed renderer event, not its context or the model, can
+		// authorize revising an existing parameter's corresponding check.
+		input.BenchmarkRevisionAIInput.syncFromSurface = modelAction == BenchmarkRevisionSyncActualAction
 		proposal, err = s.ProposeBenchmarkRevisionAI(ctx, actor, input.TaskID, input.BenchmarkRevisionAIInput, provider, interpret)
+	} else {
+		shortcut, deterministic, shortcutErr := benchmarkRevisionChatShortcut(input.Text, input.AllowExpectedActualChange)
+		if shortcutErr != nil {
+			return BenchmarkRevisionChatReceipt{}, shortcutErr
+		}
+		if deterministic {
+			proposal, err = s.ProposeBenchmarkRevision(ctx, actor, input.TaskID, BenchmarkRevisionProposalInput{
+				ExpectedRevision: input.ExpectedRevision, Text: shortcut,
+			}, provider)
+		} else {
+			proposal, err = s.ProposeBenchmarkRevisionAI(ctx, actor, input.TaskID, input.BenchmarkRevisionAIInput, provider, interpret)
+		}
 	}
 	if err != nil {
 		return BenchmarkRevisionChatReceipt{}, err
@@ -214,6 +256,9 @@ WHERE b.task_id=? AND b.actor=? AND c.case_key=?`, input.TaskID, actor, proposal
 		return BenchmarkRevisionChatReceipt{}, ErrState
 	}
 	out := BenchmarkRevisionChatReceipt{RunID: id(), ConversationID: conversation, TaskID: input.TaskID, SourceRunID: input.SourceRunID, Proposal: proposal}
+	if modelAction == BenchmarkRevisionSyncActualAction {
+		out.RequestedAction = BenchmarkRevisionSyncActualAction
+	}
 	response := fmt.Sprintf("已生成基准任务 %s 的方案修订预演（基于第 %d 版）。尚未提交或执行，请核对差异。", input.TaskID, input.ExpectedRevision)
 	stamp := now()
 	if _, err := tx.ExecContext(ctx, "INSERT INTO runs(id,conversation_id,status,response,created_at) VALUES(?,?,'completed',?,?)", out.RunID, conversation, response, stamp); err != nil {
@@ -305,7 +350,10 @@ func checkedRecordedBenchmarkPreview(q recordsQuerier, actor, conversation, run 
 	p := recorded.Proposal
 	if recorded.RunID != run || recorded.ConversationID != conversation || p.State != "preview_only" ||
 		(p.Method != "model_interpreted" && p.Method != "explicit_shortcut") || p.ExpectedRevision < 1 || p.Preview.Revision != p.ExpectedRevision+1 ||
-		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") {
+		(p.Interpretation.Action != "remove_case" && p.Interpretation.Action != "set_parameter") ||
+		(recorded.RequestedAction != "" && (recorded.RequestedAction != BenchmarkRevisionSyncActualAction ||
+			recorded.SourceRunID == "" || p.Interpretation.Action != "set_parameter" || !p.Interpretation.ChangeActual || p.ParameterChange == nil)) ||
+		(recorded.SourceRunID != "" && p.Interpretation.ChangeActual && recorded.RequestedAction != BenchmarkRevisionSyncActualAction) {
 		return BenchmarkRevisionChatReceipt{}, ErrBenchmarkRevisionPreviewStale
 	}
 	return recorded, nil

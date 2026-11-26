@@ -110,8 +110,31 @@ func (s *Store) ReadConversationSkillSelection(ctx context.Context, actor, conve
 	return readConversationSkillSelection(ctx, tx, id)
 }
 
-// SetConversationSkillSelection is explicit configuration in the existing
-// local single-session scope. It does not grant tool or deployment authority.
+// Metadata only: the settings writer and chat preview share the same live
+// account catalog and provenance gate. Neither needs to send Skill content.
+type bindableConversationSkill struct {
+	ID, Scope, Digest string
+	Version, Revision int
+	ApprovedAt        int64
+}
+
+func readBindableConversationSkill(ctx context.Context, tx *sql.Tx, skill string, version int) (bindableConversationSkill, error) {
+	var out bindableConversationSkill
+	err := tx.QueryRowContext(ctx, `SELECT s.id,s.scope_label,s.revision,v.version,v.sha256,v.approved_at
+FROM personal_skills s JOIN personal_skill_versions v ON v.skill_id=s.id AND v.version=s.active_version
+WHERE s.id=? AND v.version=? AND v.approved_at IS NOT NULL`, skill, version).
+		Scan(&out.ID, &out.Scope, &out.Revision, &out.Version, &out.Digest, &out.ApprovedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return out, ErrState
+	}
+	if err != nil {
+		return out, err
+	}
+	return out, verifySkillProposalSources(tx, skill, version)
+}
+
+// SetConversationSkillSelection is explicit, account-local conversation
+// configuration. It does not grant tool or deployment authority.
 func (s *Store) SetConversationSkillSelection(ctx context.Context, actor, conversation string, input ConversationSkillBindingInput) (ConversationSkillSelection, error) {
 	if actor != "user:session" {
 		allowed, err := ownsPersonalBusiness(s.db, actor)
@@ -132,6 +155,16 @@ func (s *Store) SetConversationSkillSelection(ctx context.Context, actor, conver
 		return ConversationSkillSelection{}, err
 	}
 	defer tx.Rollback()
+	out, err := setConversationSkillSelectionTx(ctx, tx, actor, conversation, input)
+	if err != nil {
+		return ConversationSkillSelection{}, err
+	}
+	return out, tx.Commit()
+}
+
+// Both the fixed settings form and a separately confirmed chat preview use
+// this exact compare-and-set operation, including idleness and live approval.
+func setConversationSkillSelectionTx(ctx context.Context, tx *sql.Tx, actor, conversation string, input ConversationSkillBindingInput) (ConversationSkillSelection, error) {
 	// Existing queued/running conversations must retain the settings under
 	// which their runs were admitted. Apply this only once the conversation is idle.
 	if err := checkConversationSubmission(tx, conversation); err != nil {
@@ -145,15 +178,7 @@ func (s *Store) SetConversationSkillSelection(ctx context.Context, actor, conver
 	if input.Action == "clear_skill" {
 		changed, err = tx.ExecContext(ctx, "DELETE FROM conversation_skill_bindings WHERE conversation_id=?", conversation)
 	} else {
-		var ready bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM personal_skills s JOIN personal_skill_versions v ON v.skill_id=s.id AND v.version=s.active_version
-WHERE s.id=? AND v.version=? AND v.approved_at IS NOT NULL)`, input.SkillID, input.Version).Scan(&ready); err != nil {
-			return ConversationSkillSelection{}, err
-		}
-		if !ready {
-			return ConversationSkillSelection{}, ErrState
-		}
-		if err := verifySkillProposalSources(tx, input.SkillID, input.Version); err != nil {
+		if _, err := readBindableConversationSkill(ctx, tx, input.SkillID, input.Version); err != nil {
 			return ConversationSkillSelection{}, err
 		}
 		if err := rememberSkillReference(tx, input.SkillID, input.Version); err != nil {
@@ -179,9 +204,5 @@ WHERE conversation_skill_bindings.skill_id<>excluded.skill_id OR conversation_sk
 		}
 	}
 
-	out, err := readConversationSkillSelection(ctx, tx, conversation)
-	if err != nil {
-		return ConversationSkillSelection{}, err
-	}
-	return out, tx.Commit()
+	return readConversationSkillSelection(ctx, tx, conversation)
 }

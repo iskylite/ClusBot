@@ -36,7 +36,8 @@ func TestDiscoverySetupStatusUsesAuthorizedPlanAndDurableOccurrence(t *testing.T
 	if err := s.PublishDiscoveryPlan(ctx, actor, plan, source); err != nil {
 		t.Fatal(err)
 	}
-	if status := read(actor, source, scope, "waiting_for_result"); status.Plan == nil || status.Plan.ID != plan.ID || status.LastRun != nil {
+	if status := read(actor, source, scope, "waiting_for_result"); status.Plan == nil || status.Plan.ID != plan.ID || status.Plan.NextAt != due ||
+		status.Plan.PeriodSeconds != 60 || status.Plan.Revision != 1 || status.LastRun != nil {
 		t.Fatalf("unexpected initial state: %+v", status)
 	}
 	if status := read("user:someone", source, scope, "no_active_plan"); status.Plan != nil || status.LastRun != nil {

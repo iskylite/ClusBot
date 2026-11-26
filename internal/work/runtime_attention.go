@@ -70,7 +70,16 @@ FROM attention WHERE occurred_at<=:stamp
 AND (:before_id='' OR occurred_at<:before_at OR (occurred_at=:before_at AND id<:before_id))
 ORDER BY occurred_at DESC,id DESC LIMIT :count`
 
+type attentionReader interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 func (s *Store) ListAttention(ctx context.Context, actor string, stamp int64, limit int, before AttentionCursor) (AttentionPage, error) {
+	return listAttention(ctx, s.db, actor, stamp, limit, before)
+}
+
+func listAttention(ctx context.Context, reader attentionReader, actor string, stamp int64, limit int, before AttentionCursor) (AttentionPage, error) {
 	if actor == "" || actor == "user:anonymous" {
 		return AttentionPage{}, ErrAuthorizationDenied
 	}
@@ -78,7 +87,7 @@ func (s *Store) ListAttention(ctx context.Context, actor string, stamp int64, li
 		(before.OccurredAt == 0) != (before.ID == "") {
 		return AttentionPage{}, errors.New("无效的待处理事项分页")
 	}
-	rows, err := s.db.QueryContext(ctx, attentionQuery, sql.Named("actor", actor), sql.Named("stamp", stamp),
+	rows, err := reader.QueryContext(ctx, attentionQuery, sql.Named("actor", actor), sql.Named("stamp", stamp),
 		sql.Named("count", limit+1), sql.Named("before_id", before.ID), sql.Named("before_at", before.OccurredAt))
 	if err != nil {
 		return AttentionPage{}, err

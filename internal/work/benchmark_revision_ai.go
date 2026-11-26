@@ -17,11 +17,13 @@ var ErrBenchmarkRevisionModelBinding = errors.New("专用基准修订模型档�
 type BenchmarkRevisionAIInput struct {
 	BenchmarkRevisionProposalInput
 	AllowExpectedActualChange bool `json:"allow_expected_actual_change,omitempty"`
+	syncFromSurface           bool // Only the signed, explicitly chosen conversation action may set this.
 }
 
 type BenchmarkRevisionModelInput struct {
-	Text  string                       `json:"text"`
-	Cases []BenchmarkRevisionModelCase `json:"editable_cases"`
+	RequestedAction string                       `json:"requested_action,omitempty"`
+	Text            string                       `json:"text"`
+	Cases           []BenchmarkRevisionModelCase `json:"editable_cases"`
 }
 
 type BenchmarkRevisionModelCase struct {
@@ -107,7 +109,7 @@ AND t.state IN ('pending','running','paused') AND c.phase='queued' AND c.operati
 		}
 		return interpret(call, request, budget)
 	}()
-	if errors.Is(err, ErrBenchmarkRevisionModelBinding) {
+	if errors.Is(err, ErrBenchmarkRevisionModelBinding) || errors.Is(err, ErrBenchmarkInput) || errors.Is(err, ErrAuthorizationDenied) {
 		return BenchmarkRevisionProposal{}, err
 	}
 	if err != nil || call.Err() != nil {
@@ -119,6 +121,15 @@ AND t.state IN ('pending','running','paused') AND c.phase='queued' AND c.operati
 	}
 	if !editable[intent.CaseKey] {
 		return BenchmarkRevisionProposal{}, fmt.Errorf("%w：模型所指测项不在本次可修改范围", ErrBenchmarkInput)
+	}
+	if in.syncFromSurface {
+		if intent.Action != "set_parameter" {
+			return BenchmarkRevisionProposal{}, fmt.Errorf("%w：此选项只能预演原话中明确指定的一处参数修改", ErrBenchmarkInput)
+		}
+		// The model's bit remains false (including restricted model profiles).
+		// The preview below still requires the same existing check, frozen
+		// targets, permitted value, and unchanged version before it returns.
+		intent.ChangeActual = true
 	}
 	return s.previewBenchmarkRevisionIntent(ctx, actor, task, current, intent, provider, "model_interpreted")
 }
@@ -194,7 +205,7 @@ func parseBenchmarkRevisionModelOutput(raw string, input BenchmarkRevisionAIInpu
 			return intent, ErrBenchmarkRevisionModel
 		}
 		if intent.ChangeActual && !input.AllowExpectedActualChange {
-			return intent, fmt.Errorf("%w：请显式确认是否连同实测要求一起修订", ErrBenchmarkInput)
+			return intent, ErrBenchmarkRevisionActualConsent
 		}
 	default:
 		return intent, ErrBenchmarkRevisionModel

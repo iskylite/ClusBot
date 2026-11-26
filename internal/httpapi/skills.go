@@ -93,15 +93,34 @@ func (s Server) readConversationSkillSelection(w http.ResponseWriter, r *http.Re
 
 func (s Server) setConversationSkillSelection(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	var in work.ConversationSkillBindingInput
+	var in struct {
+		work.ConversationSkillBindingInput
+		Preview *assistantSkillConfirmation `json:"preview_confirmation,omitempty"`
+	}
 	if !decode(w, r, &in) {
 		return
 	}
 	if !validID(r.PathValue("id")) || (in.SkillID != "" && !validID(in.SkillID)) {
-		writeError(w, work.ErrSkill)
+		fail(w, 400, "invalid_skill_binding", "会话或 Skill 标识无效。")
 		return
 	}
-	out, err := s.Store.SetConversationSkillSelection(r.Context(), s.principal(r), r.PathValue("id"), in)
+	if in.Action == assistantSkillConfirmAction {
+		if in.Preview == nil || in.SkillID != "" || in.Version != 0 || in.ExpectedBindingRevision != nil {
+			fail(w, 400, "invalid_skill_binding", "确认只能使用原预览，不能另外指定 Skill 或版本。")
+			return
+		}
+		s.confirmAssistantSkillPreview(w, r, *in.Preview)
+		return
+	}
+	if in.Preview != nil {
+		fail(w, 400, "invalid_skill_binding", "预览确认不能用于其他绑定操作。")
+		return
+	}
+	out, err := s.Store.SetConversationSkillSelection(r.Context(), s.principal(r), r.PathValue("id"), in.ConversationSkillBindingInput)
+	if errors.Is(err, work.ErrSkill) {
+		fail(w, 400, "invalid_skill_binding", "请选择可用的 Skill 版本，或清除当前选用。")
+		return
+	}
 	if err != nil {
 		writeError(w, err)
 		return

@@ -23,6 +23,14 @@ type benchmarkProviderSelection struct {
 	capabilityKey     string
 	capabilityVersion int
 	canStop           bool
+	jobSource         string
+}
+
+// A provider must explicitly supply a durable job space before an account
+// worker can call it. Tool names and account-specific connection names alone
+// cannot identify a shared backend.
+type benchmarkJobNamespace interface {
+	benchmarkJobSource() string
 }
 
 func (p benchmarkProviderSelection) requestDigest(req BenchmarkJobRequest) string {
@@ -44,6 +52,9 @@ func selectBenchmarkProvider(ctx context.Context, db benchmarkBindingReader, pro
 	}
 	_, canStop := provider.(benchmarkCanceller)
 	selection := benchmarkProviderSelection{provider: provider, canStop: canStop}
+	if source, ok := provider.(benchmarkJobNamespace); ok {
+		selection.jobSource = source.benchmarkJobSource()
+	}
 	switch p := provider.(type) {
 	case *MCPBenchmarkProvider:
 		selection.canStop = p.binding.CancelTool != ""

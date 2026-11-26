@@ -107,6 +107,15 @@ FROM benchmark_runs b JOIN tasks t ON t.id=b.task_id WHERE b.task_id=? AND b.act
 	if !errors.Is(err, sql.ErrNoRows) {
 		return out, err
 	}
+	if pin := accountBenchmarkDispatchPin(provider); pin != "" {
+		var admitted bool
+		if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM benchmark_account_dispatch_admissions WHERE task_id=? AND provider_pin=?)", task, pin).Scan(&admitted); err != nil {
+			return out, err
+		}
+		if !admitted {
+			return out, fmt.Errorf("%w：当前提供方没有这项任务的派发授权", ErrBenchmarkBinding)
+		}
+	}
 	current, err := readTaskState(tx, task)
 	if err != nil {
 		return out, err

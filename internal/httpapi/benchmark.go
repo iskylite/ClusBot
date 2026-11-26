@@ -97,9 +97,9 @@ func (s Server) benchmarkProgress(w http.ResponseWriter, r *http.Request) {
 		benchmarkError(w, err)
 		return
 	}
-	if s.instanceStore != nil && p.DispatchControl.Available {
-		// Account runtimes have no benchmark dispatcher. Do not offer a pause
-		// that this runtime cannot subsequently resume and execute.
+	if s.instanceStore != nil && !s.AccountBenchmarkDispatch && p.DispatchControl.Available {
+		// Without an opted-in account worker, do not offer a pause that this
+		// runtime cannot subsequently resume and execute.
 		p.DispatchControl.Available = false
 		p.DispatchControl.UnavailableReason = "账号运行时尚未接入基准派发控制"
 	}
@@ -268,7 +268,7 @@ func (s Server) benchmarkTaskDispatchControl(w http.ResponseWriter, r *http.Requ
 		benchmarkError(w, work.ErrBenchmarkInput)
 		return
 	}
-	if s.instanceStore != nil {
+	if s.instanceStore != nil && !s.AccountBenchmarkDispatch {
 		fail(w, http.StatusServiceUnavailable, "benchmark_dispatch_unavailable", "账号运行时尚未接入基准派发控制")
 		return
 	}

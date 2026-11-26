@@ -134,8 +134,20 @@ func TestAssistantOperationAccountIsolation(t *testing.T) {
 	if calls.Load() != 0 {
 		t.Fatalf("member caused unauthorized model call: %d", calls.Load())
 	}
-	if rec := operationRequest(adminCookie); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"tool":"propose_operation_options"`) || strings.Contains(rec.Body.String(), "member-node") {
-		t.Fatalf("admin personal scope failed or leaked another account: %d %s", rec.Code, rec.Body)
+	adminRun := operationRequest(adminCookie)
+	if adminRun.Code != 202 {
+		t.Fatalf("admin suggestion was not attached to its own turn: %d %s", adminRun.Code, adminRun.Body)
+	}
+	var origin conversationAdviceOrigin
+	accountJSON(t, adminRun, &origin)
+	path := "/api/v1/conversations/" + origin.Conversation + "/operation-advice/" + origin.Run
+	adminCard := f.request("GET", path, nil, adminCookie)
+	if adminCard.Code != 200 || !strings.Contains(adminCard.Body.String(), "核实") || strings.Contains(adminCard.Body.String(), "member-node") {
+		t.Fatalf("admin personal scope failed or leaked another account: %d %s", adminCard.Code, adminCard.Body)
+	}
+	memberCard := f.request("GET", path, nil, memberCookie)
+	if memberCard.Code != 404 || strings.Contains(memberCard.Body.String(), "核实") {
+		t.Fatalf("member read admin advice: %d %s", memberCard.Code, memberCard.Body)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("admin model calls: %d", calls.Load())

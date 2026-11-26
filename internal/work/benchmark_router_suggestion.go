@@ -203,49 +203,84 @@ func (s *Store) PreviewBenchmarkSuggestion(ctx context.Context, actor, conversat
 		return BenchmarkAdmissionPreview{}, err
 	}
 	defer tx.Rollback()
-	var text string
-	var created int64
-	if err := tx.QueryRowContext(ctx, `SELECT m.text,r.created_at FROM runs r
+	source, err := readBenchmarkSuggestionSource(ctx, tx, actor, conversation, run)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	candidate, flight, err := resolveBenchmarkSuggestion(ctx, tx, actor, source, provider)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	out, err := saveBenchmarkSuggestionPreview(ctx, tx, actor, conversation, run, candidate, flight)
+	if err != nil {
+		return BenchmarkAdmissionPreview{}, err
+	}
+	return out, tx.Commit()
+}
+
+type benchmarkSuggestionSource struct {
+	Text              string
+	Created, Revision int64
+	Archived          bool
+	Receipt           *BenchmarkRouterSuggestion
+}
+
+func readBenchmarkSuggestionSource(ctx context.Context, tx *sql.Tx, actor, conversation, run string) (benchmarkSuggestionSource, error) {
+	var source benchmarkSuggestionSource
+	if err := tx.QueryRowContext(ctx, `SELECT m.text,r.created_at,c.revision,c.archived FROM runs r
+JOIN conversations c ON c.id=r.conversation_id
 JOIN messages m ON m.run_id=r.id AND m.conversation_id=r.conversation_id AND m.role='user'
 WHERE r.id=? AND r.conversation_id=? AND r.status='completed' AND r.task_id IS NULL
 AND EXISTS (SELECT 1 FROM inbox_events i JOIN submissions sub ON sub.request_key=i.event_id
 WHERE i.source='chat' AND i.run_id=r.id AND i.state='applied' AND i.principal=? AND sub.run_id=r.id)
-ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&text, &created); err != nil {
-		return BenchmarkAdmissionPreview{}, err
+ORDER BY m.seq LIMIT 1`, run, conversation, actor).Scan(&source.Text, &source.Created, &source.Revision, &source.Archived); err != nil {
+		return source, err
 	}
 	receipt, err := readBenchmarkRouterReceipt(tx, run)
 	if err != nil {
-		return BenchmarkAdmissionPreview{}, err
+		return source, err
 	}
 	if receipt == nil || receipt.State != "explicit_preview_required" {
-		return BenchmarkAdmissionPreview{}, sql.ErrNoRows
+		return source, sql.ErrNoRows
 	}
+	source.Receipt = receipt
+	return source, nil
+}
+
+func resolveBenchmarkSuggestion(ctx context.Context, tx *sql.Tx, actor string, source benchmarkSuggestionSource, provider BenchmarkProvider) (BenchmarkAdmissionCandidate, BenchmarkPreflight, error) {
 	stamp := now()
-	if created <= 0 || stamp < created || stamp-created >= benchmarkRouterSuggestionLifetime.Milliseconds() || benchmarkAdmissionText(text) != nil {
-		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	if source.Created <= 0 || stamp < source.Created || stamp-source.Created >= benchmarkRouterSuggestionLifetime.Milliseconds() || benchmarkAdmissionText(source.Text) != nil {
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionPreviewStale
 	}
-	candidate, flight, err := benchmarkAdmissionVisibleTx(ctx, tx, actor, text, provider)
+	candidate, flight, err := benchmarkAdmissionVisibleTx(ctx, tx, actor, source.Text, provider)
 	if errors.Is(err, ErrBenchmarkAdmissionClarify) || errors.Is(err, ErrBenchmarkInput) || errors.Is(err, ErrState) || errors.Is(err, sql.ErrNoRows) {
-		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionPreviewStale
 	}
 	if err != nil {
-		return BenchmarkAdmissionPreview{}, err
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, err
 	}
-	if receipt.BindingRevision < 1 || candidate.Target != receipt.Target || candidate.Profile != receipt.Profile ||
-		candidate.bindingRevision != receipt.BindingRevision {
-		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
+	if source.Receipt.BindingRevision < 1 || candidate.Target != source.Receipt.Target || candidate.Profile != source.Receipt.Profile ||
+		candidate.bindingRevision != source.Receipt.BindingRevision {
+		return BenchmarkAdmissionCandidate{}, BenchmarkPreflight{}, ErrBenchmarkAdmissionPreviewStale
 	}
+	return candidate, flight, nil
+}
 
+func benchmarkSuggestionPreviewID(actor, conversation, run string) string {
+	return digest(toJSON([]string{"benchmark-suggestion-preview", actor, conversation, run}))[:32]
+}
+
+func saveBenchmarkSuggestionPreview(ctx context.Context, tx *sql.Tx, actor, conversation, run string, candidate BenchmarkAdmissionCandidate, flight BenchmarkPreflight) (BenchmarkAdmissionPreview, error) {
 	// The deterministic ID belongs to this one click target. Confirm uses the
 	// same general preview table and the same transactional admission guard.
-	preview := digest(toJSON([]string{"benchmark-suggestion-preview", actor, conversation, run}))[:32]
+	preview := benchmarkSuggestionPreviewID(actor, conversation, run)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO benchmark_admission_previews
 (preview_id,actor,target,profile_key,profile_version,snapshot_digest,created_at,source_conversation,source_run) VALUES(?,?,?,?,?,?,?,?,?)
 ON CONFLICT(preview_id) DO UPDATE SET source_conversation=excluded.source_conversation,source_run=excluded.source_run
 WHERE task_id='' AND source_conversation='' AND source_run=''
  AND actor=excluded.actor AND target=excluded.target AND profile_key=excluded.profile_key AND profile_version=excluded.profile_version AND snapshot_digest=excluded.snapshot_digest`,
 		preview, actor, candidate.Target, candidate.Profile.Profile,
-		candidate.Profile.Version, candidate.snapshotDigest(), stamp, conversation, run); err != nil {
+		candidate.Profile.Version, candidate.snapshotDigest(), now(), conversation, run); err != nil {
 		return BenchmarkAdmissionPreview{}, err
 	}
 	var valid bool
@@ -258,5 +293,5 @@ AND ((source_conversation=? AND source_run=?) OR (task_id<>'' AND source_convers
 	if !valid {
 		return BenchmarkAdmissionPreview{}, ErrBenchmarkAdmissionPreviewStale
 	}
-	return BenchmarkAdmissionPreview{PreviewID: preview, State: "preview_only", Selection: candidate, Preflight: flight}, tx.Commit()
+	return BenchmarkAdmissionPreview{PreviewID: preview, State: "preview_only", Selection: candidate, Preflight: flight}, nil
 }

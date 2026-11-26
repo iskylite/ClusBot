@@ -227,6 +227,18 @@ VALUES(?,?,?,?,'基准测试','active','queued','方案已受理',?)`, taskID, c
 	if _, err = tx.Exec(`INSERT INTO benchmark_runs(task_id,actor,request_key,profile_key,profile_version,fingerprint,created_at) VALUES(?,?,?,?,?,?,?)`, taskID, actor, request.RequestKey, p.Key, p.Version, finger, stamp); err != nil {
 		return "", err
 	}
+	if pin := accountBenchmarkDispatchPin(provider); pin != "" {
+		owned, err := ownsPersonalBusiness(tx, actor)
+		if err != nil {
+			return "", err
+		}
+		if !owned {
+			return "", ErrAuthorizationDenied
+		}
+		if _, err = tx.Exec(`INSERT INTO benchmark_account_dispatch_admissions(task_id,provider_pin) VALUES(?,?)`, taskID, pin); err != nil {
+			return "", err
+		}
+	}
 	ids := map[string]string{}
 	for i, c := range p.Cases {
 		targets, auths, err := freezeBenchmarkCase(ctx, tx, actor, c, provider, stamp)
@@ -265,10 +277,28 @@ func freezeBenchmarkCase(ctx context.Context, tx *sql.Tx, actor string, c Benchm
 		return nil, nil, err
 	}
 	targets, auths := []ticketTarget{}, map[string]string{}
+	var physicalSerials map[string]bool
+	if accountBenchmarkDispatchPin(provider) != "" {
+		physicalSerials = make(map[string]bool)
+	}
 	for _, ref := range c.Targets {
 		a, err := benchmarkAsset(tx, ref)
 		if err != nil {
 			return nil, nil, err
+		}
+		if physicalSerials != nil {
+			var serial string
+			err := tx.QueryRowContext(ctx, "SELECT physical_serial FROM benchmark_asset_physical_serials WHERE target_ref=?", ref).Scan(&serial)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, nil, fmt.Errorf("%w：测试目标 %s 未登记可信的物理序列号", ErrBenchmarkInput, ref)
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if physicalSerials[serial] {
+				return nil, nil, fmt.Errorf("%w：同一测项重复引用物理资产", ErrBenchmarkInput)
+			}
+			physicalSerials[serial] = true
 		}
 		aid, err := benchmarkAuthorization(tx, actor, ref, c, stamp)
 		if err != nil {
@@ -396,6 +426,16 @@ WHERE b.task_id=? ORDER BY s.position,b.step_id`, taskID)
 	if inspectProvider {
 		if err := projectBenchmarkReconciliationBlockers(ctx, tx, &p, actionInputs, provider); err != nil {
 			return p, err
+		}
+		if pin := accountBenchmarkDispatchPin(provider); pin != "" {
+			var admitted bool
+			if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM benchmark_account_dispatch_admissions WHERE task_id=? AND provider_pin=?)", taskID, pin).Scan(&admitted); err != nil {
+				return p, err
+			}
+			if !admitted {
+				p.DispatchControl.Available = false
+				p.DispatchControl.UnavailableReason = "当前提供方没有这项任务的派发授权；不会自动重跑或改接提供方。"
+			}
 		}
 	}
 	if err := projectBenchmarkCaseActions(ctx, tx, actor, &p, actionInputs); err != nil {

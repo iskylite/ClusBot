@@ -57,6 +57,37 @@ func (s *discoveryA2UIRuntime) mac(values ...string) string {
 	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
+func actionSurfacePrefix(action string) string {
+	switch action {
+	case mcpChooseTransport, mcpSetupStep:
+		return "mcp"
+	case work.BenchmarkAdmissionPreviewAction:
+		return "benchadmission"
+	case a2uiBenchmarkPreview, a2uiBenchmarkSyncActual:
+		return "benchmark"
+	case assistantTaskProgressAction:
+		return "taskcard"
+	case assistantAssetLedgerAction:
+		return "assetcard"
+	case assistantAttentionReasonAction:
+		return "attentioncard"
+	case assistantArtifactPreviewAction:
+		return "artifactcard"
+	case assistantSkillPreviewAction:
+		return "skillcard"
+	case assistantMemoryReviewAction:
+		return "memorycard"
+	case assistantDiscoveryScheduleAction:
+		return "schedulecard"
+	case assistantBenchmarkCompareAction:
+		return "reportcard"
+	case assistantAdviceActionName:
+		return "advice"
+	default:
+		return "discovery"
+	}
+}
+
 // An issued surface and component identify exactly one allowed event in the
 // current authenticated session. They do not grant asset or model authority.
 func (s *discoveryA2UIRuntime) surface(session, conversation, action, candidate string, revision int64) (string, error) {
@@ -64,13 +95,15 @@ func (s *discoveryA2UIRuntime) surface(session, conversation, action, candidate 
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("discovery_%x_%x", time.Now().Unix(), nonce)
+	prefix := actionSurfacePrefix(action)
+	base := fmt.Sprintf("%s_%x_%x", prefix, time.Now().Unix(), nonce)
 	return base + "_" + s.mac(base, session, conversation, action, candidate, strconv.FormatInt(revision, 10)), nil
 }
 
 func (s *discoveryA2UIRuntime) validSurface(id, session, conversation, action, candidate string, revision int64, bindings ...string) bool {
 	p := strings.Split(id, "_")
-	if len(p) != 4 || p[0] != "discovery" || len(p[1]) > 16 || len(p[2]) != 16 || len(p[3]) != 32 {
+	prefix := actionSurfacePrefix(action)
+	if len(p) != 4 || p[0] != prefix || len(p[1]) > 16 || len(p[2]) != 16 || len(p[3]) != 32 {
 		return false
 	}
 	stamp, err := strconv.ParseInt(p[1], 16, 64)
@@ -538,6 +571,10 @@ func sameA2UICandidate(a, b work.DiscoveryCandidate) bool {
 }
 
 func (s Server) verifyDiscoveryA2UISession(ctx context.Context, digest, actor string) error {
+	return s.verifyA2UIAccount(ctx, digest, actor, true)
+}
+
+func (s Server) verifyA2UIAccount(ctx context.Context, digest, actor string, admin bool) error {
 	if s.instanceStore == nil || digest == "" {
 		return work.ErrAuthorizationDenied
 	}
@@ -545,7 +582,7 @@ func (s Server) verifyDiscoveryA2UISession(ctx context.Context, digest, actor st
 	if err != nil {
 		return err
 	}
-	if a.PrincipalID != actor || !a.IsSuperadmin || a.MustChangePassword {
+	if a.PrincipalID != actor || (admin && !a.IsSuperadmin) || a.MustChangePassword {
 		return work.ErrAuthorizationDenied
 	}
 	return nil

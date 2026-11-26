@@ -9,14 +9,17 @@ import (
 )
 
 type DomainAssetEntry struct {
-	ObjectRef string                 `yaml:"object_ref"`
-	Kind      string                 `yaml:"kind"`
-	Identity  string                 `yaml:"identity"`
-	State     string                 `yaml:"state"`
-	PodRef    string                 `yaml:"pod_ref"`
-	Read      bool                   `yaml:"allow_read"`
-	Repair    bool                   `yaml:"allow_repair"`
-	Benchmark []DomainBenchmarkGrant `yaml:"benchmark_grants"`
+	ObjectRef string `yaml:"object_ref"`
+	Kind      string `yaml:"kind"`
+	Identity  string `yaml:"identity"`
+	// Optional instance-wide hardware serial, supplied by the inventory
+	// operator. Local aliases and discovery-source identities are not equivalent.
+	PhysicalSerial string                 `yaml:"physical_serial"`
+	State          string                 `yaml:"state"`
+	PodRef         string                 `yaml:"pod_ref"`
+	Read           bool                   `yaml:"allow_read"`
+	Repair         bool                   `yaml:"allow_repair"`
+	Benchmark      []DomainBenchmarkGrant `yaml:"benchmark_grants"`
 }
 
 // DomainBenchmarkGrant is an explicit local operator grant, never derived
@@ -84,6 +87,11 @@ func importDomainAssets(ctx context.Context, tx *sql.Tx, principal string, entri
 			return err
 		case existing.Identity != entry.Identity || existing.Kind != entry.Kind:
 			return fmt.Errorf("%w：资产 %s 的身份或类型与现有记录不符", ErrConflict, ref)
+		}
+		if entry.PhysicalSerial != "" {
+			if err := bindBenchmarkPhysicalSerial(ctx, tx, ref, entry.PhysicalSerial); err != nil {
+				return err
+			}
 		}
 		for _, grant := range entry.Benchmark {
 			if grant.Revision < 1 || !validBenchKey(grant.Connection) || !validBenchKey(grant.Tool) || grant.ExpiresAt <= stamp || len(grant.Allowed) > 32 {

@@ -22,23 +22,24 @@ import (
 )
 
 type Server struct {
-	Store                   *work.Store
-	Hosts                   []string
-	Origin                  string
-	authLimiter             *authLimiter
-	PersonalAPI             func(string) (http.Handler, error)
-	AdminTaskStores         func() map[string]*work.Store
-	adminTaskOwner          string
-	instanceStore           *work.Store
-	Settings                *model.Settings
-	WorkspacePath           string
-	TicketProvider          *work.TicketProvider
-	TicketEffectChecker     work.EffectChecker
-	BenchmarkProvider       work.BenchmarkProvider
-	BenchmarkEvents         *work.BenchmarkEventReceiver
-	DiscoverySource         work.DiscoveryScanSource
-	MaxPendingExplicitTasks int
-	ModelConcurrency        int
+	Store                    *work.Store
+	Hosts                    []string
+	Origin                   string
+	authLimiter              *authLimiter
+	PersonalAPI              func(string) (http.Handler, error)
+	AdminTaskStores          func() map[string]*work.Store
+	adminTaskOwner           string
+	instanceStore            *work.Store
+	Settings                 *model.Settings
+	WorkspacePath            string
+	TicketProvider           *work.TicketProvider
+	TicketEffectChecker      work.EffectChecker
+	BenchmarkProvider        work.BenchmarkProvider
+	BenchmarkEvents          *work.BenchmarkEventReceiver
+	AccountBenchmarkDispatch bool
+	DiscoverySource          work.DiscoveryScanSource
+	MaxPendingExplicitTasks  int
+	ModelConcurrency         int
 }
 
 type submission struct {
@@ -71,6 +72,7 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 	fileServer := http.FileServerFS(assets)
 	bridge := &assistantBridge{pending: make(map[string]assistantPreview)}
 	discoveryA2UI := newDiscoveryA2UIRuntime()
+	mcpSetup := &mcpSetupRequests{requests: map[string]mcpSetupRecord{}}
 	bridge.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
@@ -94,7 +96,8 @@ func (s Server) Handler(assets fs.FS) http.Handler {
 		if r.URL.Path == "/api" || strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Cache-Control", "no-store")
 			ctx := context.WithValue(r.Context(), assistantBridgeKey{}, bridge)
-			r = r.WithContext(context.WithValue(ctx, discoveryA2UIKey{}, discoveryA2UI))
+			ctx = context.WithValue(ctx, discoveryA2UIKey{}, discoveryA2UI)
+			r = r.WithContext(context.WithValue(ctx, mcpSetupKey{}, mcpSetup))
 			if r.Method != "GET" && r.Method != "HEAD" && (s.Origin == "" || r.Header.Get("Origin") != s.Origin) {
 				fail(w, 403, "invalid_origin", "请求来源无效")
 				return
@@ -278,6 +281,8 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("GET /api/v1/domain/benchmark-chat-targets/{target}", s.benchmarkChatTarget)
 	api.HandleFunc("POST /api/v1/domain/benchmark-preflight", s.benchmarkPreflight)
 	api.HandleFunc("POST /api/v1/conversations/{conversation}/benchmark-suggestions/{run}/preview", s.previewBenchmarkSuggestion)
+	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/benchmark-admission/{run}", s.benchmarkAdmissionSurface)
+	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/benchmark-admission/{run}", s.benchmarkAdmissionSurface)
 	api.HandleFunc("POST /api/v1/domain/benchmark-admission/preview", s.benchmarkAdmissionPreview)
 	api.HandleFunc("POST /api/v1/domain/benchmark-admission/preview/{id}/confirm", s.confirmBenchmarkAdmission)
 	api.HandleFunc("GET /api/v1/domain/benchmark-profiles/{key}/draft", s.readBenchmarkDraft)
@@ -371,12 +376,39 @@ func (s Server) routes() *http.ServeMux {
 	api.HandleFunc("POST /api/v1/conversations/{id}/cancel", s.cancelConversation)
 	api.HandleFunc("PATCH /api/v1/conversations/{id}", s.changeConversation)
 	api.HandleFunc("DELETE /api/v1/conversations/{id}", s.deleteConversation)
+	api.HandleFunc("GET /api/v1/conversations/{id}/task-card/{run}", s.assistantTaskCard)
+	api.HandleFunc("GET /api/v1/conversations/{id}/task-card/{run}/records/{task}", s.assistantTaskRecords)
+	api.HandleFunc("POST /api/v1/conversations/{id}/task-card/{run}/actions", s.assistantTaskProgress)
+	api.HandleFunc("GET /api/v1/conversations/{id}/asset-card/{run}", s.assistantAssetCard)
+	api.HandleFunc("POST /api/v1/conversations/{id}/asset-card/{run}/actions", s.assistantAssetStatus)
+	api.HandleFunc("GET /api/v1/conversations/{id}/attention-card/{run}", s.assistantAttentionCard)
+	api.HandleFunc("POST /api/v1/conversations/{id}/attention-card/{run}/actions", s.assistantAttentionReason)
+	api.HandleFunc("POST /api/v1/conversations/{id}/attention-card/{run}/approval-preview", s.assistantApprovalPreview)
+	api.HandleFunc("GET /api/v1/conversations/{id}/skill-card/{run}", s.assistantSkillCard)
+	api.HandleFunc("POST /api/v1/conversations/{id}/skill-card/{run}/actions", s.assistantSkillPreview)
+	api.HandleFunc("GET /api/v1/conversations/{id}/operation-advice/{run}", s.assistantAdviceCard)
+	api.HandleFunc("POST /api/v1/conversations/{id}/operation-advice/{run}/actions", s.assistantAdviceAction)
+	api.HandleFunc("GET /api/v1/conversations/{id}/artifact-card/{run}", s.assistantArtifactCard)
+	api.HandleFunc("POST /api/v1/conversations/{id}/artifact-card/{run}/actions", s.assistantArtifactPreview)
+	api.HandleFunc("GET /api/v1/conversations/{id}/memory-card/{run}", s.assistantMemoryProvenance)
+	api.HandleFunc("POST /api/v1/conversations/{id}/memory-card/{run}/actions", s.assistantMemoryProvenance)
+	api.HandleFunc("GET /api/v1/conversations/{id}/schedule-card/{run}", s.assistantDiscoverySchedule)
+	api.HandleFunc("POST /api/v1/conversations/{id}/schedule-card/{run}/actions", s.assistantDiscoverySchedule)
+	api.HandleFunc("GET /api/v1/conversations/{id}/report-card/{run}", s.assistantBenchmarkComparison)
+	api.HandleFunc("POST /api/v1/conversations/{id}/report-card/{run}/actions", s.assistantBenchmarkComparison)
+	api.HandleFunc("GET /api/v1/conversations/{id}/mcp-setup/{run}", s.mcpSetupView)
+	api.HandleFunc("POST /api/v1/conversations/{id}/mcp-setup/{run}/actions", s.mcpSetupAction)
+	api.HandleFunc("POST /api/v1/conversations/{id}/mcp-setup/{run}/preview", s.mcpSetupPreflight)
+	api.HandleFunc("POST /api/v1/conversations/{id}/mcp-setup/{run}/connection", s.mcpSetupSave)
+	api.HandleFunc("POST /api/v1/conversations/{id}/mcp-setup/{run}/operation", s.mcpSetupOperation)
 	api.HandleFunc("POST /api/v1/a2ui/discovery-candidates", s.a2uiDiscoveryOpen)
 	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/discovery-candidates", s.a2uiDiscoveryList)
 	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/actions", s.a2uiDiscoveryAction)
 	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/actions/{key}", s.a2uiDiscoveryReadback)
 	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/actions/{key}/confirm", s.a2uiDiscoveryConfirm)
 	api.HandleFunc("POST /api/v1/conversations/{id}/messages", s.submit(false, false))
+	api.HandleFunc("GET /api/v1/conversations/{id}/a2ui/benchmark-revision/{run_id}", s.benchmarkRevisionSurface)
+	api.HandleFunc("POST /api/v1/conversations/{id}/a2ui/benchmark-revision/{run_id}", s.benchmarkRevisionSurface)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-revision-preview", s.benchmarkRevisionChat)
 	api.HandleFunc("POST /api/v1/conversations/{id}/benchmark-execution-suggestions/{run}/confirm", s.confirmBenchmarkExecutionSuggestion)
 	api.HandleFunc("GET /api/v1/conversations/{id}/benchmark-revision-requests/{request_id}", s.benchmarkRevisionRequestState)
@@ -477,6 +509,9 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 				fail(w, 400, "invalid_material", "材料标识无效")
 				return
 			}
+		}
+		if s.submitMCPSetup(w, r, in, key, task) || s.submitAssistantReadCard(w, r, in, key, task) {
+			return
 		}
 		if r.Header.Get("X-ClusBot-Reply-Strategy") == "deterministic_only" {
 			if task || in.TaskRef != nil || len(in.AttachmentIDs) != 0 || in.Read != nil || len(in.Reads) != 0 ||
@@ -598,7 +633,7 @@ func (s Server) submit(task, explicitNewTask bool) http.HandlerFunc {
 		if r.Header.Get("X-ClusBot-Assistant-Cards") == "1" && !task && !strings.HasPrefix(in.Text, "/") &&
 			in.TaskRef == nil && len(in.AttachmentIDs) == 0 && in.Read == nil && len(in.Reads) == 0 &&
 			in.Criteria == nil && in.Filename == nil && in.Revision == 0 && !in.ReplaceMaterials &&
-			(s.assistantModelSetupChat(w, r, in.Text) || s.assistantOperationChat(w, r, in.Text)) {
+			(s.assistantModelSetupChat(w, r, in.Text) || s.assistantOperationChat(w, r, in.Text, key)) {
 			return
 		}
 		if len(in.Reads) > work.MaxTaskReads || (in.Read != nil && len(in.Reads) > 0) {
@@ -910,6 +945,17 @@ func (s Server) detail(task bool) http.HandlerFunc {
 				return
 			}
 			d.Run.BenchmarkRevisionSuggestion = target
+			if target == nil && d.Run.TaskID == "" && d.Run.Status == "completed" {
+				// Restoration is based on the durable, account-owned event, not
+				// an assistant message prefix or the UI language.
+				meta, err := s.Store.ReadBenchmarkRevisionChatMetadata(r.Context(), s.principal(r), d.Conversation.ID, d.Run.ID)
+				if err == nil {
+					d.Run.BenchmarkRevisionPreview = &meta
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					writeError(w, err)
+					return
+				}
+			}
 		}
 		jsonResponse(w, 200, d)
 	}
@@ -1216,6 +1262,10 @@ func writeError(w http.ResponseWriter, err error) {
 		fail(w, 409, "benchmark_recovery_unsupported", err.Error())
 	case errors.Is(err, work.ErrApprovalExpired):
 		fail(w, 409, "approval_expired", err.Error())
+	case errors.Is(err, work.ErrApprovalSourceUnverified):
+		fail(w, 409, "approval_source_unverified", err.Error())
+	case errors.Is(err, work.ErrApprovalStale):
+		fail(w, 409, "approval_stale", err.Error())
 	case errors.Is(err, mcpclient.ErrConfig), errors.Is(err, mcpclient.ErrArguments), errors.Is(err, mcpclient.ErrToolSchema), errors.Is(err, work.ErrReadSelection):
 		fail(w, 400, "invalid_mcp", err.Error())
 	case errors.Is(err, work.ErrToolPermission):

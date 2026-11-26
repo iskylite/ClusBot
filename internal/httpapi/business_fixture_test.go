@@ -76,10 +76,6 @@ func businessFixtureHandler(t *testing.T, s Server) http.Handler {
 	api := s.routes()
 	bridge := &assistantBridge{pending: make(map[string]assistantPreview)}
 	bridge.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/provider/benchmark-events" {
-			s.benchmarkEvent(w, r)
-			return
-		}
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Origin") != "http://"+r.Host {
 			fail(w, 403, "invalid_origin", "请求来源无效")

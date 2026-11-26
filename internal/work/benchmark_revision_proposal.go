@@ -15,12 +15,24 @@ type BenchmarkRevisionProposalInput struct {
 }
 
 type BenchmarkRevisionProposal struct {
-	Method           string                  `json:"method"`
-	State            string                  `json:"state"`
-	ExpectedRevision int                     `json:"expected_revision"`
-	Interpretation   BenchmarkRevisionIntent `json:"interpretation"`
-	Preview          BenchmarkRevision       `json:"preview"`
+	Method           string                            `json:"method"`
+	State            string                            `json:"state"`
+	ExpectedRevision int                               `json:"expected_revision"`
+	Interpretation   BenchmarkRevisionIntent           `json:"interpretation"`
+	Preview          BenchmarkRevision                 `json:"preview"`
+	ParameterChange  *BenchmarkRevisionParameterChange `json:"parameter_change,omitempty"`
 }
+
+// ParameterChange shows the exact one-field difference, never an acceptance
+// threshold or a command. Before/after are from the frozen Go plan.
+type BenchmarkRevisionParameterChange struct {
+	Before         string `json:"before"`
+	After          string `json:"after"`
+	ExpectedBefore string `json:"expected_before,omitempty"`
+	ExpectedAfter  string `json:"expected_after,omitempty"`
+}
+
+var ErrBenchmarkRevisionActualConsent = fmt.Errorf("%w：执行参数与实测核对值须一致；若要一起修改，请选择同步核对值后再预演", ErrBenchmarkInput)
 
 type BenchmarkRevisionIntent struct {
 	Action       string `json:"action"`
@@ -104,11 +116,13 @@ func (s *Store) previewBenchmarkRevisionIntent(ctx context.Context, actor, task 
 	if index < 0 {
 		return BenchmarkRevisionProposal{}, fmt.Errorf("%w：当前方案没有这个测项 ID", ErrBenchmarkInput)
 	}
+	var change *BenchmarkRevisionParameterChange
 	if intent.Action == "remove_case" {
 		cases = slices.Delete(cases, index, index+1)
 	} else {
 		c := &cases[index]
-		if _, ok := c.Parameters[intent.Parameter]; !ok {
+		before, ok := c.Parameters[intent.Parameter]
+		if !ok {
 			return BenchmarkRevisionProposal{}, fmt.Errorf("%w：测项没有这个参数，不能自动新增", ErrBenchmarkInput)
 		}
 		expected, hasExpected := c.ActualConfig[intent.Parameter]
@@ -116,11 +130,13 @@ func (s *Store) previewBenchmarkRevisionIntent(ctx context.Context, actor, task 
 			return BenchmarkRevisionProposal{}, fmt.Errorf("%w：测项没有同名实测要求，不能自动新增", ErrBenchmarkInput)
 		}
 		if !intent.ChangeActual && hasExpected && expected != intent.Value {
-			return BenchmarkRevisionProposal{}, fmt.Errorf("%w：该参数也用于核对实测配置，请明确是否「并同步实测要求」", ErrBenchmarkInput)
+			return BenchmarkRevisionProposal{}, ErrBenchmarkRevisionActualConsent
 		}
+		change = &BenchmarkRevisionParameterChange{Before: before, After: intent.Value}
 		c.Parameters = maps.Clone(c.Parameters)
 		c.Parameters[intent.Parameter] = intent.Value
 		if intent.ChangeActual {
+			change.ExpectedBefore, change.ExpectedAfter = expected, intent.Value
 			c.ActualConfig = maps.Clone(c.ActualConfig)
 			c.ActualConfig[intent.Parameter] = intent.Value
 		}
@@ -131,5 +147,5 @@ func (s *Store) previewBenchmarkRevisionIntent(ctx context.Context, actor, task 
 	if err != nil {
 		return BenchmarkRevisionProposal{}, err
 	}
-	return BenchmarkRevisionProposal{Method: method, State: "preview_only", ExpectedRevision: current.Revision, Interpretation: intent, Preview: preview}, nil
+	return BenchmarkRevisionProposal{Method: method, State: "preview_only", ExpectedRevision: current.Revision, Interpretation: intent, Preview: preview, ParameterChange: change}, nil
 }

@@ -13,11 +13,13 @@ type DiscoverySetupStatus struct {
 }
 
 type DiscoverySetupPlan struct {
-	ID     string              `json:"id"`
-	Source string              `json:"source"`
-	Scope  string              `json:"scope"`
-	NextAt int64               `json:"next_at_unix_ms"`
-	Scan   *DiscoveryScopeSpec `json:"scan,omitempty"`
+	ID            string              `json:"id"`
+	Source        string              `json:"source"`
+	Scope         string              `json:"scope"`
+	NextAt        int64               `json:"next_at_unix_ms"`
+	PeriodSeconds int64               `json:"period_seconds"`
+	Revision      int                 `json:"revision"`
+	Scan          *DiscoveryScopeSpec `json:"scan,omitempty"`
 }
 
 type DiscoverySetupRun struct {
@@ -30,6 +32,10 @@ type DiscoverySetupRun struct {
 // ReadDiscoverySetupStatus projects the latest occurrence of an eligible plan.
 // Readiness here describes installed configuration, without probing the source.
 func (s *Store) ReadDiscoverySetupStatus(ctx context.Context, actor string, adapter DiscoveryScanSource, source, scope string) (DiscoverySetupStatus, error) {
+	return s.readDiscoverySetupStatus(ctx, actor, adapter, source, scope, "")
+}
+
+func (s *Store) readDiscoverySetupStatus(ctx context.Context, actor string, adapter DiscoveryScanSource, source, scope, planID string) (DiscoverySetupStatus, error) {
 	if actor == "" {
 		return DiscoverySetupStatus{}, ErrAuthorizationDenied
 	}
@@ -46,14 +52,15 @@ func (s *Store) ReadDiscoverySetupStatus(ctx context.Context, actor string, adap
 		return DiscoverySetupStatus{}, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `SELECT p.plan_id,p.source,p.scope,p.next_at,o.status,o.scheduled_at,coalesce(b.binding,''),coalesce(q.coverage,'')
+	rows, err := tx.QueryContext(ctx, `SELECT p.plan_id,p.source,p.scope,p.next_at,p.period_ms/1000,p.revision,o.status,o.scheduled_at,coalesce(b.binding,''),coalesce(q.coverage,'')
 FROM discovery_plans p LEFT JOIN discovery_occurrences o ON o.plan_id=p.plan_id AND o.scheduled_at=(
  SELECT max(last.scheduled_at) FROM discovery_occurrences last WHERE last.plan_id=p.plan_id AND last.plan_revision=p.revision
 )
 LEFT JOIN discovery_plan_bindings b ON b.plan_id=p.plan_id
 LEFT JOIN discovery_scan_coverages q ON q.plan_id=o.plan_id AND q.scheduled_at=o.scheduled_at
 WHERE p.actor=? AND p.enabled=1 AND (?='' OR p.source=? AND p.scope=?)
-ORDER BY o.scheduled_at DESC,p.next_at,p.plan_id`, actor, source, source, scope)
+AND (?='' OR p.plan_id=?)
+ORDER BY o.scheduled_at DESC,p.next_at,p.plan_id`, actor, source, source, scope, planID, planID)
 	if err != nil {
 		return DiscoverySetupStatus{}, err
 	}
@@ -64,7 +71,7 @@ ORDER BY o.scheduled_at DESC,p.next_at,p.plan_id`, actor, source, source, scope)
 		var status sql.NullString
 		var scheduled sql.NullInt64
 		var rawBinding, rawCoverage string
-		if err := rows.Scan(&plan.ID, &plan.Source, &plan.Scope, &plan.NextAt, &status, &scheduled, &rawBinding, &rawCoverage); err != nil {
+		if err := rows.Scan(&plan.ID, &plan.Source, &plan.Scope, &plan.NextAt, &plan.PeriodSeconds, &plan.Revision, &status, &scheduled, &rawBinding, &rawCoverage); err != nil {
 			return DiscoverySetupStatus{}, err
 		}
 		if !adapter.AllowsDiscovery(plan.Source, plan.Scope) {

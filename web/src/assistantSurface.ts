@@ -36,12 +36,34 @@ const scalar = (value:unknown):value is Scalar => value===null || typeof value==
 // The product catalog specifies which fields each event may send. Do not
 // forward userMessage, whole data models, functions or arbitrary destinations.
 const reviewFields=['owner','location','role'] as const
+export const benchmarkAdmissionAction='preview_benchmark_admission'
+const benchmarkRevisionAction='preview_benchmark_revision'
+export const benchmarkSyncActualAction='preview_benchmark_parameter_with_actual'
+const revisionFields=['source_run_id','task_id','revision'] as const
 const eventFields:Readonly<Record<string,readonly string[]>> = Object.freeze({
+  query_task_progress:['task_id','revision'],
+  query_asset_ledger:['asset_slot','revision'],
+  query_attention_reason:['attention_slot','revision'],
+  preview_pending_approval:['attention_slot','revision'],
+  preview_conversation_skill:['skill_slot','revision'],
+  preview_artifact_text:['artifact_slot','revision'],
+  review_memory_provenance:['memory_slot','revision'],
+  preview_benchmark_comparison:['report_slot','revision'],
+  preview_discovery_schedule:['schedule_slot','revision'],
+  review_operation_advice_choice:['advice_slot','revision'],
+  choose_mcp_transport:['transport','revision'],
+  request_mcp_setup_step:['step','revision','connection_revision'],
   review_discovery_candidate:['candidate_id','revision'],
+  [benchmarkAdmissionAction]:['source_run_id','revision'],
+  [benchmarkRevisionAction]:revisionFields,
+  [benchmarkSyncActualAction]:revisionFields,
   request_discovery_admission:['candidate_id','revision',...reviewFields],
 })
 const editablePaths=new Set<string>(reviewFields.map(key=>'/form/'+key))
 const validRevision=(value:unknown):value is number => typeof value==='number'&&Number.isSafeInteger(value)&&value>0
+const numberedSlot=(key:string)=>key==='asset_slot'||key==='attention_slot'||key==='artifact_slot'||key==='advice_slot'||key==='skill_slot'||key==='memory_slot'||key==='report_slot'||key==='schedule_slot'
+const validReadSlot=(value:unknown,key:string):value is string => typeof value==='string'&&
+  ((key==='report_slot'||key==='schedule_slot')?value==='1':(key==='memory_slot'?/^(?:[1-9]|1[0-6])$/:/^(?:[1-9]|10)$/).test(value))
 const validCandidateID=(value:unknown):value is string => typeof value==='string'&&/^[a-f\d]{64}$/.test(value)
 export const surfaceFieldBytes=256
 export const surfaceFieldLength=(value:string)=>new TextEncoder().encode(value).length
@@ -54,9 +76,17 @@ function parseEvent(value:unknown):AgentEvent|undefined {
   if(!Object.hasOwn(eventFields,value.name)||!object(value.context)||!keysAre(value.context,[...eventFields[value.name]]))return
   const context:Record<string,EventValue>=Object.create(null)
   for(const [key,input] of Object.entries(value.context)) {
-    if(key==='candidate_id') {
+    if(numberedSlot(key)) {
+      if(!validReadSlot(input,key))return
+    } else if(key==='candidate_id') {
       if(!validCandidateID(input))return
-    } else if(key==='revision') {
+    } else if(key==='step') {
+      if(input!=='probe'&&input!=='permissions'&&input!=='binding')return
+    } else if(key==='transport') {
+      if(input!=='stdio'&&input!=='http')return
+    } else if(key==='task_id'||key==='source_run_id') {
+      if(typeof input!=='string'||!/^[a-f\d]{32}$/.test(input))return
+    } else if(key==='revision'||key==='connection_revision') {
       if(!validRevision(input))return
     } else if(!binding(input)||input['@path']!=='/form/'+key)return
     context[key]=input as EventValue
@@ -81,8 +111,11 @@ export function createSurfaceAction(surface:Surface,sourceComponentID:string,dat
   for(const key of eventFields[name]) {
     const field=context[key]
     const value=binding(field)?data.get(field['@path']):field
-    if(key==='revision') {
+    if(key==='revision'||key==='connection_revision') {
       if(!validRevision(value))return
+      resolved[key]=value
+    } else if(numberedSlot(key)) {
+      if(!validReadSlot(value,key))return
       resolved[key]=value
     } else {
       if(!validField(value))return
@@ -207,14 +240,157 @@ function validAction(value:unknown):value is SurfaceAction {
 }
 export async function sendSurfaceAction(transport:SurfaceTransport,conversationID:string,body:SurfaceAction,requestKey:string):Promise<AssistantReply> {
   const path=a2uiPath(conversationID,'actions')
-  if(!path||!validRequestKey(requestKey)||!validAction(body))throw new Error('无法核对本次会话和操作。')
+  if(!path||!validRequestKey(requestKey)||!validAction(body)||!['review_discovery_candidate','request_discovery_admission'].includes(body.action.name))throw new Error('无法核对本次会话和操作。')
   const receipt=await transport(path,body,'POST',{'X-ClusBot-Request-Key':requestKey})
   return checkSurfaceReply(receipt,conversationID,body)
 }
 
+export function benchmarkSurfacePath(conversation:string,run:string) {
+  return localID(conversation)&&localID(run)?'/conversations/'+conversation+'/a2ui/benchmark-revision/'+run:undefined
+}
+export function benchmarkPreviewSurfaces(receipt:unknown,conversation:string,run:string,task:string,revision:number) {
+  const surfaces=parseSurfaceReceipt(receipt,conversation)
+  if(surfaces?.length!==2)return
+  function matches(surface:Surface,name:string,id:string) {
+    const button=surface.nodes.get(id)
+    const event=button?.component==='Button'?button.action.event:undefined
+    return event?.name===name&&event.context?.source_run_id===run&&event.context.task_id===task&&event.context.revision===revision
+  }
+  const preview=surfaces.find(surface=>matches(surface,benchmarkRevisionAction,'preview_revision'))
+  const sync=surfaces.find(surface=>matches(surface,benchmarkSyncActualAction,'preview_with_actual'))
+  if(preview&&sync&&preview.id!==sync.id)return {preview,sync}
+}
+type BenchmarkImpactScope={target_count:number;target_refs:string[]}
+type BenchmarkParameterChange={before:string;after:string;expected_before?:string;expected_after?:string}
+type BenchmarkCaseAssetImpact={case_key:string;change:'removed'|'changed';before_refs:string[];after_refs:string[]}
+type BenchmarkRevisionAssetImpact={
+  baseline:BenchmarkImpactScope;proposed:BenchmarkImpactScope;scope_changed:boolean
+  removed_refs:string[];changed_cases:BenchmarkCaseAssetImpact[];current_local_holds:{case_key:string;target_refs:string[]}[]
+}
+export type RevisionPreview={
+  run_id:string;conversation_id:string;task_id:string;source_run_id?:string;requested_action?:typeof benchmarkSyncActualAction
+  proposal:{state:string;expected_revision:number;interpretation:{action:string;case_key:string;parameter?:string;value?:string;change_expected_actual_config?:boolean};
+    parameter_change?:BenchmarkParameterChange
+    preview:{revision:number;changes:{added:string[];removed:string[];changed:string[];order_changed:boolean};frozen_cases:string[];
+      asset_impact?:BenchmarkRevisionAssetImpact}}
+}
+const stringsOrEmpty=(value:unknown):string[]|undefined=>value===null?[]:Array.isArray(value)&&value.length<=4096&&value.every(v=>typeof v==='string'&&v.length<=512)?value:undefined
+function uniqueAssetRefs(value:unknown):string[]|undefined {
+  const refs=stringsOrEmpty(value)
+  if(!refs||refs.some(ref=>!ref||ref.trim()!==ref)||new Set(refs).size!==refs.length)return
+  return refs
+}
+const requiredRefs=(refs:string[],scope:ReadonlySet<string>)=>refs.every(ref=>scope.has(ref))
+function previewScope(value:unknown):BenchmarkImpactScope|undefined {
+  if(!object(value)||value.source!=='frozen_targets'||typeof value.target_count!=='number'||!Number.isSafeInteger(value.target_count)||value.target_count<0)return
+  const refs=uniqueAssetRefs(value.target_refs)
+  if(!refs||refs.length!==value.target_count)return
+  return {target_count:value.target_count,target_refs:refs}
+}
+function revisionAssetImpact(value:unknown,revision:number,caseKey:string,action:unknown,frozen:string[]):BenchmarkRevisionAssetImpact|undefined {
+  if(!object(value)||value.source!=='frozen_targets'||value.base_revision!==revision||value.scope_limit!=='within_original_task'||
+    typeof value.scope_changed!=='boolean'||!Array.isArray(value.changed_cases)||value.changed_cases.length!==1||
+    !Array.isArray(value.current_local_holds)||value.current_local_holds.length>64)return
+  const baseline=previewScope(value.baseline),proposed=previewScope(value.proposed)
+  if(!baseline||!proposed)return
+  const before=new Set(baseline.target_refs),after=new Set(proposed.target_refs)
+  const removed=baseline.target_refs.filter(ref=>!after.has(ref))
+  if(!requiredRefs(proposed.target_refs,before)||value.scope_changed!==(removed.length>0))return
+  const row=value.changed_cases[0],change=action==='remove_case'?'removed':'changed'
+  if(!object(row)||row.case_key!==caseKey||row.change!==change)return
+  const beforeRefs=uniqueAssetRefs(row.before_refs),afterRefs=uniqueAssetRefs(row.after_refs)
+  if(!beforeRefs?.length||!afterRefs||!requiredRefs(beforeRefs,before)||!requiredRefs(afterRefs,after)||
+    (change==='removed'?afterRefs.length!==0||!requiredRefs(removed,new Set(beforeRefs)):
+      removed.length!==0||afterRefs.length!==beforeRefs.length||!requiredRefs(afterRefs,new Set(beforeRefs))))return
+  const holds:BenchmarkRevisionAssetImpact['current_local_holds']=[]
+  const heldCases=new Set<string>()
+  for(const item of value.current_local_holds){
+    if(!object(item)||typeof item.case_key!=='string'||!frozen.includes(item.case_key)||heldCases.has(item.case_key))return
+    const refs=uniqueAssetRefs(item.target_refs)
+    if(!refs?.length||!requiredRefs(refs,before))return
+    heldCases.add(item.case_key);holds.push({case_key:item.case_key,target_refs:refs})
+  }
+  return {baseline,proposed,scope_changed:value.scope_changed,removed_refs:removed,
+    changed_cases:[{case_key:caseKey,change,before_refs:beforeRefs,after_refs:afterRefs}],current_local_holds:holds}
+}
+// Validate the displayed diff before offering an apply button, including
+// results fetched after a dropped HTTP acknowledgement.
+export function checkedBenchmarkPreview(receipt:unknown,conversation:string,sourceRun:string|undefined,task:string,revision:number):RevisionPreview {
+  const invalid=()=>new Error('没有收到与原任务匹配的预演回执。')
+  if(!object(receipt)||!localID(receipt.run_id)||receipt.conversation_id!==conversation||receipt.source_run_id!==sourceRun||
+    receipt.task_id!==task||!object(receipt.proposal)||receipt.proposal.state!=='preview_only'||receipt.proposal.expected_revision!==revision)throw invalid()
+  const {interpretation:intent,preview,parameter_change:parameter}=receipt.proposal
+  const sync=receipt.requested_action===benchmarkSyncActualAction
+  if((receipt.requested_action!==undefined&&!sync)||(sync&&!sourceRun))throw invalid()
+  if(!object(intent)||!['remove_case','set_parameter'].includes(String(intent.action))||typeof intent.case_key!=='string'||!intent.case_key||
+    !object(preview)||preview.revision!==revision+1||!object(preview.changes)||typeof preview.changes.order_changed!=='boolean')throw invalid()
+  const added=stringsOrEmpty(preview.changes.added),removed=stringsOrEmpty(preview.changes.removed),changed=stringsOrEmpty(preview.changes.changed),frozen=stringsOrEmpty(preview.frozen_cases)
+  if(!added||!removed||!changed||!frozen||added.length!==0||preview.changes.order_changed||
+    (intent.action==='remove_case'?(removed.length!==1||removed[0]!==intent.case_key||changed.length!==0):
+    (changed.length!==1||changed[0]!==intent.case_key||removed.length!==0||typeof intent.parameter!=='string'||!intent.parameter||typeof intent.value!=='string'||!intent.value))||
+    (intent.change_expected_actual_config!==undefined&&typeof intent.change_expected_actual_config!=='boolean')||
+    (sync&&(intent.action!=='set_parameter'||intent.change_expected_actual_config!==true))||
+    (intent.change_expected_actual_config===true&&(sourceRun!==undefined&&!sync||intent.action!=='set_parameter')))throw invalid()
+  const safe:RevisionPreview={run_id:receipt.run_id,conversation_id:conversation,source_run_id:sourceRun,task_id:task,
+    ...(sync?{requested_action:benchmarkSyncActualAction}:{}),
+    proposal:{state:'preview_only',expected_revision:revision,interpretation:{action:String(intent.action),case_key:intent.case_key,
+      ...(intent.action==='set_parameter'?{parameter:String(intent.parameter),value:String(intent.value)}:{}),
+      ...(intent.change_expected_actual_config===true?{change_expected_actual_config:true}:{})},
+      preview:{revision:revision+1,changes:{added,removed,changed,order_changed:false},frozen_cases:frozen}}}
+  if(intent.action==='set_parameter'){
+    if(!object(parameter)||!validField(parameter.before)||!validField(parameter.after)||parameter.before===parameter.after||
+      parameter.after!==intent.value||(intent.change_expected_actual_config===true?
+        parameter.expected_before!==parameter.before||parameter.expected_after!==parameter.after:
+        parameter.expected_before!==undefined||parameter.expected_after!==undefined))throw invalid()
+    safe.proposal.parameter_change={before:parameter.before,after:parameter.after,
+      ...(intent.change_expected_actual_config===true?{expected_before:parameter.before,expected_after:parameter.after}:{})}
+  } else if(parameter!==undefined)throw invalid()
+  if(preview.asset_impact!==undefined&&preview.asset_impact!==null) {
+    const impact=revisionAssetImpact(preview.asset_impact,revision,intent.case_key,intent.action,frozen)
+    if(!impact)throw invalid()
+    safe.proposal.preview.asset_impact=impact
+  }
+  return safe
+}
+function benchmarkPreviewPath(preview:RevisionPreview) {
+  if(!localID(preview.conversation_id)||!localID(preview.run_id))throw new Error('无法核对原修订预演。')
+  return '/conversations/'+preview.conversation_id+'/benchmark-revision-preview/'+preview.run_id
+}
+type RevisionRead=(path:string)=>Promise<unknown>
+export async function readBenchmarkRevisionApplied(read:RevisionRead,preview:RevisionPreview):Promise<number|undefined> {
+  const meta=await read(benchmarkPreviewPath(preview)+'?metadata=1')
+  if(!object(meta)||meta.task_id!==preview.task_id||meta.source_run_id!==preview.source_run_id||
+    meta.expected_revision!==preview.proposal.expected_revision||
+    (meta.applied_revision!==undefined&&meta.applied_revision!==preview.proposal.preview.revision))
+    throw new Error('没有收到与原预演对应的修订回执。')
+  return meta.applied_revision as number|undefined
+}
+export async function readBenchmarkRevisionSnapshot(read:RevisionRead,preview:RevisionPreview) {
+  const fresh=checkedBenchmarkPreview(await read(benchmarkPreviewPath(preview)),preview.conversation_id,preview.source_run_id,
+    preview.task_id,preview.proposal.expected_revision)
+  const prior=preview.proposal, next=fresh.proposal
+  if(fresh.run_id!==preview.run_id||fresh.requested_action!==preview.requested_action||!next.preview.asset_impact||
+    JSON.stringify(prior.interpretation)!==JSON.stringify(next.interpretation)||
+    JSON.stringify(prior.parameter_change)!==JSON.stringify(next.parameter_change)||
+    JSON.stringify(prior.preview.changes)!==JSON.stringify(next.preview.changes))
+    throw new Error('无法重新核对原方案及资产范围。')
+  return fresh
+}
+export async function previewBenchmarkSurface(transport:SurfaceTransport,conversation:string,sourceRun:string,task:string,revision:number,
+  action:SurfaceAction,key:string):Promise<RevisionPreview> {
+  const path=benchmarkSurfacePath(conversation,sourceRun)
+  if(!path||!localID(task)||!validRevision(revision)||!validRequestKey(key)||!validAction(action)||
+    (action.action.name!==benchmarkRevisionAction&&action.action.name!==benchmarkSyncActualAction)||action.action.context.source_run_id!==sourceRun||
+    action.action.context.task_id!==task||action.action.context.revision!==revision)throw new Error('无法核对修订的会话、任务或版本。')
+  const receipt=await transport(path,action,'POST',{'X-ClusBot-Request-Key':key})
+  const preview=checkedBenchmarkPreview(receipt,conversation,sourceRun,task,revision)
+  if((preview.requested_action===benchmarkSyncActualAction)!==(action.action.name===benchmarkSyncActualAction))
+    throw new Error('预演回执与本次用户选择不符。')
+  return preview
+}
 export async function readSurfaceAction(transport:(path:string)=>Promise<unknown>,conversationID:string,body:SurfaceAction,requestKey:string):Promise<AssistantReply> {
   const path=a2uiPath(conversationID,'actions')
-  if(!path||!validRequestKey(requestKey)||!validAction(body))throw new Error('无法核对本次会话和操作。')
+  if(!path||!validRequestKey(requestKey)||!validAction(body)||!['review_discovery_candidate','request_discovery_admission'].includes(body.action.name))throw new Error('无法核对本次会话和操作。')
   const receipt=await transport(path+'/'+encodeURIComponent(requestKey))
   return checkSurfaceReply(receipt,conversationID,body,true)
 }
@@ -445,7 +621,6 @@ const formTargets:Record<string,string> = {
   configure_model_provider:'/settings#model-default',
   configure_model_profile:'/settings#model-profiles',
   configure_model_role:'/settings#model-roles',
-  configure_mcp_connection:'/connections/new',
   configure_mcp_permission:'/connections',
 }
 export function trustedForm(tool:unknown,target:unknown):string|undefined {

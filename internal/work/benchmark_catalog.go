@@ -212,6 +212,10 @@ func preflightBenchmarkTx(ctx context.Context, tx *sql.Tx, actor string, ref Ben
 		}
 		entry.Warnings = append(entry.Warnings, BenchmarkPreflightIssue{Code: "live_capacity_unverified",
 			Detail: "未探测实时拓扑、可用卡数、其他系统占用及连接可达性"})
+		var serials map[string]bool
+		if accountBenchmarkDispatchPin(provider) != "" {
+			serials = make(map[string]bool)
+		}
 		for _, target := range c.Targets {
 			item := BenchmarkPreflightAsset{Ref: target, InventoryStatus: "eligible", Authorization: "allowed", Occupancy: "unknown"}
 			_, aerr := benchmarkAsset(tx, target)
@@ -224,6 +228,20 @@ func preflightBenchmarkTx(ctx context.Context, tx *sql.Tx, actor string, ref Ben
 				entry.Blockers = append(entry.Blockers, BenchmarkPreflightIssue{"asset_ineligible", target, aerr.Error()})
 			case aerr != nil:
 				return BenchmarkPreflight{}, aerr
+			}
+			if serials != nil && item.InventoryStatus == "eligible" {
+				var serial string
+				err := tx.QueryRowContext(ctx, "SELECT physical_serial FROM benchmark_asset_physical_serials WHERE target_ref=?", target).Scan(&serial)
+				switch {
+				case errors.Is(err, sql.ErrNoRows):
+					entry.Blockers = append(entry.Blockers, BenchmarkPreflightIssue{"physical_serial_missing", target, "目标未登记可信的物理序列号"})
+				case err != nil:
+					return BenchmarkPreflight{}, err
+				case serials[serial]:
+					entry.Blockers = append(entry.Blockers, BenchmarkPreflightIssue{"duplicate_physical_asset", target, "同一测项重复引用物理资产"})
+				default:
+					serials[serial] = true
+				}
 			}
 			_, aerr = benchmarkAuthorization(tx, actor, target, c, out.CheckedAt)
 			switch {

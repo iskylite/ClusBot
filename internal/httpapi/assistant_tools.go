@@ -54,6 +54,7 @@ func (s Server) registerAssistantTools(api *http.ServeMux) {
 	api.HandleFunc("GET /api/v1/assistant/composer-options", s.composerOptions)
 	api.HandleFunc("GET /api/v1/assistant/token-usage-stats", s.tokenUsageStats)
 	api.HandleFunc("GET /api/v1/assistant/runs/{id}/model-receipt", s.assistantRunModelReceipt)
+	api.HandleFunc("GET /api/v1/conversations/{id}/runs/{run}/model-receipt/{message}", s.assistantConversationModelReceipt)
 	api.HandleFunc("POST /api/v1/assistant/interpret", s.assistantInterpret)
 	api.HandleFunc("POST /api/v1/assistant/tools", s.assistantInvoke)
 	api.HandleFunc("POST /api/v1/assistant/confirm", s.assistantConfirm)
@@ -666,6 +667,10 @@ func readOnlyAssistant(r *http.Request) bool {
 }
 
 func (s Server) interpretAssistantCommand(w http.ResponseWriter, r *http.Request, text string) {
+	if mcpSetupIntent(text) || mcpSetupPayload(text) {
+		s.invokeAssistantTool(w, r, assistantToolInput{Tool: "configure_mcp_connection"})
+		return
+	}
 	if name := assistantReadShortcut(text); name != "" {
 		s.invokeAssistantTool(w, r, assistantToolInput{Tool: name})
 		return

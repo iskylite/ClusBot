@@ -16,7 +16,7 @@ export type ExecutionUsage = {
 }
 export type BenchmarkExecutionSuggestion={task_id:string;step_id:string;case_key:string;plan_revision:number;state:string}
 export type BenchmarkExecutionReceipt={task_id:string;step_id:string;plan_revision:number;action:string;state:string}
-export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number}; benchmark_execution_suggestion?:BenchmarkExecutionSuggestion; benchmark_execution_control?:BenchmarkExecutionReceipt }
+export type Run = { id: string; task_id?: string; status: string; response: string; error?: string; error_code?: string; usage?: ExecutionUsage; execution_generation: number; benchmark_suggestion?:{target:string;profile:{profile:string;version:number};state:string}; benchmark_revision_preview?:{task_id:string;source_run_id?:string;expected_revision:number;applied_revision?:number}; benchmark_revision_suggestion?:{task_id:string;expected_revision:number}; benchmark_execution_suggestion?:BenchmarkExecutionSuggestion; benchmark_execution_control?:BenchmarkExecutionReceipt }
 export type RunListItem = {id:string; status:string; created_at:number; input_excerpt?:string}
 export type RunPage = {items:RunListItem[]; next_cursor?:string}
 export type RunModelContext = {execution_generation:number;recorded_at:number;manifest?:{requested_model?:string};
@@ -37,7 +37,7 @@ export const awaitingPublication = (publication?: Publication) =>
   publication !== undefined && ['pending','dispatched','unknown'].includes(publication.status)
 export type UploadPart = {id:string;name:string;sha256:string;bytes:number;part:number;parts:number}
 export type Material = {id:string;path:string;sha256:string;size:number;captured_at:number;upload?:UploadPart}
-export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string; task_ref?:MessageTaskRef & {title?:string}; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
+export type Message = {id?:number; run_id?:string; role:'user'|'assistant'; text:string; asset_query_task_id?:string;mcp_onboarding?:boolean; assistant_task_list?:boolean; assistant_asset_list?:boolean; assistant_attention_list?:boolean; assistant_artifact_list?:boolean; assistant_operation_advice?:boolean; benchmark_admission?:boolean; assistant_skill_options?:boolean; assistant_benchmark_comparison?:boolean; assistant_discovery_schedule?:boolean; has_model_receipt?:boolean; task_ref?:MessageTaskRef & {title?:string}; materials?:Material[];replace_materials?:boolean;memory_refs?:MemoryRef[];incomplete?:boolean}
 export type MaterialFile = {path:string;size:number}
 export type SkillReplayMetrics = {
   cases:number; completed:number; incomplete?:number; successful:number; success_rate:number

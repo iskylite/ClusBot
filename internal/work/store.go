@@ -153,30 +153,32 @@ var (
 )
 
 type Store struct {
-	db                *sql.DB // 写连接（单写职责），由 writer 持有
-	writer            *writerDB
-	readPool          *readPool
-	storageLocation   sqliteStorageLocation
-	workspace         *workspace
-	materials         *workspace
-	uploads           *os.Root
-	publicationMu     sync.Mutex
-	connectionKey     []byte
-	connectionGrantMu *sync.Mutex
-	accountModelSlots chan struct{}
-	finalizationMu    sync.Mutex
-	finalizations     map[runFinalizationKey]*runFinalization
-	admissionMu       sync.Mutex
-	admissions        map[string]*admissionFlight
-	runtimeMu         sync.Mutex
-	modelConcurrency  int
-	modelActive       int
-	modelAvailable    chan struct{}
-	admissionLimits   RunLimits
-	runEventMu        sync.Mutex
-	runEventSubs      map[string]map[chan struct{}]struct{}
-	queueWake         chan struct{}
-	mcpPool           *mcpSessionPool
+	db                           *sql.DB // 写连接（单写职责），由 writer 持有
+	writer                       *writerDB
+	readPool                     *readPool
+	storageLocation              sqliteStorageLocation
+	workspace                    *workspace
+	materials                    *workspace
+	uploads                      *os.Root
+	publicationMu                sync.Mutex
+	connectionKey                []byte
+	connectionGrantMu            *sync.Mutex
+	accountModelSlots            chan struct{}
+	benchmarkInstance            *sql.DB // instance writer, shared only by bound account stores
+	reserveCluskitBenchmarkTools bool    // fixed before the account runtime serves requests
+	finalizationMu               sync.Mutex
+	finalizations                map[runFinalizationKey]*runFinalization
+	admissionMu                  sync.Mutex
+	admissions                   map[string]*admissionFlight
+	runtimeMu                    sync.Mutex
+	modelConcurrency             int
+	modelActive                  int
+	modelAvailable               chan struct{}
+	admissionLimits              RunLimits
+	runEventMu                   sync.Mutex
+	runEventSubs                 map[string]map[chan struct{}]struct{}
+	queueWake                    chan struct{}
+	mcpPool                      *mcpSessionPool
 }
 
 type Task struct {
@@ -214,29 +216,41 @@ type Run struct {
 	BenchmarkExecutionSuggestion *BenchmarkExecutionSuggestion     `json:"benchmark_execution_suggestion,omitempty"`
 	BenchmarkExecutionControl    *BenchmarkExecutionControlReceipt `json:"benchmark_execution_control,omitempty"`
 	BenchmarkRevisionSuggestion  *BenchmarkRevisionTarget          `json:"benchmark_revision_suggestion,omitempty"`
+	BenchmarkRevisionPreview     *BenchmarkRevisionChatMetadata    `json:"benchmark_revision_preview,omitempty"`
 	BenchmarkSuggestion          *BenchmarkRouterSuggestion        `json:"benchmark_suggestion,omitempty"`
 	RouterIntents                *[]RouterIntent                   `json:"router_intents,omitempty"`
 	admissionOutput              int
 }
 
 type Message struct {
-	TaskRef            *MessageTaskRefView `json:"task_ref,omitempty"`
-	ID                 int64               `json:"id,omitempty"`
-	RunID              string              `json:"run_id,omitempty"`
-	AssetQueryTaskID   string              `json:"asset_query_task_id,omitempty"`
-	Role               string              `json:"role"`
-	Text               string              `json:"text"`
-	ContentUnavailable bool                `json:"content_unavailable,omitempty"`
-	Materials          []Material          `json:"materials,omitempty"`
-	ReplaceMaterials   bool                `json:"replace_materials,omitempty"`
-	MemoryRefs         []MemoryRef         `json:"memory_refs,omitempty"`
-	Incomplete         bool                `json:"incomplete,omitempty"`
-	RequiredInput      bool                `json:"-"`
-	Memories           []Memory            `json:"-"`
-	Experience         *ExperienceRef      `json:"-"`
-	Skill              *SkillVersion       `json:"-"`
-	Read               *TaskRead           `json:"-"`
-	Reads              []TaskRead          `json:"-"`
+	AssistantSkillOptions        bool                `json:"assistant_skill_options,omitempty"`
+	AssistantBenchmarkComparison bool                `json:"assistant_benchmark_comparison,omitempty"`
+	AssistantDiscoverySchedule   bool                `json:"assistant_discovery_schedule,omitempty"`
+	HasModelReceipt              bool                `json:"has_model_receipt,omitempty"`
+	BenchmarkAdmission           bool                `json:"benchmark_admission,omitempty"`
+	AssistantOperationAdvice     bool                `json:"assistant_operation_advice,omitempty"`
+	AssistantArtifactList        bool                `json:"assistant_artifact_list,omitempty"`
+	AssistantAttentionList       bool                `json:"assistant_attention_list,omitempty"`
+	AssistantAssetList           bool                `json:"assistant_asset_list,omitempty"`
+	AssistantTaskList            bool                `json:"assistant_task_list,omitempty"`
+	MCPOnboarding                bool                `json:"mcp_onboarding,omitempty"`
+	TaskRef                      *MessageTaskRefView `json:"task_ref,omitempty"`
+	ID                           int64               `json:"id,omitempty"`
+	RunID                        string              `json:"run_id,omitempty"`
+	AssetQueryTaskID             string              `json:"asset_query_task_id,omitempty"`
+	Role                         string              `json:"role"`
+	Text                         string              `json:"text"`
+	ContentUnavailable           bool                `json:"content_unavailable,omitempty"`
+	Materials                    []Material          `json:"materials,omitempty"`
+	ReplaceMaterials             bool                `json:"replace_materials,omitempty"`
+	MemoryRefs                   []MemoryRef         `json:"memory_refs,omitempty"`
+	Incomplete                   bool                `json:"incomplete,omitempty"`
+	RequiredInput                bool                `json:"-"`
+	Memories                     []Memory            `json:"-"`
+	Experience                   *ExperienceRef      `json:"-"`
+	Skill                        *SkillVersion       `json:"-"`
+	Read                         *TaskRead           `json:"-"`
+	Reads                        []TaskRead          `json:"-"`
 }
 
 type Conversation struct {
@@ -1537,8 +1551,21 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
         JOIN domain_query_tasks q ON q.task_id=e.task_id WHERE e.source='chat' AND e.event_id=(
             SELECT request_key FROM submissions WHERE run_id=msg.run_id LIMIT 1) LIMIT 1),'') ELSE '' END,
         msg.role='assistant' AND length(msg.text)>0 AND EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND (r.control='stop' OR r.error_code IN ('stop','stopped'))),
-		msg.role='assistant' AND `+revokedMCPReply("msg.run_id")+`
-		FROM (`+selection+`) AS msg ORDER BY msg.seq`, append([]any{withMemoryRefs, withMemoryRefs}, args...)...)
+		msg.role='assistant' AND `+revokedMCPReply("msg.run_id")+`,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='mcp.onboarding_requested') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.task_list_snapshot') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.asset_list_snapshot') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.attention_list_snapshot') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.artifact_list_snapshot') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.operation_advice') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='benchmark.admission_suggested') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.skill_binding_options') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.benchmark_comparison_requested') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' THEN EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=msg.run_id AND e.kind='assistant.discovery_schedule_requested') ELSE 0 END,
+		CASE WHEN ? AND msg.role='assistant' AND length(msg.text)>0 THEN
+		    EXISTS(SELECT 1 FROM runs r WHERE r.id=msg.run_id AND r.model_requests>0)
+		    OR EXISTS(SELECT 1 FROM context_manifests m WHERE m.run_id=msg.run_id) ELSE 0 END
+		FROM (`+selection+`) AS msg ORDER BY msg.seq`, append([]any{withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs, withMemoryRefs}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1547,7 +1574,7 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 	for rows.Next() {
 		var item Message
 		var refs, memories, runID string
-		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.AssetQueryTaskID, &item.Incomplete, &item.ContentUnavailable); err != nil {
+		if err = rows.Scan(&item.ID, &item.Role, &item.Text, &item.ReplaceMaterials, &runID, &refs, &memories, &item.AssetQueryTaskID, &item.Incomplete, &item.ContentUnavailable, &item.MCPOnboarding, &item.AssistantTaskList, &item.AssistantAssetList, &item.AssistantAttentionList, &item.AssistantArtifactList, &item.AssistantOperationAdvice, &item.BenchmarkAdmission, &item.AssistantSkillOptions, &item.AssistantBenchmarkComparison, &item.AssistantDiscoverySchedule, &item.HasModelReceipt); err != nil {
 			return nil, err
 		}
 		if item.ContentUnavailable {
@@ -1555,6 +1582,7 @@ func queryMessages(q rowsQueryer, withMemoryRefs bool, selection string, args ..
 				continue
 			}
 			item.Text = "此回复可能包含已撤权来源的内容，现不可查看。"
+			item.HasModelReceipt = false
 			item.RunID = runID
 			items = append(items, item)
 			continue

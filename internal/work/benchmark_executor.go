@@ -24,6 +24,7 @@ type benchmarkDispatch struct {
 	provider                                  BenchmarkProvider
 	spec                                      BenchmarkCase
 	step, task, actor, operation, job, action string
+	jobSource                                 string
 	generation                                int
 	deferredForHold                           bool
 }
@@ -36,6 +37,9 @@ func (s *Store) runBenchmarkOnce(ctx context.Context, provider BenchmarkProvider
 		return false, err
 	}
 	if err := s.applyBenchmarkHints(ctx, now()); err != nil {
+		return false, err
+	}
+	if err := s.applyAccountBenchmarkHints(ctx, now()); err != nil {
 		return false, err
 	}
 	// A fixed cutoff excludes entries just deferred in this same tick.
@@ -89,17 +93,33 @@ func (s *Store) claimBenchmarkDue(ctx context.Context, provider BenchmarkProvide
 		return d, false, err
 	}
 	defer tx.Rollback()
+	instance := s.benchmarkInstance
+	var principal string
+	if instance != nil {
+		principal, err = lockBenchmarkAccount(ctx, tx)
+		if err != nil {
+			return d, false, err
+		}
+		if err = reapAccountBenchmarkHolds(ctx, tx, instance, principal); err != nil {
+			return d, false, err
+		}
+	}
 	var profile, phase, targetsRaw, authsRaw, caseSpec string
 	var version int
 	var stopping, cancelSent bool
 	// Zero means immediately eligible for a queued case, not oldest work in
 	// the database. Sort by its persisted enqueue/revision and prerequisite
 	// settlement times so new submissions cannot overtake due reconciliation.
+	dispatchPin := accountBenchmarkDispatchPin(provider)
+	if dispatchPin != "" && instance == nil {
+		return d, false, ErrAuthorizationDenied
+	}
 	err = tx.QueryRow(`SELECT b.step_id,b.task_id,r.actor,r.profile_key,r.profile_version,b.phase,b.operation_id,b.job_id,b.generation,
 b.case_key,b.frozen_targets,b.authorization_refs,r.stop_requested,b.cancel_sent,b.case_spec FROM benchmark_cases b
 JOIN benchmark_runs r ON r.task_id=b.task_id JOIN tasks t ON t.id=b.task_id
 JOIN task_states ts ON ts.task_id=b.task_id JOIN steps s ON s.step_id=b.step_id
-WHERE b.next_at<=? AND (b.phase IN ('submitting','following') OR
+WHERE b.next_at<=? AND (?='' OR EXISTS(SELECT 1 FROM benchmark_account_dispatch_admissions a WHERE a.task_id=b.task_id AND a.provider_pin=?))
+ AND (b.phase IN ('submitting','following') OR
   (b.phase='queued' AND (
     r.stop_requested=1 OR t.status='cancelled' OR (t.status='active' AND ts.state IN ('pending','running')
     AND NOT EXISTS(SELECT 1 FROM benchmark_dispatch_gates g WHERE g.step_id=b.step_id AND g.held=1)
@@ -112,13 +132,16 @@ ORDER BY CASE WHEN b.phase='queued' AND b.next_at=0 THEN max(s.updated_at, coale
     SELECT max(dep.updated_at) FROM step_dependencies e JOIN steps dep ON dep.step_id=e.depends_on_step_id
     WHERE e.step_id=b.step_id
   ),0)) ELSE b.next_at END,
-  r.created_at, s.position, b.step_id LIMIT 1`, cutoff).
+  r.created_at, s.position, b.step_id LIMIT 1`, cutoff, dispatchPin, dispatchPin).
 		Scan(&d.step, &d.task, &d.actor, &profile, &version, &phase, &d.operation, &d.job, &d.generation, &d.request.Case, &targetsRaw, &authsRaw, &stopping, &cancelSent, &caseSpec)
 	if errors.Is(err, sql.ErrNoRows) {
 		return d, false, nil
 	}
 	if err != nil {
 		return d, false, err
+	}
+	if instance != nil && principal != d.actor {
+		return d, false, ErrAuthorizationDenied
 	}
 	if caseSpec != "" {
 		if err := json.Unmarshal([]byte(caseSpec), &d.spec); err != nil {
@@ -145,6 +168,8 @@ ORDER BY CASE WHEN b.phase='queued' AND b.next_at=0 THEN max(s.updated_at, coale
 		return d, false, selectErr
 	}
 	d.provider = selection.provider
+	d.jobSource = selection.jobSource
+	unboundProvider := instance != nil && selection.jobSource == ""
 	if phase == "queued" {
 		reason := ""
 		var revoked bool
@@ -158,13 +183,26 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 		if revoked || stopping {
 			reason = "任务已取消、要求已修改或必需依赖未核实"
 		}
+		if dispatchPin != "" {
+			var active bool
+			if err = instance.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM accounts WHERE principal_id=? AND status='active' AND must_change_password=0)`, principal).Scan(&active); err != nil {
+				return d, false, err
+			}
+			if !active {
+				reason = "所属账号已停用或需要重新设置密码，不再派发新作业"
+			}
+		}
 		if selectErr != nil {
 			reason = "冻结的基准连接或工具不可用"
+		} else if unboundProvider {
+			reason = "基准提供方尚未建立可验证的实例作业身份"
 		} else if err := selection.validate(d.request); err != nil {
 			reason = err.Error()
 		}
 		var targets []ticketTarget
 		var auths map[string]string
+		var physicalSerials []string
+		seenSerials := make(map[string]bool)
 		if err = json.Unmarshal([]byte(targetsRaw), &targets); err != nil {
 			return d, false, err
 		}
@@ -191,6 +229,23 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				reason = "冻结的执行授权已失效"
 				break
 			}
+			if instance != nil {
+				var serial string
+				err = tx.QueryRowContext(ctx, "SELECT physical_serial FROM benchmark_asset_physical_serials WHERE target_ref=?", target.Ref).Scan(&serial)
+				if errors.Is(err, sql.ErrNoRows) {
+					reason = "测试目标未登记可信的物理序列号"
+					break
+				}
+				if err != nil {
+					return d, false, err
+				}
+				if seenSerials[serial] {
+					reason = "测试方案重复引用同一物理资产"
+					break
+				}
+				seenSerials[serial] = true
+				physicalSerials = append(physicalSerials, serial)
+			}
 			held, holdErr := targetHasLocalExclusiveHold(tx, target.Ref)
 			if holdErr != nil {
 				return d, false, holdErr
@@ -209,6 +264,11 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 				return d, false, err
 			}
 			return d, true, tx.Commit()
+		}
+		if instance != nil {
+			if _, err = tx.Exec("SAVEPOINT benchmark_queued_claim"); err != nil {
+				return d, false, err
+			}
 		}
 		current, err := readTaskState(tx, d.task)
 		if err != nil {
@@ -250,14 +310,54 @@ FROM tasks t WHERE id=?`, d.step, d.task).Scan(&revoked); err != nil {
 			WaitVersion: 1, DueAt: stamp + benchmarkWaitRecheckMS, CreatedAt: stamp}); err != nil {
 			return d, false, err
 		}
+		if instance != nil {
+			reserved, err := reserveInstanceBenchmarkHolds(ctx, instance, physicalSerials, principal, d.step, d.operation)
+			if err != nil {
+				return d, false, err
+			}
+			if !reserved {
+				if _, err = tx.Exec("ROLLBACK TO benchmark_queued_claim; RELEASE benchmark_queued_claim"); err != nil {
+					return d, false, err
+				}
+				if _, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+1000, d.step); err != nil {
+					return d, false, err
+				}
+				d.action, d.deferredForHold = "", true
+				return d, true, tx.Commit()
+			}
+			if _, err = tx.Exec("RELEASE benchmark_queued_claim"); err != nil {
+				return d, false, err
+			}
+		}
 	} else {
+		if instance != nil {
+			var held int
+			if err = instance.QueryRowContext(ctx, "SELECT count(*) FROM benchmark_instance_holds WHERE principal_id=? AND step_id=? AND operation_id=?", principal, d.step, d.operation).Scan(&held); err != nil {
+				return d, false, err
+			}
+			if held == 0 || held != len(d.spec.Targets) {
+				// This operation has no provable instance-wide ownership.
+				// Neither start another job nor claim its resources implicitly.
+				if _, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+30000, d.step); err != nil {
+					return d, false, err
+				}
+				return d, true, tx.Commit()
+			}
+		}
 		op, err := readOperation(tx, d.operation)
 		if err != nil {
 			return d, false, err
 		}
 		// Never send a query/cancel to another tool or transport after Start.
 		// A pre-upgrade operation without a provable pin also stays unknown.
-		if selectErr != nil || op.ParamsDigest != selection.requestDigest(d.request) {
+		validSelection := selectErr == nil && !unboundProvider && op.ParamsDigest == selection.requestDigest(d.request)
+		if validSelection && instance != nil && phase == "following" {
+			validSelection, err = instanceBenchmarkJobMatches(ctx, instance, d.instanceJob(d.job, op))
+			if err != nil {
+				return d, false, err
+			}
+		}
+		if !validSelection {
 			_, err = tx.Exec("UPDATE benchmark_cases SET next_at=? WHERE step_id=?", stamp+30000, d.step)
 			if err != nil {
 				return d, false, err
@@ -327,16 +427,28 @@ func (s *Store) settleBenchmark(ctx context.Context, d benchmarkDispatch, confir
 			(result.State != "running" && result.State != "completed" && result.State != "failed" && result.State != "cancelled")
 	}
 	if !unknown && (d.action == "start" || d.action == "lookup") {
-		if _, err = tx.Exec(`INSERT INTO benchmark_job_identities VALUES(?,?,?,?)
-ON CONFLICT(connection_key,binding_revision,provider_job_id) DO NOTHING`, op.ConnectionID, d.spec.Binding.Revision, confirmed, d.operation); err != nil {
-			return err
-		}
 		var owner string
-		if err = tx.QueryRow(`SELECT operation_id FROM benchmark_job_identities WHERE connection_key=? AND binding_revision=? AND provider_job_id=?`,
-			op.ConnectionID, d.spec.Binding.Revision, confirmed).Scan(&owner); err != nil {
-			return err
+		existing := tx.QueryRow(`SELECT operation_id FROM benchmark_job_identities WHERE connection_key=? AND binding_revision=? AND provider_job_id=?`,
+			op.ConnectionID, d.spec.Binding.Revision, confirmed).Scan(&owner)
+		if existing != nil && !errors.Is(existing, sql.ErrNoRows) {
+			return existing
 		}
-		unknown = owner != d.operation
+		unknown = existing == nil && owner != d.operation
+		if !unknown && s.benchmarkInstance != nil {
+			if op.TaskID != d.task || op.StepID != d.step || op.IdempotencyKey != d.request.IdempotencyKey {
+				return ErrConflict
+			}
+			bound, err := bindInstanceBenchmarkJob(ctx, s.benchmarkInstance, d.instanceJob(confirmed, op))
+			if err != nil {
+				return err
+			}
+			unknown = !bound
+		}
+		if !unknown && existing != nil {
+			if _, err = tx.Exec("INSERT INTO benchmark_job_identities VALUES(?,?,?,?)", op.ConnectionID, d.spec.Binding.Revision, confirmed, d.operation); err != nil {
+				return err
+			}
+		}
 	}
 
 	if unknown {

@@ -268,6 +268,8 @@ type MCPBenchmarkProvider struct {
 	binding         MCPToolBinding
 	caller          MCPToolCaller
 	pin             string
+	jobSource       string
+	runtimeReady    func() bool
 	startDefinition *mcpclient.Tool
 }
 
@@ -285,8 +287,11 @@ func NewMCPBenchmarkProvider(connection string, revision int, binding MCPToolBin
 
 func (p *MCPBenchmarkProvider) Supports(b BenchmarkBinding) bool {
 	return p != nil && b.Connection == p.connection && b.Revision == p.revision &&
-		b.Validator == benchmarkValidatorV1 && b.Tool == p.binding.StartTool
+		b.Validator == benchmarkValidatorV1 && b.Tool == p.binding.StartTool &&
+		(p.runtimeReady == nil || p.runtimeReady())
 }
+
+func (p *MCPBenchmarkProvider) benchmarkJobSource() string { return p.jobSource }
 
 func (p *MCPBenchmarkProvider) Start(ctx context.Context, req BenchmarkJobRequest) (string, error) {
 	if !p.Supports(req.Binding) || req.IdempotencyKey == "" {
@@ -401,10 +406,12 @@ func (p *MCPBenchmarkProvider) Get(ctx context.Context, req BenchmarkJobRequest,
 		return BenchmarkJobResult{}, err
 	}
 	var env struct {
-		TaskID  string                         `json:"task_id"`
-		State   string                         `json:"state"`
-		Status  string                         `json:"status"`
-		Results []cluskitBenchmarkResultRecord `json:"results"`
+		TaskID               string                         `json:"task_id"`
+		State                string                         `json:"state"`
+		Status               string                         `json:"status"`
+		RemoteExecutionState string                         `json:"remote_execution_state"`
+		RemoteExitVerified   *bool                          `json:"remote_exit_verified"`
+		Results              []cluskitBenchmarkResultRecord `json:"results"`
 	}
 	if err := decodeMCPResultJSON(res, &env); err != nil {
 		return BenchmarkJobResult{}, err
@@ -429,6 +436,17 @@ func (p *MCPBenchmarkProvider) Get(ctx context.Context, req BenchmarkJobRequest,
 	if p.binding.GetTool == "task_status" {
 		out.Measurements = nil
 		if out.State == "completed" || out.State == "failed" || out.State == "cancelled" {
+			// task_status may report a local transport terminal state while
+			// explicitly saying that the remote process has not been checked.
+			// Never let that statement settle the original operation or release
+			// its physical-asset hold (not even if a cancel was acknowledged).
+			remoteState := strings.ToLower(strings.TrimSpace(env.RemoteExecutionState))
+			needsExitProof := p.runtimeReady != nil && (out.State == "cancelled" || out.State == "failed")
+			if needsExitProof && env.RemoteExitVerified == nil ||
+				env.RemoteExitVerified != nil && !*env.RemoteExitVerified ||
+				remoteState != "" && remoteState != "exited" && remoteState != "stopped" {
+				return BenchmarkJobResult{}, fmt.Errorf("%w：原作业的远端进程尚未核实退出", ErrBenchmarkBinding)
+			}
 			out.Measurements = cluskitBenchmarkMeasurements(req, jobID, env.Results)
 		}
 	}

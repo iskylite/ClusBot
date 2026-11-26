@@ -235,35 +235,13 @@ func assistantOperationMembers(r *http.Request, bridge *assistantBridge, podRef 
 	return nil, false
 }
 
-func (s Server) assistantOperationChat(w http.ResponseWriter, r *http.Request, text string) bool {
-	if r.Header.Get("X-ClusBot-Assistant-Cards") != "1" {
-		return false
-	}
-	return s.assistantOperationAdvice(w, r, text)
-}
-
-func (s Server) assistantOperationAdvice(w http.ResponseWriter, r *http.Request, text string) bool {
-	scope, matched := parseAssistantOperationScope(text)
-	if !matched || readOnlyAssistant(r) {
-		return false
-	}
-	if scope.pod == "ambiguous" {
-		fail(w, http.StatusBadRequest, "assistant_scope_ambiguous", "请指定一个 POD，或明确要求全局汇总")
-		return true
-	}
-	if scope.subresource {
-		fail(w, http.StatusBadRequest, "assistant_scope_unsupported", "暂不能按单个节点生成建议；请先通过节点详情核对该对象")
-		return true
-	}
-	bridge, ok := r.Context().Value(assistantBridgeKey{}).(*assistantBridge)
-	if !ok || bridge == nil || s.Store == nil {
-		fail(w, http.StatusServiceUnavailable, "assistant_unavailable", "本地节点查询暂不可用")
-		return true
-	}
+// Facts remain a projection of the current authorized inventory (and
+// existing related cards), not a durable copy of raw provider/tool output.
+func (s Server) assistantOperationFacts(w http.ResponseWriter, r *http.Request, bridge *assistantBridge, text string, scope assistantOperationScope) (assistantOperationEvidence, string, []json.RawMessage, bool) {
 	page, raw, ok := assistantInventoryPage(r, bridge, url.Values{"limit": {"24"}})
 	if !ok {
 		fail(w, http.StatusServiceUnavailable, "assistant_inventory_unavailable", "无法读取已授权节点记录")
-		return true
+		return assistantOperationEvidence{}, "", nil, false
 	}
 	evidence := assistantOperationEvidence{Scope: "global", TotalNodes: page.Summary.TotalNodes, Health: page.Summary.Health, ComputedAt: page.Summary.ComputedAt}
 	podRef := ""
@@ -271,7 +249,7 @@ func (s Server) assistantOperationAdvice(w http.ResponseWriter, r *http.Request,
 		pod, found := assistantFindPOD(page.Summary, scope.pod)
 		if !found {
 			fail(w, http.StatusNotFound, "assistant_scope_unavailable", "该 POD 不存在、没有可确认的可见节点，或当前无权查看")
-			return true
+			return assistantOperationEvidence{}, "", nil, false
 		}
 		podRef = pod.ObjectRef
 		evidence = assistantOperationEvidence{Scope: "pod", Pod: &assistantOperationPod{pod.ObjectRef, pod.Identity}, TotalNodes: pod.TotalNodes, Health: pod.Health, ComputedAt: page.Summary.ComputedAt}
@@ -289,6 +267,54 @@ func (s Server) assistantOperationAdvice(w http.ResponseWriter, r *http.Request,
 	}
 	if task := s.assistantOperationTask(r, scope, text); len(task) != 0 {
 		items = append(items, task)
+	}
+	return evidence, podRef, items, true
+}
+
+func (s Server) assistantOperationChat(w http.ResponseWriter, r *http.Request, text, key string) bool {
+	if r.Header.Get("X-ClusBot-Assistant-Cards") != "1" {
+		return false
+	}
+	return s.assistantOperationAdvice(w, r, text, key)
+}
+
+func (s Server) assistantOperationAdvice(w http.ResponseWriter, r *http.Request, text string, conversationKeys ...string) bool {
+	scope, matched := parseAssistantOperationScope(text)
+	if !matched || readOnlyAssistant(r) {
+		return false
+	}
+	if scope.pod == "ambiguous" {
+		fail(w, http.StatusBadRequest, "assistant_scope_ambiguous", "请指定一个 POD，或明确要求全局汇总")
+		return true
+	}
+	if scope.subresource {
+		fail(w, http.StatusBadRequest, "assistant_scope_unsupported", "暂不能按单个节点生成建议；请先通过节点详情核对该对象")
+		return true
+	}
+	bridge, ok := r.Context().Value(assistantBridgeKey{}).(*assistantBridge)
+	if !ok || bridge == nil || s.Store == nil {
+		fail(w, http.StatusServiceUnavailable, "assistant_unavailable", "本地节点查询暂不可用")
+		return true
+	}
+	key := ""
+	if len(conversationKeys) == 1 && s.instanceStore != nil {
+		key = conversationKeys[0]
+	}
+	actor, session, conversation := s.principal(r), s.assistantSession(r), r.PathValue("id")
+	if key != "" {
+		run, err := s.Store.PreviousAssistantAdvice(r.Context(), actor, key, conversation, text)
+		if err != nil {
+			writeError(w, err)
+			return true
+		}
+		if run.ID != "" {
+			writeSubmission(w, run)
+			return true
+		}
+	}
+	evidence, podRef, items, ok := s.assistantOperationFacts(w, r, bridge, text, scope)
+	if !ok {
+		return true
 	}
 	if evidence.TotalNodes == 0 {
 		assistantOperationBatch(w, assistantOperationWithSuggestion(items, assistantOperationFailure(assistantRecommendationTool, "当前范围没有可见节点记录，未生成处置建议。")))
@@ -325,6 +351,23 @@ func (s Server) assistantOperationAdvice(w http.ResponseWriter, r *http.Request,
 	input, inputValid := decodeAssistantToolInput(result)
 	if !valid || !inputValid || assistantInputContainsCredential(input) {
 		assistantOperationBatch(w, assistantOperationWithSuggestion(items, assistantOperationFailure(assistantRecommendationTool, "模型未返回有效的文字建议，请稍后重试。")))
+		return true
+	}
+	if key != "" {
+		if err := s.verifyA2UIAccount(r.Context(), session, actor, false); err != nil {
+			writeError(w, work.ErrAuthorizationDenied)
+			return true
+		}
+		stored := work.AssistantAdviceDraft{Title: draft.title, Summary: draft.summary, Scope: evidence.Scope, Focus: scope.focus, References: refs}
+		for _, option := range draft.options {
+			stored.Options = append(stored.Options, work.AssistantAdviceOption{Label: option.Label, Detail: option.Detail, Recommended: option.Recommended})
+		}
+		run, err := s.Store.OpenAssistantAdvice(r.Context(), actor, key, conversation, text, stored)
+		if err != nil {
+			writeError(w, err)
+		} else {
+			writeSubmission(w, run)
+		}
 		return true
 	}
 	rec := &assistantResponse{headers: make(http.Header)}

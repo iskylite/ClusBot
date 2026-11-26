@@ -24,13 +24,14 @@ CREATE INDEX IF NOT EXISTS benchmark_hints_by_job ON benchmark_event_hints(conne
 type BenchmarkEventReceiver struct {
 	connection, secret string
 	revision           int
+	jobSource          string
 }
 
 func (p *HTTPBenchmarkProvider) EventReceiver(secret string) (*BenchmarkEventReceiver, error) {
 	if p == nil || len(secret) < 32 || secret == p.credential {
 		return nil, fmt.Errorf("%w：回执密钥必须独立且至少 32 字节", ErrBenchmarkBinding)
 	}
-	return &BenchmarkEventReceiver{p.connection, secret, p.revision}, nil
+	return &BenchmarkEventReceiver{connection: p.connection, secret: secret, revision: p.revision, jobSource: p.benchmarkJobSource()}, nil
 }
 
 type benchmarkHint struct {
@@ -42,35 +43,64 @@ type benchmarkHint struct {
 // the reported result, or claim a Task ID. HTTPS/local termination is managed
 // by the configured listener; timestamp and body are MAC'd by the bound source.
 func (e *BenchmarkEventReceiver) Receive(ctx context.Context, s *Store, timestamp, signature string, body []byte) (bool, error) {
-	if e == nil || len(body) > 8192 {
+	// This receiver is not an account router. An event cannot select a
+	// private database by passing it here; production account ingress stays
+	// off until authenticated source lookup uses the instance's ownership.
+	if s == nil || s.benchmarkInstance != nil {
 		return false, ErrAuthorizationDenied
+	}
+	current := now()
+	data, err := e.authenticateHint(timestamp, signature, body, current, "")
+	if err != nil {
+		return false, err
+	}
+	return e.receiveDirectHint(ctx, s, data, current)
+}
+
+func (e *BenchmarkEventReceiver) authenticateHint(timestamp, signature string, body []byte, current int64, audience string) (benchmarkHint, error) {
+	var data benchmarkHint
+	if e == nil || len(body) > 8192 {
+		return data, ErrAuthorizationDenied
 	}
 	stamp, err := strconv.ParseInt(timestamp, 10, 64)
-	current := now()
 	if err != nil || stamp < current-300000 || stamp > current+300000 {
-		return false, ErrAuthorizationDenied
+		return data, ErrAuthorizationDenied
 	}
 	mac := hmac.New(sha256.New, []byte(e.secret))
+	if audience != "" {
+		_, _ = mac.Write([]byte(audience + "\n"))
+	}
 	_, _ = mac.Write([]byte(timestamp + "\n"))
 	_, _ = mac.Write(body)
 	provided, err := hex.DecodeString(signature)
 	if err != nil || !hmac.Equal(provided, mac.Sum(nil)) {
-		return false, ErrAuthorizationDenied
+		return data, ErrAuthorizationDenied
 	}
 	if !json.Valid(body) {
-		return false, ErrBenchmarkInput
+		return data, ErrBenchmarkInput
 	}
-	var data benchmarkHint
 	dec := json.NewDecoder(strings.NewReader(string(body)))
 	dec.DisallowUnknownFields()
 	if dec.Decode(&data) != nil || !validBenchKey(data.EventID) || !validBenchKey(data.JobID) || data.JobID == "." || data.JobID == ".." || strings.ContainsAny(data.JobID, "?#") {
-		return false, ErrBenchmarkInput
+		return data, ErrBenchmarkInput
 	}
+	return data, nil
+}
+
+func (e *BenchmarkEventReceiver) receiveDirectHint(ctx context.Context, s *Store, data benchmarkHint, current int64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
+	var accountMode bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM account_instance)
+OR EXISTS(SELECT 1 FROM account_business_owner)`).Scan(&accountMode); err != nil {
+		return false, err
+	}
+	if accountMode {
+		return false, ErrAuthorizationDenied
+	}
 	source := fmt.Sprintf("benchmark-provider:%s:%d", e.connection, e.revision)
 	rec, err := receiveInbox(tx, InboxEvent{Source: source, Principal: source, Kind: "benchmark_job_hint", EventID: data.EventID,
 		PayloadDigest: digest(toJSON(data)), ReceivedAt: current})

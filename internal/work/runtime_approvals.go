@@ -131,6 +131,13 @@ FROM approvals WHERE request_key=?`, requestKey).
 		}
 		return Approval{}, ErrApprovalExpired
 	}
+	// New decisions require a complete, trusted version snapshot. The generic
+	// public endpoint cannot derive it from an unbound row; do not use values
+	// copied from the approval itself or supplied by its client as evidence.
+	// Keep terminal receipts and authoritative expiry available above.
+	if expectedVersions.ContractRevision < 1 || expectedVersions.PolicyVersion < 1 || expectedVersions.AssetRevision < 1 {
+		return Approval{}, ErrApprovalSourceUnverified
+	}
 	// 决定（条件更新，只一次）。
 	res, err := tx.Exec(`UPDATE approvals SET decision=?, decided_at=?, decided_by=? WHERE approval_id=? AND decision='pending'`,
 		decision, now, decidedBy, existing.ApprovalID)
@@ -147,7 +154,11 @@ FROM approvals WHERE request_key=?`, requestKey).
 }
 
 // ErrApprovalStale 是确认过期的错误。
-var ErrApprovalStale = errors.New("确认已过期")
+var ErrApprovalStale = errors.New("审批申请对应的原操作已变化")
+
+// ErrApprovalSourceUnverified means no decision was recorded; it does not
+// claim the source operation went away or a human rejected it.
+var ErrApprovalSourceUnverified = errors.New("无法核验这项审批对应的原操作和版本；未提交决定")
 
 // ---------------------------------------------------------------------------
 // 待决定事项（Chat/责任入口返回；自动策略不逐次要求人工）
@@ -223,6 +234,9 @@ func (s *Store) DecideApproval(ctx context.Context, approvalID, decision, decide
 	if err != nil {
 		return Approval{}, err
 	}
+	// The generic row has no typed link to an Operation, contract or policy.
+	// Preserve this explicit absence; do not promote its own fields to
+	// authority. Specialized business approval paths are independent.
 	updated, err := decideApproval(tx, requestKey, decision, decidedBy, Approval{}, now())
 	if errors.Is(err, ErrApprovalExpired) {
 		// Commit the authoritative expiry and its feed event, even though the

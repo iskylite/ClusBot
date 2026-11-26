@@ -21,6 +21,7 @@ type HTTPBenchmarkProvider struct {
 	revision                                  int
 	tools                                     map[string]bool
 	client                                    *http.Client
+	accountDispatch                           bool
 }
 
 func NewHTTPBenchmarkProvider(base, connection string, revision int, tools []string, token string) (*HTTPBenchmarkProvider, error) {
@@ -52,6 +53,51 @@ func NewHTTPBenchmarkProvider(base, connection string, revision int, tools []str
 
 func (p *HTTPBenchmarkProvider) Supports(b BenchmarkBinding) bool {
 	return p != nil && b.Connection == p.connection && b.Revision == p.revision && b.Validator == benchmarkValidatorV1 && p.tools[b.Tool]
+}
+
+// ForAccountDispatch returns an explicit execution adapter for the fixed
+// provider. The original can still be used for read-only/revision handlers.
+func (p *HTTPBenchmarkProvider) ForAccountDispatch() (*HTTPBenchmarkProvider, error) {
+	if p == nil || p.credential == "" || p.benchmarkJobSource() == "" {
+		return nil, ErrBenchmarkBinding
+	}
+	copy := *p
+	copy.accountDispatch = true
+	return &copy, nil
+}
+
+func accountBenchmarkDispatchPin(provider BenchmarkProvider) string {
+	if p, ok := provider.(*MCPBenchmarkProvider); ok && p != nil && p.runtimeReady != nil && p.jobSource != "" {
+		return p.pin
+	}
+	p, ok := provider.(*HTTPBenchmarkProvider)
+	if !ok || p == nil || !p.accountDispatch {
+		return ""
+	}
+	return digest(toJSON([]any{p.benchmarkJobSource(), p.connection, p.revision, p.fingerprint}))
+}
+
+func (p *HTTPBenchmarkProvider) benchmarkJobSource() string {
+	if p == nil {
+		return ""
+	}
+	// Base is the fixed configured API path. Do not partition the same job
+	// space by tool, capability revision, connection name or credentials.
+	// Distinct DNS aliases for the same server cannot be inferred here.
+	u, err := url.Parse(p.base)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	host, port := strings.ToLower(u.Hostname()), u.Port()
+	if port == "" || u.Scheme == "https" && port == "443" || u.Scheme == "http" && port == "80" {
+		if strings.Contains(host, ":") {
+			host = "[" + host + "]"
+		}
+	} else {
+		host = net.JoinHostPort(host, port)
+	}
+	u.Host = host
+	return digest("benchmark-http-source:" + u.String())
 }
 
 func (p *HTTPBenchmarkProvider) Start(ctx context.Context, r BenchmarkJobRequest) (string, error) {
@@ -141,20 +187,31 @@ func (s *Store) InstallBenchmarkProvider(ctx context.Context, p *HTTPBenchmarkPr
 	if p == nil {
 		return ErrBenchmarkBinding
 	}
+	return s.installBenchmarkProviderPin(ctx, p.connection, p.revision, p.fingerprint)
+}
+
+func (s *Store) InstallCluskitBenchmarkProvider(ctx context.Context, p *MCPBenchmarkProvider) error {
+	if pin := accountBenchmarkDispatchPin(p); pin != "" {
+		return s.installBenchmarkProviderPin(ctx, p.connection, p.revision, pin)
+	}
+	return ErrBenchmarkBinding
+}
+
+func (s *Store) installBenchmarkProviderPin(ctx context.Context, connection string, revision int, fingerprint string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if _, err = tx.Exec(`INSERT INTO benchmark_provider_versions VALUES(?,?,?) ON CONFLICT(connection_key,revision) DO NOTHING`,
-		p.connection, p.revision, p.fingerprint); err != nil {
+		connection, revision, fingerprint); err != nil {
 		return err
 	}
 	var f string
-	if err = tx.QueryRow(`SELECT fingerprint FROM benchmark_provider_versions WHERE connection_key=? AND revision=?`, p.connection, p.revision).Scan(&f); err != nil {
+	if err = tx.QueryRow(`SELECT fingerprint FROM benchmark_provider_versions WHERE connection_key=? AND revision=?`, connection, revision).Scan(&f); err != nil {
 		return err
 	}
-	if f != p.fingerprint {
+	if f != fingerprint {
 		return fmt.Errorf("%w：连接端点或工具改变，必须增加连接版本", ErrConflict)
 	}
 	return tx.Commit()

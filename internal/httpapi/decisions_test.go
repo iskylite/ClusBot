@@ -1,6 +1,6 @@
 package httpapi
 
-// 决策队列端点验收：待确认列表与批准动作走真实 approvals 表。
+// 决策队列端点验收：演示申请真实可读，但不能冒充有来源的领域审批。
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"clusbot/internal/work"
 )
 
-func TestDecisionsApprove(t *testing.T) {
+func TestDecisionsCannotApproveUnboundDemoEntry(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "decisions.db")
 	store, err := work.Open(dbPath)
 	if err != nil {
@@ -77,12 +77,23 @@ func TestDecisionsApprove(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pr.Body.Close()
-	if pr.StatusCode != 200 {
-		t.Fatalf("approve code=%d", pr.StatusCode)
+	var rejected map[string]any
+	if err := json.NewDecoder(pr.Body).Decode(&rejected); err != nil {
+		t.Fatal(err)
 	}
-	var approved map[string]any
-	json.NewDecoder(pr.Body).Decode(&approved)
-	if approved["decision"] != "approved" {
-		t.Fatalf("decision=%v", approved)
+	if pr.StatusCode != http.StatusConflict || rejected["code"] != "approval_source_unverified" {
+		t.Fatalf("unbound approval code=%d response=%v", pr.StatusCode, rejected)
 	}
+	code, out = get("/api/v1/decisions")
+	if code != http.StatusOK {
+		t.Fatalf("decisions code=%d out=%v", code, out)
+	}
+	remaining, _ := out["approvals"].([]any)
+	for _, item := range remaining {
+		row, _ := item.(map[string]any)
+		if row["approval_id"] == id && row["decision"] == "pending" {
+			return
+		}
+	}
+	t.Fatalf("refusal changed or removed the original pending entry: %v", remaining)
 }

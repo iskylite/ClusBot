@@ -68,7 +68,7 @@ JOIN connection_tools t ON t.connection_id=c.id WHERE c.enabled=1 AND c.status='
 		if err = json.Unmarshal([]byte(definition), &option.Tool); err != nil {
 			return nil, err
 		}
-		if isToolDisallowedForReadOnly(option.Tool) || mcpclient.ValidateToolSchemas(option.Tool) != nil {
+		if s.cluskitBenchmarkToolReserved(option.Tool.Name) || isToolDisallowedForReadOnly(option.Tool) || mcpclient.ValidateToolSchemas(option.Tool) != nil {
 			continue
 		}
 		option.Tool.Allowed = true

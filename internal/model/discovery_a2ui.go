@@ -23,6 +23,10 @@ type DiscoveryA2UIModelInput struct {
 }
 
 func (s *Settings) InterpretDiscoveryA2UI(ctx context.Context, input DiscoveryA2UIModelInput, authorize func(context.Context) error) (json.RawMessage, error) {
+	return s.interpretScopedAction(ctx, input, `你是个人助手的候选资产审阅步骤。只能返回 JSON：{"action":"允许结果中的唯一动作","reply":"简短说明"}。仅使用提供的候选引用及状态，不猜序列号、地址、归属、位置、角色或运维权限。说明候选还没纳管，填写资料或核对预览不等于执行。不得输出执行命令、接口、其他动作、表单字段值或可执行组件，不声称已同步、扫节点或完成纳管。不需要复述候选引用。`, authorize)
+}
+
+func (s *Settings) interpretScopedAction(ctx context.Context, input any, instructions string, authorize func(context.Context) error) (json.RawMessage, error) {
 	if s == nil || s.Store == nil || s.Demo || authorize == nil {
 		return nil, work.ErrTaskWorkerModelRoleUnavailable
 	}
@@ -54,7 +58,7 @@ func (s *Settings) InterpretDiscoveryA2UI(ctx context.Context, input DiscoveryA2
 	ctx, stop := context.WithTimeout(ctx, 15*time.Second)
 	defer stop()
 	reply, err := provider.readText(ctx, responseRequest{
-		Instructions: `你是个人助手的候选资产审阅步骤。只能返回 JSON：{"action":"允许结果中的唯一动作","reply":"简短说明"}。仅使用提供的候选引用及状态，不猜序列号、地址、归属、位置、角色或运维权限。说明候选还没纳管，填写资料或核对预览不等于执行。不得输出执行命令、接口、其他动作、表单字段值或可执行组件，不声称已同步、扫节点或完成纳管。不需要复述候选引用。`,
+		Instructions: instructions,
 		Input:        []any{responseMessage{Type: "message", Role: "user", Content: string(data)}}, MaxOutputTokens: 512, noRetry: true,
 	})
 	return json.RawMessage(reply), err

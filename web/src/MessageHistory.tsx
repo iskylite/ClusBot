@@ -2,6 +2,10 @@ import {Fragment,useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 
 import {LoaderCircle} from 'lucide-react'
 import {api,type Material,type Message,type MessagePage} from './api'
 import {Messages,type UserIdentity} from './ExecutionText'
+import {MCPSetupCard} from './MCPSetupCard'
+import {OperationAdviceCard} from './OperationAdviceCard'
+import {BenchmarkAdmissionCard} from './BenchmarkAdmissionCard'
+import {ArtifactPreviewCard,AssetLedgerCard,BenchmarkComparisonCard,DiscoveryScheduleCard,AttentionListCard,SkillBindingPreviewCard,TaskListProgressCard} from './TaskListProgressCard'
 import {FeedbackCallout} from './Feedback'
 
 const anchorFromLocation=()=>{
@@ -40,8 +44,8 @@ function mergeLatest(page:MessagePage,messages:Message[]):MessagePage {
 
 export type LocalMessageExchange = {id:string;afterMessageID:number;content:ReactNode}
 
-export function MessageHistory({conversationID,messages,live,liveReasoning,liveThinking,liveRunID,remember,omitRunID,omitAutomaticRevisionRunID,replyCard,previewMaterials,assistantName,userAccount,localExchanges=[]}:{
-  conversationID:string;messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;liveRunID?:string;remember?:(id:number)=>void;omitRunID?:string;omitAutomaticRevisionRunID?:string;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;localExchanges?:LocalMessageExchange[]
+export function MessageHistory({conversationID,messages,live,liveReasoning,liveThinking,liveRunID,remember,omitRunID,omitAutomaticRevisionRunID,replyCard,previewMaterials,assistantName,userAccount,localExchanges=[],mcpSetup=false,personalReadCards=false,adviceNavigate,admissionArchived=false,admissionAccepted}:{
+  conversationID:string;messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;liveRunID?:string;remember?:(id:number)=>void;omitRunID?:string;omitAutomaticRevisionRunID?:string;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;localExchanges?:LocalMessageExchange[];mcpSetup?:boolean;personalReadCards?:boolean;adviceNavigate?:(path:string)=>void;admissionArchived?:boolean;admissionAccepted?:(task:string,run:string)=>void
 }) {
   const anchor=useMessageAnchor()
   const [page,setPage]=useState<MessagePage>()
@@ -116,7 +120,28 @@ export function MessageHistory({conversationID,messages,live,liveReasoning,liveT
   // front of an earlier card. History cursors still govern persisted messages.
   const segments:{key:string;items:Message[];exchange?:LocalMessageExchange}[]=[]
   let start=0, key='history-start'
-  for(const exchange of localExchanges) {
+  const cards=mcpSetup?visible.filter(m=>m.role==='assistant'&&m.mcp_onboarding&&m.id&&m.run_id).map(m=>({
+    id:'mcp:'+m.run_id,afterMessageID:m.id!,content:<MCPSetupCard conversation={conversationID} run={m.run_id!}/>
+  })):[]
+  const readCards=personalReadCards?visible.flatMap(m=>{
+    if(m.role!=='assistant'||!m.id||!m.run_id)return []
+    if(m.assistant_task_list)return [{id:'tasks:'+m.run_id,afterMessageID:m.id,content:<TaskListProgressCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_asset_list)return [{id:'assets:'+m.run_id,afterMessageID:m.id,content:<AssetLedgerCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_attention_list)return [{id:'attention:'+m.run_id,afterMessageID:m.id,content:<AttentionListCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_skill_options)return [{id:'skills:'+m.run_id,afterMessageID:m.id,content:<SkillBindingPreviewCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_benchmark_comparison)return [{id:'comparison:'+m.run_id,afterMessageID:m.id,content:<BenchmarkComparisonCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_discovery_schedule)return [{id:'schedule:'+m.run_id,afterMessageID:m.id,content:<DiscoveryScheduleCard conversation={conversationID} run={m.run_id}/>}]
+    if(m.assistant_artifact_list)return [{id:'artifact:'+m.run_id,afterMessageID:m.id,content:<ArtifactPreviewCard conversation={conversationID} run={m.run_id}/>}]
+    return []
+  }):[]
+  const adviceCards=adviceNavigate?visible.filter(m=>m.role==='assistant'&&m.assistant_operation_advice&&m.id&&m.run_id).map(m=>({
+    id:'advice:'+m.run_id,afterMessageID:m.id!,content:<OperationAdviceCard conversation={conversationID} run={m.run_id!} navigate={adviceNavigate}/>
+  })):[]
+  const admissionCards=admissionAccepted?visible.filter(m=>m.role==='assistant'&&m.benchmark_admission&&m.id&&m.run_id).map(m=>({
+    id:'benchmark-admission:'+m.run_id,afterMessageID:m.id!,content:<BenchmarkAdmissionCard conversation={conversationID}
+      run={m.run_id!} archived={admissionArchived} onAccepted={task=>admissionAccepted(task,m.run_id!)}/>
+  })):[]
+  for(const exchange of [...localExchanges,...cards,...readCards,...adviceCards,...admissionCards].sort((a,b)=>a.afterMessageID-b.afterMessageID)) {
     const next=visible.findIndex((message,index)=>index>=start&&message.id!==undefined&&message.id>exchange.afterMessageID)
     const end=next<0?visible.length:next
     segments.push({key,items:visible.slice(start,end),exchange})
@@ -137,7 +162,9 @@ export function MessageHistory({conversationID,messages,live,liveReasoning,liveT
         liveThinking={index===segments.length-1?activeThinking:false}
         remember={remember}
         replyCard={matchingReply?segment.items.includes(matchingReply)?visibleReply:undefined:index===segments.length-1?visibleReply:undefined}
-        previewMaterials={previewMaterials} assistantName={assistantName} userAccount={userAccount}/>
+        previewMaterials={previewMaterials} assistantName={assistantName} userAccount={userAccount}
+        memoryConversation={personalReadCards?conversationID:undefined}
+        modelReceiptConversation={userAccount?conversationID:undefined}/>
       {segment.exchange&&<div className="messages">{segment.exchange.content}</div>}
     </Fragment>)}
     {page?.after_cursor&&<div className="history-message-actions">

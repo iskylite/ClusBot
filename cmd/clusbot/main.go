@@ -40,6 +40,12 @@ type config struct {
 		Tools          []string `yaml:"tools"`
 		CredentialEnv  string   `yaml:"credential_env"`
 		EventSecretEnv string   `yaml:"event_secret_env"`
+		EnableDispatch bool     `yaml:"enable_dispatch"`
+		CluskitStdio   struct {
+			Command     string            `yaml:"command"`
+			Environment []string          `yaml:"environment"`
+			ToolDigests map[string]string `yaml:"tool_digests"`
+		} `yaml:"cluskit_stdio"`
 	} `yaml:"benchmark"`
 	Discovery struct {
 		BaseURL       string   `yaml:"base_url"`
@@ -188,8 +194,8 @@ func run() error {
 	if cfg.Tickets.BaseURL != "" || cfg.Tickets.HealthURL != "" || cfg.Tickets.CredentialEnv != "" || cfg.Tickets.HealthCredentialEnv != "" {
 		return errors.New("账号服务尚不支持旧版 tickets.* 实例级工单配置；请保留该配置用于后续按账号绑定，不会启动旧的共享工单入口")
 	}
-	if cfg.Benchmark.EventSecretEnv != "" {
-		return errors.New("账号服务尚不支持 benchmark.event_secret_env 回调；不能在缺少账号归属时注册事件接收入口")
+	if err := validateAccountBenchmarkConfig(cfg); err != nil {
+		return err
 	}
 	if err = os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return err

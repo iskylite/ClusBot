@@ -16,7 +16,39 @@ func migrateAccountBusinessStorage(tx *sql.Tx) error {
 	_, err := tx.Exec(`CREATE TABLE IF NOT EXISTS account_business_owner (
 singleton INTEGER PRIMARY KEY CHECK(singleton=1),
 principal_id TEXT NOT NULL CHECK(principal_id<>'')
-)`)
+);
+CREATE TABLE IF NOT EXISTS benchmark_asset_physical_serials (
+ target_ref TEXT PRIMARY KEY REFERENCES ops_assets(object_ref) ON DELETE RESTRICT,
+ physical_serial TEXT NOT NULL CHECK(physical_serial<>'')
+);
+CREATE TABLE IF NOT EXISTS benchmark_instance_holds (
+ physical_serial TEXT PRIMARY KEY CHECK(physical_serial<>''),
+ principal_id TEXT NOT NULL CHECK(principal_id<>''),
+ step_id TEXT NOT NULL CHECK(step_id<>''),
+ operation_id TEXT NOT NULL CHECK(operation_id<>'')
+);
+CREATE INDEX IF NOT EXISTS benchmark_instance_holds_owner ON benchmark_instance_holds(principal_id,step_id,operation_id);
+CREATE TABLE IF NOT EXISTS benchmark_instance_jobs (
+ source_key TEXT NOT NULL CHECK(source_key<>''),
+ job_id TEXT NOT NULL CHECK(job_id<>''),
+ principal_id TEXT NOT NULL CHECK(principal_id<>''),
+ task_id TEXT NOT NULL CHECK(task_id<>''),
+ step_id TEXT NOT NULL CHECK(step_id<>''),
+ operation_id TEXT NOT NULL UNIQUE CHECK(operation_id<>''),
+ idempotency_key TEXT NOT NULL UNIQUE CHECK(idempotency_key<>''),
+ dispatch_digest TEXT NOT NULL CHECK(dispatch_digest<>''),
+ PRIMARY KEY(source_key,job_id)
+);
+CREATE INDEX IF NOT EXISTS benchmark_instance_jobs_principal ON benchmark_instance_jobs(principal_id,source_key,job_id);
+CREATE TABLE IF NOT EXISTS benchmark_account_dispatch_admissions (
+ task_id TEXT PRIMARY KEY REFERENCES benchmark_runs(task_id) ON DELETE CASCADE,
+ provider_pin TEXT NOT NULL CHECK(provider_pin<>'')
+);
+CREATE TABLE IF NOT EXISTS benchmark_account_cluskit_isolation (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1)
+);
+CREATE INDEX IF NOT EXISTS benchmark_account_inbox_job ON inbox_events(source,payload_ref,received_at)
+ WHERE kind='benchmark_account_job_hint' AND state='received';`)
 	return err
 }
 
@@ -66,8 +98,9 @@ func ownsPersonalBusiness(q recordsQuerier, principal string) (bool, error) {
 }
 
 // accountCatalogConnector exposes the instance's read-only tool and Skill catalogs under the
-// names already used by permission checks. The private database owns all writes
-// made by the task runtime, including each tool invocation and its evidence.
+// names already used by permission checks. The private database owns task
+// state, tool invocations and evidence. Shared benchmark holds use the
+// explicit instance writer, not the attached catalog.
 type accountCatalogConnector struct {
 	driver.Connector
 	catalogURI string
@@ -136,6 +169,8 @@ func OpenAccountBusinessStore(path string, instance *Store) (*Store, error) {
 	s.connectionKey = instance.connectionKey
 	s.connectionGrantMu = instance.connectionGrantMu
 	s.accountModelSlots = instance.accountModelSlots
+	s.benchmarkInstance = instance.db
+	s.reserveCluskitBenchmarkTools = instance.reserveCluskitBenchmarkTools
 	return s, nil
 }
 

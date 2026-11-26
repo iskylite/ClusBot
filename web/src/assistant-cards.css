@@ -49,6 +49,10 @@
 .conversation-config-badge { background: var(--selected); color: var(--accent); }
 .discovery-status { background: var(--panel); color: var(--muted); }
 .app-workspace .assistant-card p:not(.error) { color: var(--muted); }
+.assistant-card[data-read-card="artifact-card"] .assistant-surface-column .assistant-surface-column p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .app-workspace .assistant-card footer { justify-content: flex-end; }
 .assistant-card footer .assistant-open-task { margin-inline-end:auto; }
 .app-workspace .assistant-card footer :is(.outline,.primary),

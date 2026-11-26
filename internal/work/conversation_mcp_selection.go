@@ -42,6 +42,9 @@ type ConversationMCPSelection struct {
 }
 
 func (s *Store) selectedMCPOption(ctx context.Context, tx *sql.Tx, sel MCPReadSelection) (TaskToolOption, error) {
+	if s.cluskitBenchmarkToolReserved(sel.ToolName) {
+		return TaskToolOption{}, ErrToolPermission
+	}
 	var out TaskToolOption
 	var raw, config, credential, state string
 	var allowed, readOnly, enabled bool

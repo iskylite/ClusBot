@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"strings"
@@ -64,7 +63,7 @@ func assistantSettingForms() map[string]string {
 		"configure_model_provider": "/settings#model-default",
 		"configure_model_profile":  "/settings#model-profiles",
 		"configure_model_role":     "/settings#model-roles",
-		"configure_mcp_connection": "/connections/new",
+		"configure_mcp_connection": "conversation_mcp_onboarding",
 		"configure_mcp_permission": "/connections",
 		"manage_accounts":          "account_management",
 		"change_my_password":       "account_password",
@@ -176,35 +175,17 @@ func (s Server) assistantConnections(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, views)
 }
 
-type assistantModelReceipt struct {
-	Generation     int                `json:"execution_generation"`
-	RecordedAt     int64              `json:"recorded_at"`
-	RequestedModel string             `json:"requested_model,omitempty"`
-	Receipt        *work.ModelReceipt `json:"model_receipt,omitempty"`
-}
-
 func (s Server) assistantRunModelReceipt(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if !validID(r.PathValue("id")) {
 		fail(w, http.StatusBadRequest, "invalid_run", "需要有效的执行标识")
 		return
 	}
-	record, err := s.Store.RunRecord(r.Context(), r.PathValue("id"), "")
+	id := r.PathValue("id")
+	record, err := s.Store.ReadRunModelReceipt(r.Context(), id, nil)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	receipts := make([]assistantModelReceipt, 0, len(record.Contexts))
-	for _, entry := range record.Contexts {
-		var manifest struct {
-			RequestedModel string `json:"requested_model"`
-		}
-		_ = json.Unmarshal(entry.Manifest, &manifest)
-		if !work.ValidModelReceiptIdentifier(manifest.RequestedModel) {
-			manifest.RequestedModel = ""
-		}
-		receipts = append(receipts, assistantModelReceipt{Generation: entry.Generation,
-			RecordedAt: entry.RecordedAt, RequestedModel: manifest.RequestedModel, Receipt: entry.ModelReceipt})
-	}
-	jsonResponse(w, http.StatusOK, map[string]any{"run_id": record.ID, "run_status": record.Status, "receipts": receipts})
+	jsonResponse(w, http.StatusOK, map[string]any{"run_id": id, "run_status": record.Status, "receipts": record.Receipts})
 }

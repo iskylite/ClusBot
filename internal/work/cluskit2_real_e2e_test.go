@@ -1,6 +1,7 @@
 package work
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -17,6 +18,15 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
+	isolatedConfig := filepath.Join(tmpDir, "cluskit.yaml")
+	if err := os.WriteFile(isolatedConfig, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLUS_ROOT", tmpDir)
+	t.Setenv("CLUS_TASK_DIR", filepath.Join(tmpDir, "tasks"))
+	t.Setenv("CLUSKIT_LOG_DIR", filepath.Join(tmpDir, "logs"))
+	t.Setenv("CLUS_CONFIG_FILE", isolatedConfig)
+	stdioEnv := []string{"CLUS_ROOT", "CLUS_TASK_DIR", "CLUSKIT_LOG_DIR", "CLUS_CONFIG_FILE"}
 	buildBin := func(pkg, name string) string {
 		out := filepath.Join(tmpDir, name)
 		cmd := exec.Command("go", "build", "-mod=vendor", "-o", out, pkg)
@@ -47,6 +57,7 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 			Transport: "stdio",
 			Command:   clusconfBin,
 			Args:      []string{"mcp"},
+			Env:       stdioEnv,
 		},
 	})
 	if err != nil {
@@ -60,18 +71,32 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 	for _, tool := range probedConf.Tools {
 		confTools[tool.Name] = tool
 	}
-	discoverTool, ok := confTools["discover"]
-	if !ok {
-		t.Fatalf("clusconf mcp missing discover tool")
-	}
-	if discoverTool.ServerReadOnly == nil || !*discoverTool.ServerReadOnly {
-		t.Fatalf("expected real discover readOnlyHint=true, got %+v", discoverTool.ServerReadOnly)
-	}
-	if err := mcpclient.ValidateArguments(discoverTool, map[string]any{"hosts": "10.0.0.1"}); err == nil {
-		t.Fatalf("expected real discover schema to reject 'hosts'")
-	}
-	if err := mcpclient.ValidateArguments(discoverTool, map[string]any{"nodes": "10.0.0.1", "sync": true}); err != nil {
-		t.Fatalf("expected real discover schema to accept nodes+sync: %v", err)
+	discoverTool, hasDiscover := confTools["discover"]
+	if os.Geteuid() != 0 {
+		if hasDiscover {
+			t.Fatal("ordinary clusconf MCP account was offered root-only discover")
+		}
+		// No privilege escalation or actual asset discovery. Verify the
+		// Redfish/SSH catalog contract separately with Cluskit2's permission
+		// fixture; the real stdio round trip below uses only task_status.
+		cmd := exec.Command("go", "test", "-mod=vendor", "./cmd/clusconf", "-run",
+			"^(TestMCPCatalogRespectsEffectiveUser|TestCatalogInspectionProtocolsMatchNativeOmission)$", "-count=1")
+		cmd.Dir = cluskitDir
+		cmd.Env = append(os.Environ(), "GOWORK=off")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("Cluskit2 catalog fixture failed: %v\n%s", err, out)
+		}
+		t.Log("root-only discover not offered; verified catalog contract without privilege escalation")
+	} else {
+		if !hasDiscover || discoverTool.ServerReadOnly == nil || !*discoverTool.ServerReadOnly {
+			t.Fatalf("expected real root discover with readOnlyHint=true, got %+v", discoverTool.ServerReadOnly)
+		}
+		if err := mcpclient.ValidateArguments(discoverTool, map[string]any{"hosts": "10.0.0.1"}); err == nil {
+			t.Fatal("expected real discover schema to reject 'hosts'")
+		}
+		if err := mcpclient.ValidateArguments(discoverTool, map[string]any{"nodes": "10.0.0.1", "sync": true}); err != nil {
+			t.Fatalf("expected real discover schema to accept nodes+sync: %v", err)
+		}
 	}
 	if runTool, ok := confTools["run"]; ok {
 		if runTool.ServerReadOnly == nil || *runTool.ServerReadOnly {
@@ -122,7 +147,7 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 		benchConn, err := store.SaveConnection(ctx, "", Connection{
 			Name:    "real-clusbench",
 			Enabled: true,
-			Config:  mcpclient.Config{Transport: "stdio", Command: clusbenchBin, Args: []string{"mcp"}},
+			Config:  mcpclient.Config{Transport: "stdio", Command: clusbenchBin, Args: []string{"mcp"}, Env: stdioEnv},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -151,7 +176,7 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 		opsConn, err := store.SaveConnection(ctx, "", Connection{
 			Name:    "real-clusops",
 			Enabled: true,
-			Config:  mcpclient.Config{Transport: "stdio", Command: clusopsBin, Args: []string{"mcp"}},
+			Config:  mcpclient.Config{Transport: "stdio", Command: clusopsBin, Args: []string{"mcp"}, Env: stdioEnv},
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -175,15 +200,16 @@ func TestCluskit2RealBinariesE2E(t *testing.T) {
 		}
 	} else {
 		for _, sub := range []struct{ pkg, run string }{
-			{"./cmd/clusbench", "TestMCPRootTools"},
-			{"./cmd/clusops", "TestFaultCheck"},
+			{"./cmd/clusbench", "TestBenchRootToolsStdio"},
+			{"./cmd/clusops", "TestOpsMCPListsOriginalOperations"},
 		} {
-			cmd := exec.Command("go", "test", "-mod=vendor", sub.pkg, "-run", sub.run, "-count=1")
+			cmd := exec.Command("go", "test", "-mod=vendor", sub.pkg, "-run", "^"+sub.run+"$", "-count=1", "-v")
 			cmd.Dir = cluskitDir
 			cmd.Env = append(os.Environ(), "GOWORK=off")
-			if b, err := cmd.CombinedOutput(); err != nil {
+			if b, err := cmd.CombinedOutput(); err != nil || !bytes.Contains(b, []byte("--- PASS: "+sub.run+" ")) {
 				t.Fatalf("cluskit2 %s (%s) failed: %v\n%s", sub.pkg, sub.run, err, string(b))
 			}
+			t.Logf("Cluskit2 source fixture passed without elevation: %s", sub.run)
 		}
 	}
 }

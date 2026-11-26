@@ -108,6 +108,11 @@ func isKnownUnsafeWriteTool(name string) bool {
 	return strings.HasPrefix(lower, "update_") || (strings.HasPrefix(lower, "set") && lower != "settings")
 }
 
+// MCPReadOnlyEligible reports whether an administrator may designate a catalog entry as read-only.
+func MCPReadOnlyEligible(tool mcpclient.Tool) bool {
+	return tool.SchemaError == "" && !isToolDisallowedForReadOnly(tool)
+}
+
 func isToolDisallowedForReadOnly(tool mcpclient.Tool) bool {
 	if isKnownUnsafeWriteTool(tool.Name) || tool.Destructive {
 		return true
@@ -154,14 +159,25 @@ func scanTool(row scanner) (mcpclient.Tool, error) {
 }
 
 func (s *Store) SaveConnection(ctx context.Context, key string, c Connection) (Connection, error) {
+	return s.saveConnection(ctx, key, c, "")
+}
+
+// MCPConnectionDefinition normalizes and validates exactly what saving will
+// store. This does not inspect the environment, connect, or start a program.
+func MCPConnectionDefinition(c Connection) (Connection, []byte, error) {
 	c.Name = strings.TrimSpace(c.Name)
 	if c.Name == "" || utf8.RuneCountInString(c.Name) > 60 {
-		return Connection{}, mcpclient.ErrConfig
+		return Connection{}, nil, mcpclient.ErrConfig
 	}
 	if err := c.Config.Validate(); err != nil {
-		return Connection{}, err
+		return Connection{}, nil, err
 	}
 	raw, err := json.Marshal(c.Config)
+	return c, raw, err
+}
+
+func (s *Store) saveConnection(ctx context.Context, key string, c Connection, createID string) (Connection, error) {
+	c, raw, err := MCPConnectionDefinition(c)
 	if err != nil {
 		return Connection{}, err
 	}
@@ -172,17 +188,27 @@ func (s *Store) SaveConnection(ctx context.Context, key string, c Connection) (C
 		return Connection{}, err
 	}
 	defer tx.Rollback()
-	var total int
-	var duplicate bool
-	err = tx.QueryRowContext(ctx, "SELECT count(*),coalesce(max(name=?),0) FROM connections WHERE id<>?", c.Name, key).Scan(&total, &duplicate)
-	if err != nil {
+	if createID != "" {
+		saved, findErr := scanConnection(tx.QueryRowContext(ctx, "SELECT "+connectionColumns+" FROM connections c WHERE c.id=?", createID))
+		if findErr == nil {
+			cfg, _ := json.Marshal(saved.Config)
+			if saved.Name != c.Name || saved.Enabled != c.Enabled || string(cfg) != string(raw) {
+				return Connection{}, ErrConnectionRevision
+			}
+			return saved, nil
+		}
+		if !errors.Is(findErr, sql.ErrNoRows) {
+			return Connection{}, findErr
+		}
+	}
+	if err = checkMCPConnectionCapacity(ctx, tx, c.Name, key); err != nil {
 		return Connection{}, err
 	}
-	if duplicate || total >= 30 {
-		return Connection{}, ErrConnectionDuplicate
-	}
 	if key == "" {
-		key = id()
+		key = createID
+		if key == "" {
+			key = id()
+		}
 		_, err = tx.ExecContext(ctx, "INSERT INTO connections(id,name,config,enabled) VALUES(?,?,?,?)", key, c.Name, string(raw), c.Enabled)
 	} else {
 		err = updateConnection(ctx, tx, `UPDATE connections SET name=?,config=?,enabled=?,revision=revision+1,
@@ -203,6 +229,26 @@ status='untested',detail='',protocol='',checked_at=0,credential_binding='' WHERE
 	}
 	s.invalidateMCPSession(key, saved.Revision)
 	return saved, nil
+}
+
+// CheckNewMCPConnectionName is local and read-only. Registration checks this
+// again inside its transaction because another editor may reserve the name.
+func (s *Store) CheckNewMCPConnectionName(ctx context.Context, name string) error {
+	return checkMCPConnectionCapacity(ctx, s.db, name, "")
+}
+
+func checkMCPConnectionCapacity(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, name, skip string) error {
+	var total int
+	var duplicate bool
+	if err := q.QueryRowContext(ctx, "SELECT count(*),coalesce(max(name=?),0) FROM connections WHERE id<>?", name, skip).Scan(&total, &duplicate); err != nil {
+		return err
+	}
+	if duplicate || total >= 30 {
+		return ErrConnectionDuplicate
+	}
+	return nil
 }
 
 func updateConnection(ctx context.Context, tx *sql.Tx, query string, args ...any) error {
@@ -343,6 +389,9 @@ func (s *Store) SetToolPermissionWithMode(ctx context.Context, key, name, versio
 		if err = mcpclient.ValidateToolSchemas(tool); err != nil {
 			return err
 		}
+		if readOnly && isToolDisallowedForReadOnly(tool) {
+			return ErrToolPermission
+		}
 	}
 	if _, err = tx.ExecContext(ctx, "UPDATE connection_tools SET allowed=?,read_only=? WHERE connection_id=? AND name=?", allowed, readOnly, key, name); err != nil {
 		return err
@@ -413,6 +462,9 @@ func (s *Store) callConnectionTool(ctx context.Context, key, name string, revisi
 }
 
 func (s *Store) executeConnectionTool(ctx context.Context, key, name string, revision int, args map[string]any, runID string, position int, principal string, timeout time.Duration) (ConnectionResult, error) {
+	if s.cluskitBenchmarkToolReserved(name) {
+		return ConnectionResult{}, fmt.Errorf("%w：该工具由个人助手基准运行时专用，请按原任务查询或停止", ErrToolPermission)
+	}
 	c, err := s.Connection(ctx, key)
 	if err != nil {
 		return ConnectionResult{}, err

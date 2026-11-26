@@ -100,14 +100,15 @@ func TestApprovalExpiryPreservesDecisionAndWinsLateRace(t *testing.T) {
 	}
 	add := func(key string, expires int64) Approval {
 		t.Helper()
-		a, err := requestApproval(tx, Approval{Subject: actor, Action: "write", ObjectRef: "asset", ParamsDigest: "digest", RequestKey: key, ExpiresAt: expires, DecidedBy: actor}, stamp-500)
+		a, err := requestApproval(tx, Approval{Subject: actor, Action: "write", ObjectRef: "asset", ParamsDigest: "digest",
+			ContractRevision: 1, PolicyVersion: 1, AssetRevision: 1, RequestKey: key, ExpiresAt: expires, DecidedBy: actor}, stamp-500)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return a
 	}
 	early := add("early", stamp)
-	if _, err := decideApproval(tx, early.RequestKey, "approved", actor, Approval{}, stamp-1); err != nil {
+	if _, err := decideApproval(tx, early.RequestKey, "approved", actor, Approval{ContractRevision: 1, PolicyVersion: 1, AssetRevision: 1}, stamp-1); err != nil {
 		t.Fatal(err)
 	}
 	late := add("late", stamp)

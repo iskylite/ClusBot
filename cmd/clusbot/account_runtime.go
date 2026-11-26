@@ -21,20 +21,79 @@ import (
 // files use an account-specific directory, so every query and worker has the
 // same isolation boundary, including recovery and model inputs.
 type accountRuntime struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	root       string
-	cfg        config
-	api        httpapi.Server
-	mu         sync.Mutex
-	handlers   map[string]http.Handler
-	stores     map[string]*work.Store
-	background sync.WaitGroup
-	discovery  *work.HTTPDiscoverySource
-	benchmark  *work.HTTPBenchmarkProvider
+	ctx                     context.Context
+	cancel                  context.CancelFunc
+	root                    string
+	cfg                     config
+	api                     httpapi.Server
+	mu                      sync.Mutex
+	handlers                map[string]http.Handler
+	stores                  map[string]*work.Store
+	background              sync.WaitGroup
+	discovery               *work.HTTPDiscoverySource
+	benchmark               *work.HTTPBenchmarkProvider
+	cluskit                 *work.CluskitBenchmarkRuntime
+	stopBenchmarkTransports []func()
+}
+
+func validateAccountBenchmarkConfig(cfg config) error {
+	if cfg.Benchmark.EventSecretEnv != "" {
+		return errors.New("账号服务不开放 benchmark.event_secret_env 回调入口；基准任务通过固定提供方查询原作业")
+	}
+	_, _, err := configuredAccountBenchmarkTransports(cfg)
+	return err
+}
+
+func configuredAccountBenchmarkTransports(cfg config) (*work.HTTPBenchmarkProvider, *work.CluskitBenchmarkRuntime, error) {
+	native := cfg.Benchmark.CluskitStdio
+	if native.Command == "" && len(native.Environment) == 0 && len(native.ToolDigests) == 0 {
+		http, err := configuredAccountBenchmarkProvider(cfg)
+		return http, nil, err
+	}
+	if !cfg.Benchmark.EnableDispatch || cfg.Benchmark.BaseURL != "" || cfg.Benchmark.CredentialEnv != "" || len(cfg.Benchmark.Tools) != 0 {
+		return nil, nil, errors.New("benchmark.cluskit_stdio 要求显式 enable_dispatch，且不能同时配置 HTTP 提供方")
+	}
+	provider, err := work.PrepareCluskitBenchmarkRuntime(work.CluskitBenchmarkStdio{
+		Command: native.Command, Connection: cfg.Benchmark.Connection, Revision: cfg.Benchmark.Revision,
+		Environment: native.Environment, ToolDigests: native.ToolDigests,
+	})
+	return nil, provider, err
+}
+
+func configuredAccountBenchmarkProvider(cfg config) (*work.HTTPBenchmarkProvider, error) {
+	b := cfg.Benchmark
+	if b.BaseURL == "" {
+		if b.EnableDispatch {
+			return nil, errors.New("benchmark.enable_dispatch 需要固定的 benchmark.base_url、连接配置和凭据")
+		}
+		return nil, nil
+	}
+	adapter, err := work.NewHTTPBenchmarkProvider(b.BaseURL, b.Connection, b.Revision, b.Tools, os.Getenv(b.CredentialEnv))
+	if err != nil {
+		return nil, err
+	}
+	if b.EnableDispatch {
+		return adapter.ForAccountDispatch()
+	}
+	return adapter, nil
 }
 
 func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (func(), error) {
+	if cfg.Benchmark.EventSecretEnv != "" {
+		return nil, validateAccountBenchmarkConfig(cfg)
+	}
+	benchmark, cluskit, err := configuredAccountBenchmarkTransports(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cluskit != nil {
+		if err := cluskit.VerifyEndpoint(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if err := api.Store.ConfigureCluskitBenchmarkIsolation(ctx, cluskit != nil); err != nil {
+		return nil, err
+	}
 	key, err := connectionCredentialKey(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -64,14 +123,7 @@ func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (
 	runtime := &accountRuntime{
 		ctx: businessCtx, cancel: cancel, root: root, cfg: cfg, api: *api,
 		handlers: make(map[string]http.Handler), stores: make(map[string]*work.Store),
-	}
-	if cfg.Benchmark.BaseURL != "" {
-		runtime.benchmark, err = work.NewHTTPBenchmarkProvider(cfg.Benchmark.BaseURL, cfg.Benchmark.Connection,
-			cfg.Benchmark.Revision, cfg.Benchmark.Tools, os.Getenv(cfg.Benchmark.CredentialEnv))
-		if err != nil {
-			runtime.close()
-			return nil, err
-		}
+		benchmark: benchmark, cluskit: cluskit,
 	}
 	if cfg.Discovery.BaseURL != "" {
 		runtime.discovery, err = work.NewHTTPDiscoverySource(cfg.Discovery.BaseURL, cfg.Discovery.Source, cfg.Discovery.Scopes, os.Getenv(cfg.Discovery.CredentialEnv))
@@ -102,6 +154,7 @@ func startAccountRuntime(ctx context.Context, api *httpapi.Server, cfg config) (
 	}
 	api.PersonalAPI = runtime.handler
 	api.AdminTaskStores = runtime.taskStores
+	api.AccountBenchmarkDispatch = cfg.Benchmark.EnableDispatch
 	return runtime.close, nil
 }
 
@@ -165,6 +218,27 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 		if err := db.InstallBenchmarkProvider(a.ctx, a.benchmark); err != nil {
 			return nil, err
 		}
+	}
+	var provider work.BenchmarkProvider
+	if a.benchmark != nil {
+		provider = a.benchmark
+	}
+	var stopBenchmark func()
+	if a.cluskit != nil {
+		cluskit, stop, err := a.cluskit.NewAccountProvider()
+		if err != nil {
+			return nil, err
+		}
+		stopBenchmark = stop
+		defer func() {
+			if !opened {
+				stopBenchmark()
+			}
+		}()
+		if err := db.InstallCluskitBenchmarkProvider(a.ctx, cluskit); err != nil {
+			return nil, err
+		}
+		provider = cluskit
 	}
 	if err := accountDirectory(filepath.Join(dir, "workspace")); err != nil {
 		return nil, err
@@ -233,11 +307,16 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 	})
 	accountAPI := a.api
 	accountAPI.DiscoverySource = accountDiscovery
+	if a.cfg.Benchmark.EnableDispatch {
+		accountAPI.BenchmarkProvider = provider
+		accountAPI.AccountBenchmarkDispatch = true
+		a.background.Go(func() { db.RunBenchmarks(a.ctx, provider) })
+	}
 	handler := accountAPI.PersonalHandler(db)
-	if a.benchmark != nil {
+	if a.benchmark != nil && !a.cfg.Benchmark.EnableDispatch {
 		// These already-authorized account routes need the pinned adapter to
 		// inspect and revise existing runs. Do not expose it to admission or
-		// dispatch routes, and do not start an account benchmark worker.
+		// dispatch routes when the explicit instance switch is off.
 		benchmarkAPI := accountAPI
 		benchmarkAPI.BenchmarkProvider = a.benchmark
 		benchmarkHandler := benchmarkAPI.PersonalHandler(db)
@@ -255,6 +334,9 @@ func (a *accountRuntime) handler(principal string) (http.Handler, error) {
 	}
 	a.handlers[principal] = handler
 	a.stores[principal] = db
+	if stopBenchmark != nil {
+		a.stopBenchmarkTransports = append(a.stopBenchmarkTransports, stopBenchmark)
+	}
 	opened = true
 	return handler, nil
 }
@@ -264,6 +346,9 @@ func (a *accountRuntime) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.background.Wait()
+	for _, stop := range a.stopBenchmarkTransports {
+		stop()
+	}
 	for _, db := range a.stores {
 		db.Close()
 	}

@@ -74,7 +74,7 @@ func TestApprovalBoundSnapshot(t *testing.T) {
 		tx.Commit()
 		// 重复点击：只产生一次有效决定。
 		tx, _ = store.db.Begin()
-		first, err := decideApproval(tx, approval.RequestKey, "approved", "user:alice", Approval{}, now)
+		first, err := decideApproval(tx, approval.RequestKey, "approved", "user:alice", Approval{ContractRevision: 1, PolicyVersion: 1, AssetRevision: 1}, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestApprovalDoesNotGrantPermission(t *testing.T) {
 		tx.Commit()
 		// 确认通过：但仍需授权与领域准入（确认不补足缺失权限）。
 		tx, _ = store.db.Begin()
-		decided, err := decideApproval(tx, approval.RequestKey, "approved", "user:alice", Approval{}, now)
+		decided, err := decideApproval(tx, approval.RequestKey, "approved", "user:alice", Approval{ContractRevision: 1, PolicyVersion: 1, AssetRevision: 1}, now)
 		if err != nil {
 			t.Fatal(err)
 		}

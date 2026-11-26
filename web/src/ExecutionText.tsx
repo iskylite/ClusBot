@@ -4,6 +4,8 @@ import Markdown, {type Components} from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {MessageAttachments,MessageContent,MessageReference} from './MessageContent'
 import clusbotIcon from './clusbot-brand.svg'
+import {MemoryProvenanceCard} from './TaskListProgressCard'
+import {RunModelUsageDisclosure} from './RunModelUsageDisclosure'
 import type {ExecutionUsage,Material,MemoryRef,Message} from './api'
 
 const usageNumber = new Intl.NumberFormat('zh-CN', {maximumFractionDigits:1})
@@ -90,14 +92,21 @@ export const FormattedText = memo(function FormattedText({text, framed=false, st
   </div>
 })
 
-export function MemoryReferences({items}:{items?:MemoryRef[]}) {
+export function MemoryReferences({items,scope}:{items?:MemoryRef[];scope?:{conversation:string;run:string}}) {
+  const [open,setOpen]=useState(false)
   if (!items?.length) return null
-  return <details className="execution-usage memory-references">
-    <summary><Bookmark size={16} aria-hidden="true"/>本轮参考了 {items.length} 条记忆</summary>
-    <ul>{items.map(item=><li key={item.id}>
+  return <details className="execution-usage memory-references" open={scope?open:undefined}>
+    <summary onClick={scope?event=>{
+      // Native summary emits a click for keyboard and pointer activation.
+      // Do not rely on the browser's coalesced toggle event to clear an excerpt.
+      event.preventDefault();setOpen(value=>!value)
+    }:undefined}><Bookmark size={16} aria-hidden="true"/>本轮参考了 {items.length} 条记忆</summary>
+    {scope?(open&&<MemoryProvenanceCard
+      key={items.map(item=>item.revision+':'+item.current_revision).join(',')}
+      conversation={scope.conversation} run={scope.run}/>):<ul>{items.map(item=><li key={item.id}>
       <span title={item.title || item.id}>{item.title || '记忆 '+item.id.slice(0,8)}</span>
       <small>第 {item.revision} 版{item.current_revision===0 ? ' · 已删除' : item.current_revision>item.revision ? ' · 当前第 '+item.current_revision+' 版' : ''}</small>
-    </li>)}</ul>
+    </li>)}</ul>}
   </details>
 }
 
@@ -147,6 +156,8 @@ const MessageItem = memo(function MessageItem({
   matchingReply,
   replyCardContent,
   previewMaterials,
+  memoryConversation,
+  modelReceiptConversation,
 }: {
   message: Message
   messageID?: number
@@ -158,11 +169,16 @@ const MessageItem = memo(function MessageItem({
   matchingReply: boolean
   replyCardContent?: ReactNode
   previewMaterials?: Material[]
+  memoryConversation?: string
+  modelReceiptConversation?: string
 }) {
   return <div className={'message message-'+message.role+(focused?' source-message':'')} tabIndex={focused?-1:undefined} id={!anchors||messageID===undefined?undefined:'message-'+messageID}>
     <span>{message.role==='user'?userLabel:assistantLabel}</span>
     {message.role==='assistant'
-      ? <div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs}/>{matchingReply&&replyCardContent}</div>
+      ? <div><FormattedText text={message.text}/>{message.incomplete&&<p className="message-incomplete">已停止 · 回复未完成</p>}<MemoryReferences items={message.memory_refs} scope={memoryConversation&&message.run_id?{conversation:memoryConversation,run:message.run_id}:undefined}/>
+        {message.has_model_receipt&&modelReceiptConversation&&message.run_id&&messageID!==undefined&&
+          <RunModelUsageDisclosure conversation={modelReceiptConversation} run={message.run_id} message={messageID}/>}
+        {matchingReply&&replyCardContent}</div>
       : <div className="user-message"><MessageContent
           reference={message.task_ref?.task_id?<MessageReference label={'@'+(message.task_ref.title||message.task_ref.task_id)+' 只读引用'}/>:
             message.asset_query_task_id&&<MessageReference label={'资产查询 · '+message.asset_query_task_id}/>}
@@ -173,8 +189,8 @@ const MessageItem = memo(function MessageItem({
   </div>
 })
 
-export function Messages({messages,live,liveReasoning,liveThinking,remember,anchors=true,replyCard,previewMaterials,assistantName,userAccount}:{
-  messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;remember?:(id:number)=>void;anchors?:boolean;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity
+export function Messages({messages,live,liveReasoning,liveThinking,remember,anchors=true,replyCard,previewMaterials,assistantName,userAccount,memoryConversation,modelReceiptConversation}:{
+  messages:Message[];live?:string;liveReasoning?:string;liveThinking?:boolean;remember?:(id:number)=>void;anchors?:boolean;replyCard?:{runID:string;content:ReactNode};previewMaterials?:Material[];assistantName?:string;userAccount?:UserIdentity;memoryConversation?:string;modelReceiptConversation?:string
 }) {
   const located=useRef('')
   const group=useRef<HTMLDivElement>(null)
@@ -206,6 +222,8 @@ export function Messages({messages,live,liveReasoning,liveThinking,remember,anch
       matchingReply={message===matchingReply}
       replyCardContent={message===matchingReply?replyCard?.content:undefined}
       previewMaterials={previewMaterials}
+      memoryConversation={memoryConversation}
+      modelReceiptConversation={modelReceiptConversation}
     />
   })}{replyCard&&!matchingReply&&<div className="message message-assistant">
     <span>{assistantLabel}</span>{replyCard.content}
