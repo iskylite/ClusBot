@@ -1,0 +1,503 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 820" width="1280" height="820" role="img" aria-labelledby="title desc">
+  <title id="title">Clusclaw 个人助手首页 v3 · Fluent 2 IM 对话流 + 完整模型属性 + 明确指令目标</title>
+  <desc id="desc">包含右上角设置入口、Teams 双列 IM 消息流、完整 8 项模型能力属性、异常直达处理与清晰区分「指令目标」和「任务 T42」的 Fluent 2 高保真首页原型。</desc>
+
+  <defs>
+    <!-- Fluent 2 Typography -->
+    <style>
+      .f2-sans { font-family: "Segoe UI Variable", "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+      .f2-mono { font-family: "Cascadia Code", "SF Mono", ui-monospace, Menlo, monospace; }
+    </style>
+
+    <!-- Microsoft Loop Gradient Accent -->
+    <linearGradient id="loopAccent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#2899F5"/>
+      <stop offset="50%" stop-color="#5B5FC7"/>
+      <stop offset="100%" stop-color="#8B5CF6"/>
+    </linearGradient>
+
+    <!-- Clusclaw Bevel Wordmark Gradient (Scheme 4) -->
+    <linearGradient id="grad-bevel" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#242424"/>
+      <stop offset="48%" stop-color="#3D3E8F"/>
+      <stop offset="100%" stop-color="#5B5FC7"/>
+    </linearGradient>
+
+    <!-- Fluent 2 Shadow 2 -->
+    <filter id="shadow2" x="-4%" y="-4%" width="108%" height="110%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000000" flood-opacity="0.06"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="0.5" flood-color="#000000" flood-opacity="0.04"/>
+    </filter>
+
+    <!-- Fluent 2 Shadow 8 -->
+    <filter id="shadow8" x="-6%" y="-10%" width="112%" height="128%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000000" flood-opacity="0.10"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="1" flood-color="#000000" flood-opacity="0.06"/>
+    </filter>
+
+    <!-- Clip paths -->
+    <clipPath id="canvasClip">
+      <rect x="248" y="48" width="1020" height="760" rx="12"/>
+    </clipPath>
+    <clipPath id="cardClip">
+      <rect x="370" y="284" width="820" height="310" rx="12"/>
+    </clipPath>
+    <clipPath id="composerClip">
+      <rect x="326" y="648" width="864" height="140" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <!-- ==================== 1. OUTER LOOP SHELL (1280x820) ==================== -->
+  <rect x="0" y="0" width="1280" height="820" rx="12" fill="#F5F5F5"/>
+
+  <!-- ==================== 2. UNIFIED QUIET GLOBAL TOP APP BAR (48px) ==================== -->
+  <g id="global-app-bar" class="f2-sans">
+    <!-- Top-Left: macOS Traffic Lights + Sidebar Toggle + Brand -->
+    <circle cx="22" cy="24" r="6" fill="#FF5F56"/>
+    <circle cx="42" cy="24" r="6" fill="#FFBD2E"/>
+    <circle cx="62" cy="24" r="6" fill="#27C93F"/>
+
+    <g transform="translate(88, 8)">
+      <rect x="0" y="0" width="32" height="32" rx="4" fill="transparent"/>
+      <g transform="translate(8, 8)" fill="none" stroke="#616161" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="1.5" y="2" width="13" height="12" rx="2"/>
+        <line x1="6" y1="2" x2="6" y2="14"/>
+      </g>
+    </g>
+
+    <g transform="translate(132, 12)">
+      <rect x="0" y="0" width="24" height="24" rx="4" fill="#ECEEF9"/>
+      <g transform="translate(2, 2) scale(0.3125)">
+        <path d="M8 45l24-11 24 11-24 11z" fill="#C5C8F2"/>
+        <path d="M8 33l24-11 24 11-24 11z" fill="#7F85F5"/>
+        <rect x="12" y="6" width="40" height="25" rx="8" fill="#3D3E8F"/>
+        <path d="M9 12c-2.2 2-3.2 4.5-3.2 7.5 0 2.8 1 5.2 3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.4" stroke-linecap="round"/>
+        <path d="M55 12c2.2 2 3.2 4.5 3.2 7.5 0 2.8-1 5.2-3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.4" stroke-linecap="round"/>
+        <circle cx="25.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+        <circle cx="38.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+      </g>
+    </g>
+    <g id="clusclaw-wordmark-s4" transform="translate(164, 14) scale(0.55)">
+      <g fill="url(#grad-bevel)">
+        <path d="M6 4 H22 L24 9 H9 V23 H24 L22 28 H6 L2 24 V8 Z"/>
+        <path d="M31 3 H36 V28 H31 Z"/>
+        <path d="M43 11 H48 V23 H55 V11 H60 V28 H47 L43 24 Z"/>
+        <path d="M70 11 H83 L81 15 H72 V18 H80 L84 21 V25 L80 28 H67 L69 24 H79 V21 H71 L67 18 V14 Z"/>
+        <path d="M94 11 H107 L105 15 H96 V24 H105 L107 28 H94 L91 25 V14 Z"/>
+        <path d="M114 3 H119 V28 H114 Z"/>
+        <path d="M127 11 H140 L143 14 V28 H129 L126 25 V20 L129 18 H138 V15 H129 Z M131 21 V24 H138 V21 Z"/>
+        <path d="M150 11 H155 L158 22 L162 13 H166 L170 22 L173 11 H178 L173 28 H168 L164 19 L160 28 H155 Z"/>
+      </g>
+      <path d="M92 33 H178 L174 36 H92 Z" fill="#5B5FC7"/>
+    </g>
+
+    <!-- Top-Center: Global SearchBox (440x32) -->
+    <g id="global-search">
+      <rect x="420" y="8" width="440" height="32" rx="4" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1"/>
+      <line x1="421" y1="40" x2="859" y2="40" stroke="#616161" stroke-width="1"/>
+      <g transform="translate(434, 17)" fill="none" stroke="#616161" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="5.5" cy="5.5" r="4.2"/>
+        <line x1="8.7" y1="8.7" x2="11.8" y2="11.8"/>
+      </g>
+      <text x="460" y="29" font-size="14" font-weight="400" fill="#616161">搜索任务、模型、设置…</text>
+      <rect x="820" y="14" width="28" height="20" rx="2" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="1"/>
+      <text x="834" y="28" font-size="10" font-weight="600" fill="#616161" text-anchor="middle">⌘K</text>
+    </g>
+
+    <!-- Top-Right: Notification Bell + Settings Gear + Persona Avatar -->
+    <g transform="translate(1144, 8)">
+      <rect x="0" y="0" width="32" height="32" rx="4" fill="transparent"/>
+      <g transform="translate(8, 8)" fill="none" stroke="#424242" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12.5 10.5a2.2 2.2 0 0 1-1.2-2V5.8a3.3 3.3 0 0 0-6.6 0v2.7a2.2 2.2 0 0 1-1.2 2h9z"/>
+        <path d="M6.8 12.5a1.3 1.3 0 0 0 2.4 0"/>
+      </g>
+    </g>
+
+    <!-- Settings Gear (Moved to Top-Right) -->
+    <g id="top-right-settings" transform="translate(1184, 8)">
+      <rect x="0" y="0" width="32" height="32" rx="4" fill="transparent"/>
+      <g transform="translate(8, 8)" fill="none" stroke="#424242" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="8" r="2.3"/>
+        <path d="M8 1.8v1.5M8 12.7v1.5M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M1.8 8h1.5M12.7 8h1.5M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/>
+      </g>
+    </g>
+
+    <circle cx="1244" cy="24" r="14" fill="#ECEEF9" stroke="#C5C8F2" stroke-width="1"/>
+    <text x="1244" y="28" font-size="12" font-weight="600" fill="#5B5FC7" text-anchor="middle">林</text>
+    <circle cx="1254" cy="34" r="4.5" fill="#13A10E" stroke="#F5F5F5" stroke-width="1.5"/>
+  </g>
+
+  <!-- ==================== 3. BORDERLESS LEFT NAVIGATION PANE (248px) ==================== -->
+  <g id="left-rail" class="f2-sans">
+    <text x="20" y="72" font-size="12" font-weight="600" fill="#616161">个人运维空间</text>
+
+    <!-- Primary Nav -->
+    <rect x="12" y="88" width="224" height="40" rx="6" fill="#FFFFFF"/>
+    <rect x="12" y="99" width="3" height="18" rx="1.5" fill="#5B5FC7"/>
+    <g transform="translate(26, 100)" fill="none" stroke="#5B5FC7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13.5 10.5a1.5 1.5 0 0 1-1.5 1.5H5L2 14.5V3.5A1.5 1.5 0 0 1 3.5 2H12a1.5 1.5 0 0 1 1.5 1.5v7z"/>
+    </g>
+    <text x="54" y="113" font-size="14" font-weight="600" fill="#242424">个人助手</text>
+    <rect x="202" y="99" width="22" height="18" rx="9" fill="#5B5FC7"/>
+    <text x="213" y="112" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">3</text>
+
+    <g transform="translate(26, 146)" fill="none" stroke="#616161" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 2L2 5.2 8 8.4l6-3.2L8 2z"/>
+      <path d="M2 8.2l6 3.2 6-3.2"/>
+      <path d="M2 11.2l6 3.2 6-3.2"/>
+    </g>
+    <text x="54" y="159" font-size="14" font-weight="400" fill="#424242">任务清单</text>
+
+    <line x1="20" y1="188" x2="228" y2="188" stroke="#E5E5E5" stroke-width="1"/>
+
+    <!-- Outlook-Style Scannable Current Items -->
+    <text x="20" y="214" font-size="12" font-weight="600" fill="#616161">当前事项 (3)</text>
+
+    <!-- Item 1 -->
+    <g transform="translate(20, 238)" fill="none" stroke="#BC4B09" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="7" cy="7" r="5.5"/>
+      <path d="M7 4.2V7l1.8 1.2"/>
+    </g>
+    <text x="44" y="249" font-size="14" font-weight="600" fill="#242424">节点复检授权</text>
+    <text x="228" y="249" font-size="12" font-weight="400" fill="#616161" text-anchor="end">16:40</text>
+    <text x="44" y="271" font-size="12" font-weight="400" fill="#BC4B09">到期 · 待决定</text>
+
+    <!-- Item 2: Transparent resting surface (NO highlight bar when in Assistant Chat view) -->
+    <g transform="translate(20, 309)" fill="none" stroke="#0E700E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M1.5 7.5h2.4l1.6-4.2 2.4 7.4 1.6-3.2h3"/>
+    </g>
+    <text x="44" y="320" font-size="14" font-weight="600" fill="#242424">POD7 全套基准 · T42</text>
+    <rect x="44" y="330" width="52" height="20" rx="10" fill="#F1FAF1" stroke="#9FD89F" stroke-width="1"/>
+    <text x="70" y="344" font-size="12" font-weight="600" fill="#0E700E" text-anchor="middle">运行中</text>
+    <text x="104" y="344" font-size="12" font-weight="600" fill="#5B5FC7">已引用</text>
+
+    <!-- Item 3 -->
+    <g transform="translate(20, 382)" fill="none" stroke="#5B5FC7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8.5 1.8H3.8A1.2 1.2 0 0 0 2.6 3v8.4a1.2 1.2 0 0 0 1.2 1.2h6.4a1.2 1.2 0 0 0 1.2-1.2V4.8L8.5 1.8z"/>
+      <path d="M8.5 1.8v3h3"/>
+      <path d="M4.8 7.5h4.4M4.8 9.8h3"/>
+    </g>
+    <text x="44" y="393" font-size="14" font-weight="600" fill="#242424">POD7 阶段报告</text>
+    <text x="228" y="393" font-size="12" font-weight="400" fill="#616161" text-anchor="end">14:10</text>
+    <text x="44" y="415" font-size="12" font-weight="400" fill="#5B5FC7">待验收</text>
+  </g>
+
+  <!-- ==================== 4. ELEVATED LOOP CANVAS SHEET (1020x760, rx=12) ==================== -->
+  <rect x="248" y="48" width="1020" height="760" rx="12" fill="#FFFFFF" stroke="#E6E6E6" stroke-width="1" filter="url(#shadow2)"/>
+
+  <g id="loop-canvas" clip-path="url(#canvasClip)" class="f2-sans">
+    <!-- Minimalist Canvas Sub-Header (48px) -->
+    <line x1="248" y1="96" x2="1268" y2="96" stroke="#F0F0F0" stroke-width="1"/>
+    <text x="284" y="77" font-size="14" font-weight="600" fill="#242424">个人助手</text>
+    <text x="352" y="77" font-size="14" font-weight="400" fill="#8A8A8A">/</text>
+    <text x="366" y="77" font-size="14" font-weight="400" fill="#424242">对话</text>
+
+    <rect x="412" y="60" width="104" height="24" rx="12" fill="#F0F1FA" stroke="#C5C8F2" stroke-width="1"/>
+    <circle cx="426" cy="72" r="3" fill="#5B5FC7"/>
+    <text x="436" y="76" font-size="12" font-weight="600" fill="#5B5FC7">2 项变更</text>
+    <path d="M496 70l3 3 3-3" fill="none" stroke="#5B5FC7" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Right-Aligned Fluent 2 Underline Pivot -->
+    <text x="1080" y="77" font-size="14" font-weight="600" fill="#242424">仅看我的</text>
+    <rect x="1080" y="93" width="56" height="3" rx="1.5" fill="#5B5FC7"/>
+    <text x="1164" y="77" font-size="14" font-weight="400" fill="#616161">全站动态</text>
+
+    <!-- ==================== 5. CENTERED IM CONVERSATION COLUMN (x=326..1190, w=864) ==================== -->
+    <!-- IM Date Divider -->
+    <line x1="326" y1="114" x2="732" y2="114" stroke="#EFEFEF" stroke-width="1"/>
+    <text x="758" y="118" font-size="12" font-weight="400" fill="#616161" text-anchor="middle">今天</text>
+    <line x1="784" y1="114" x2="1190" y2="114" stroke="#EFEFEF" stroke-width="1"/>
+
+    <!-- User Message (Hover shows 引用 & 复制 below bubble) -->
+    <g id="user-message">
+      <text x="1190" y="140" font-size="12" font-weight="400" fill="#616161" text-anchor="end">14:32</text>
+      <rect x="842" y="146" width="348" height="38" rx="8" fill="#F0F1FA"/>
+      <text x="862" y="170" font-size="14" font-weight="400" fill="#242424">当前任务执行用哪个模型？提供方连接都正常吗？</text>
+      <!-- Hover Action Bar below User Bubble -->
+      <g id="user-hover-actions" transform="translate(1038, 190)">
+        <g transform="translate(0, 1)" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 4H2.5a1 1 0 0 0-1 1v2.5a1 1 0 0 0 1 1H4V10l2-1.5"/>
+          <path d="M10.5 4H8a1 1 0 0 0-1 1v2.5a1 1 0 0 0 1 1h1.5V10l2-1.5"/>
+        </g>
+        <text x="16" y="11" font-size="12" font-weight="400" fill="#616161">引用</text>
+        <g transform="translate(54, 1)" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="4" width="8" height="8" rx="1.5"/>
+          <path d="M2 8.5V2.5A1.5 1.5 0 0 1 3.5 1h6"/>
+        </g>
+        <text x="70" y="11" font-size="12" font-weight="400" fill="#616161">复制</text>
+        <text x="152" y="11" font-size="10" font-weight="400" fill="#8A8A8A" text-anchor="end">(Hover)</text>
+      </g>
+    </g>
+
+    <!-- Clusclaw Assistant Reply (Teams Two-Column IM Layout) -->
+    <g id="assistant-reply">
+      <rect x="326" y="210" width="32" height="32" rx="8" fill="#F0F1FA"/>
+      <g transform="translate(330, 214) scale(0.375)">
+        <path d="M8 45l24-11 24 11-24 11z" fill="#C5C8F2"/>
+        <path d="M8 33l24-11 24 11-24 11z" fill="#7F85F5"/>
+        <rect x="12" y="6" width="40" height="25" rx="8" fill="#3D3E8F"/>
+        <path d="M9 12c-2.2 2-3.2 4.5-3.2 7.5 0 2.8 1 5.2 3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.4" stroke-linecap="round"/>
+        <path d="M55 12c2.2 2 3.2 4.5 3.2 7.5 0 2.8-1 5.2-3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.4" stroke-linecap="round"/>
+        <circle cx="25.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+        <circle cx="38.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+      </g>
+
+      <text x="370" y="223" font-size="14" font-weight="600" fill="#242424">Clusclaw</text>
+      <text x="438" y="223" font-size="12" font-weight="400" fill="#616161">14:32</text>
+
+      <!-- Conclusion-First Natural Language -->
+      <text x="370" y="248" font-size="14" font-weight="400" fill="#242424">当前全局默认 Qwen3.5-235B，其中「任务执行」显式绑定 DeepSeek-V4.1（38ms，支持工具调用与结构化输出）；</text>
+      <text x="370" y="270" font-size="14" font-weight="400" fill="#242424">提供方 Anthropic 凭据缺失，其余 2 个提供方（vLLM、DeepSeek）均已就绪。</text>
+
+      <!-- ==================== 6. COMPACT A2UI SUMMARY CARD WITH ALL 8 ATTRIBUTES (x=370..1190, h=310) ==================== -->
+      <g id="compact-summary-card">
+        <rect x="370" y="284" width="820" height="310" rx="12" fill="#FFFFFF" stroke="#E5E5E5" stroke-width="1" filter="url(#shadow2)"/>
+
+        <g clip-path="url(#cardClip)">
+          <!-- Loop Gradient Top Accent Bar (3px) -->
+          <rect x="370" y="284" width="820" height="3" fill="url(#loopAccent)"/>
+
+          <!-- Card Header (52px: y=284..336) -->
+          <g transform="translate(388, 302)" fill="none" stroke="url(#loopAccent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="4" cy="3.5" r="2"/>
+            <circle cx="4" cy="12.5" r="2"/>
+            <circle cx="12" cy="7.5" r="2"/>
+            <path d="M4 5.5v5M6 3.5h2.5a2 2 0 0 1 2 2"/>
+          </g>
+          <text x="414" y="315" font-size="16" font-weight="600" fill="#242424">模型配置与路由</text>
+          <rect x="538" y="298" width="84" height="24" rx="2" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="1"/>
+          <text x="580" y="314" font-size="12" font-weight="400" fill="#424242" text-anchor="middle">并发上限 2</text>
+
+          <rect x="832" y="296" width="164" height="28" rx="14" fill="#F0F1FA" stroke="#C5C8F2" stroke-width="1"/>
+          <path d="M846 304l1.3 2.6 2.9.4-2.1 2 .5 2.9-2.6-1.4-2.6 1.4.5-2.9-2.1-2 2.9-.4z" fill="#5B5FC7"/>
+          <text x="858" y="314" font-size="12" font-weight="600" fill="#5B5FC7">默认: Qwen3.5-235B</text>
+
+          <rect x="1008" y="294" width="164" height="32" rx="4" fill="#FFFFFF" stroke="#D1D1D1" stroke-width="1"/>
+          <g transform="translate(1018, 303)" fill="none" stroke="#424242" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="1" y="2" width="12" height="10" rx="1.5"/>
+            <line x1="1" y1="5.5" x2="13" y2="5.5"/>
+            <line x1="5" y1="5.5" x2="5" y2="12"/>
+          </g>
+          <text x="1038" y="315" font-size="14" font-weight="600" fill="#242424">查看完整路由 (7)</text>
+          <path d="M1156 308l3.2 3.2 3.2-3.2" fill="none" stroke="#424242" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          <line x1="370" y1="336" x2="1190" y2="336" stroke="#F0F0F0" stroke-width="1"/>
+
+          <!-- Focus Role Header Strip (44px: y=336..380) -->
+          <text x="388" y="363" font-size="14" font-weight="600" fill="#242424">任务执行</text>
+          <text x="452" y="363" font-size="14" font-weight="400" fill="#8A8A8A">→</text>
+          <g transform="translate(472, 351)" fill="none" stroke="#5B5FC7" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 1.5l1.5 3.5 3.5 1.5-3.5 1.5L7 11.5 5.5 8 2 6.5 5.5 5z"/>
+          </g>
+          <text x="492" y="363" font-size="14" font-weight="600" fill="#5B5FC7">DeepSeek-V4.1</text>
+
+          <rect x="604" y="346" width="72" height="24" rx="2" fill="#F0F1FA"/>
+          <text x="640" y="362" font-size="12" font-weight="600" fill="#5B5FC7" text-anchor="middle">显式指定</text>
+
+          <g transform="translate(690, 352)" fill="none" stroke="#0E700E" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="5"/>
+            <path d="M3.8 6l1.5 1.5 3-3"/>
+          </g>
+          <text x="706" y="362" font-size="12" font-weight="600" fill="#0E700E">已绑定</text>
+
+          <text x="1172" y="362" class="f2-mono" font-size="12" fill="#616161" text-anchor="end">api.deepseek.com/v1 · •••••••• · 38ms</text>
+          <line x1="370" y1="380" x2="1190" y2="380" stroke="#F0F0F0" stroke-width="1"/>
+
+          <!-- Complete 8-Attribute Compact Grid (110px: y=380..490, #FAFAFA, 12px #707070 icons) -->
+          <rect x="370" y="380" width="820" height="110" fill="#FAFAFA"/>
+
+          <!-- Row 1 (y=390, h=42, w=190, gap=8) -->
+          <rect x="388" y="390" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(399, 405)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round">
+            <rect x="1" y="1" width="10" height="10" rx="1.5"/>
+            <line x1="3.5" y1="4.5" x2="8.5" y2="4.5"/>
+            <line x1="3.5" y1="7.5" x2="6.5" y2="7.5"/>
+          </g>
+          <text x="416" y="415" font-size="12" font-weight="400" fill="#616161">上下文</text>
+          <text x="566" y="416" font-size="14" font-weight="600" fill="#242424" text-anchor="end">256K</text>
+
+          <rect x="586" y="390" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(597, 405)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 10L10 2M6 2h4v4"/>
+          </g>
+          <text x="614" y="415" font-size="12" font-weight="400" fill="#616161">最大输出</text>
+          <text x="764" y="416" font-size="14" font-weight="600" fill="#242424" text-anchor="end">32K</text>
+
+          <rect x="784" y="390" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(795, 405)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round">
+            <circle cx="6" cy="5" r="3.2"/>
+            <path d="M4.5 9.5h3"/>
+          </g>
+          <text x="812" y="415" font-size="12" font-weight="400" fill="#616161">推理档</text>
+          <text x="962" y="416" font-size="14" font-weight="600" fill="#242424" text-anchor="end">低/中/高</text>
+
+          <rect x="982" y="390" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(993, 405)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M8.5 2.5a2.5 2.5 0 0 0-3.2 3.2L2 9l1 1 3.3-3.3a2.5 2.5 0 0 0 3.2-3.2L8 5 7 4l1.5-1.5z"/>
+          </g>
+          <text x="1010" y="415" font-size="12" font-weight="400" fill="#616161">工具调用</text>
+          <text x="1160" y="416" font-size="14" font-weight="600" fill="#0E700E" text-anchor="end">✓ 支持</text>
+
+          <!-- Row 2 (y=440, h=42, w=190, gap=8) -->
+          <rect x="388" y="440" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(399, 455)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round">
+            <path d="M4 2.5c-1 0-1.5.5-1.5 1.5v1.2c0 .5-.4.8-.8.8.4 0 .8.3.8.8V8c0 1 .5 1.5 1.5 1.5"/>
+            <path d="M8 2.5c1 0 1.5.5 1.5 1.5v1.2c0 .5.4.8.8.8-.4 0-.8.3-.8.8V8c0 1-.5 1.5-1.5 1.5"/>
+          </g>
+          <text x="416" y="465" font-size="12" font-weight="400" fill="#616161">结构化</text>
+          <text x="566" y="466" font-size="14" font-weight="600" fill="#0E700E" text-anchor="end">✓ 支持</text>
+
+          <rect x="586" y="440" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(597, 455)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="1" y="2" width="10" height="8" rx="1.5"/>
+            <path d="M2 8.5l2.5-2.5 2 2 1.5-1.5 2 2"/>
+          </g>
+          <text x="614" y="465" font-size="12" font-weight="400" fill="#616161">图片输入</text>
+          <text x="764" y="466" font-size="14" font-weight="400" fill="#616161" text-anchor="end">未知</text>
+
+          <rect x="784" y="440" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(795, 455)" fill="none" stroke="#707070" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M7 1.5H3a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.5L7 1.5z"/>
+            <path d="M7 1.5v3h3"/>
+          </g>
+          <text x="812" y="465" font-size="12" font-weight="400" fill="#616161">文件输入</text>
+          <text x="962" y="466" font-size="14" font-weight="400" fill="#616161" text-anchor="end">未声明</text>
+
+          <rect x="982" y="440" width="190" height="42" rx="4" fill="#FFFFFF" stroke="#EBEBEB" stroke-width="1"/>
+          <g transform="translate(993, 455)" fill="none" stroke="#707070" stroke-width="1.2">
+            <circle cx="6" cy="6" r="4.5"/>
+            <circle cx="6" cy="6" r="1.2" fill="#707070"/>
+          </g>
+          <text x="1010" y="465" font-size="12" font-weight="400" fill="#616161">来源</text>
+          <text x="1160" y="466" font-size="14" font-weight="600" fill="#242424" text-anchor="end">声明+覆盖</text>
+          <line x1="370" y1="490" x2="1190" y2="490" stroke="#F0F0F0" stroke-width="1"/>
+
+          <!-- Provider Health & Exception Strip (52px: y=490..542, WCAG semantic icons) -->
+          <rect x="370" y="490" width="820" height="52" fill="#FFFFFF"/>
+          <text x="388" y="520" font-size="12" font-weight="600" fill="#616161">提供方连接</text>
+
+          <g transform="translate(464, 510)" fill="none" stroke="#0E700E" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="5"/>
+            <path d="M3.8 6l1.5 1.5 3-3"/>
+          </g>
+          <text x="480" y="520" font-size="12" font-weight="600" fill="#0E700E">vLLM 12ms</text>
+
+          <g transform="translate(564, 510)" fill="none" stroke="#0E700E" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="5"/>
+            <path d="M3.8 6l1.5 1.5 3-3"/>
+          </g>
+          <text x="580" y="520" font-size="12" font-weight="600" fill="#0E700E">DeepSeek 38ms</text>
+
+          <rect x="696" y="504" width="150" height="24" rx="12" fill="#FDF3F4" stroke="#EEACB2" stroke-width="1"/>
+          <g transform="translate(706, 510)" fill="none" stroke="#B10E1C" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="6" cy="6" r="5"/>
+            <line x1="6" y1="3.6" x2="6" y2="6.6"/>
+            <circle cx="6" cy="8.5" r="0.6" fill="#B10E1C"/>
+          </g>
+          <text x="722" y="520" font-size="12" font-weight="600" fill="#B10E1C">Anthropic 凭据缺失</text>
+
+          <!-- Borderless inline link action -->
+          <text x="860" y="520" font-size="12" font-weight="600" fill="#B10E1C">去补全 →</text>
+          <line x1="370" y1="542" x2="1190" y2="542" stroke="#F0F0F0" stroke-width="1"/>
+
+          <!-- Card Footer (52px: y=542..594, #FAFAFA, 14px button icons) -->
+          <rect x="370" y="542" width="820" height="52" fill="#FAFAFA"/>
+          <text x="388" y="572" font-size="12" font-weight="400" fill="#616161">7 个阶段 · 5 个模型档案 · 上次更新 14:02</text>
+
+          <rect x="924" y="552" width="104" height="32" rx="4" fill="#FFFFFF" stroke="#D1D1D1" stroke-width="1"/>
+          <g transform="translate(936, 561)" fill="none" stroke="#424242" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 5h10l-2.5-2.5M12 9H2l2.5 2.5"/>
+          </g>
+          <text x="954" y="573" font-size="14" font-weight="600" fill="#242424">切换默认</text>
+
+          <rect x="1040" y="552" width="132" height="32" rx="4" fill="#5B5FC7"/>
+          <g transform="translate(1052, 561)" fill="none" stroke="#FFFFFF" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 4h10M2 10h10"/>
+            <circle cx="5" cy="4" r="1.5" fill="#5B5FC7"/>
+            <circle cx="9" cy="10" r="1.5" fill="#5B5FC7"/>
+          </g>
+          <text x="1072" y="573" font-size="14" font-weight="600" fill="#FFFFFF">调整角色绑定</text>
+        </g>
+      </g>
+
+      <!-- Subtle IM Action Row (Hover) below-right of Assistant Reply -->
+      <g id="message-actions" transform="translate(1100, 606)">
+        <g transform="translate(0, 1)" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4" y="4" width="8" height="8" rx="1.5"/>
+          <path d="M2 8.5V2.5A1.5 1.5 0 0 1 3.5 1h6"/>
+        </g>
+        <text x="16" y="11" font-size="12" font-weight="400" fill="#616161">复制</text>
+        <text x="90" y="11" font-size="10" font-weight="400" fill="#8A8A8A" text-anchor="end">(Hover)</text>
+      </g>
+    </g>
+
+    <!-- ==================== 7. FLOATING LOOP COMPOSER (Scheme 2: Uniform 200x40 Cards) ==================== -->
+    <g id="composer">
+      <rect x="326" y="648" width="864" height="140" rx="12" fill="#FFFFFF" stroke="#E0E0E0" stroke-width="1" filter="url(#shadow8)"/>
+      <g clip-path="url(#composerClip)">
+        <rect x="326" y="786" width="864" height="2" fill="#5B5FC7"/>
+      </g>
+
+      <!-- Row 1: 4 Uniform 200x40 Cards (rx=8, gap=8, x=346..1170) -->
+      <!-- Card 1: Command Target -->
+      <rect x="346" y="662" width="200" height="40" rx="8" fill="#F0F1FA" stroke="#C5C8F2" stroke-width="1"/>
+      <g transform="translate(358, 674)" fill="none" stroke="#5B5FC7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="4" cy="3.5" r="2"/>
+        <circle cx="4" cy="12.5" r="2"/>
+        <circle cx="12" cy="7.5" r="2"/>
+        <path d="M4 5.5v5M6 3.5h2.5a2 2 0 0 1 2 2"/>
+      </g>
+      <text x="382" y="686" font-size="12" font-weight="600" fill="#5B5FC7">全局 · 任务执行</text>
+      <path d="M526 680l3.2 3.2 3.2-3.2" fill="none" stroke="#5B5FC7" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- Card 2: Task Reference -->
+      <rect x="554" y="662" width="200" height="40" rx="8" fill="#F5F5F5" stroke="#E0E0E0" stroke-width="1"/>
+      <g transform="translate(566, 674)" fill="none" stroke="#0E700E" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M1.5 8h2.6l1.8-4.5 2.6 8 1.8-3.5h3.2"/>
+      </g>
+      <text x="590" y="686" font-size="12" font-weight="600" fill="#242424">T42 · 仅参照</text>
+      <path d="M734 679l5.5 5.5M739.5 679l-5.5 5.5" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round"/>
+
+      <!-- Card 3: File Attachment (2-line layout for long filename safety) -->
+      <rect x="762" y="662" width="200" height="40" rx="8" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+      <g transform="translate(774, 674)" fill="none" stroke="#5B5FC7" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9.5 1.5H4a1.2 1.2 0 0 0-1.2 1.2v10.6A1.2 1.2 0 0 0 4 14.5h8a1.2 1.2 0 0 0 1.2-1.2V5.2L9.5 1.5z"/>
+        <path d="M9.5 1.5v3.7h3.7"/>
+      </g>
+      <text x="798" y="679" font-size="12" font-weight="600" fill="#242424">pod7-node.log</text>
+      <text x="798" y="694" class="f2-mono" font-size="10" fill="#616161">1.8 MB</text>
+      <path d="M942 679l5.5 5.5M947.5 679l-5.5 5.5" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round"/>
+
+      <!-- Card 4: Image Attachment (2-line layout + capability warning hint, Loop Indigo) -->
+      <rect x="970" y="662" width="200" height="40" rx="8" fill="#FFF9F5" stroke="#F4BFAB" stroke-width="1"/>
+      <rect x="978" y="670" width="24" height="24" rx="4" fill="#F0F1FA" stroke="#C5C8F2" stroke-width="1"/>
+      <path d="M982 688l4-5 3.5 3.5 4.5-6 4 7.5" fill="none" stroke="#5B5FC7" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="986" cy="676" r="1.5" fill="#BC4B09"/>
+      <text x="1010" y="679" font-size="12" font-weight="600" fill="#242424">gpu-alert.png</text>
+      <text x="1010" y="694" font-size="10" font-weight="500" fill="#BC4B09">420 KB · 未声明图片</text>
+      <path d="M1150 679l5.5 5.5M1155.5 679l-5.5 5.5" fill="none" stroke="#616161" stroke-width="1.3" stroke-linecap="round"/>
+
+      <!-- Row 2: Unambiguous Draft Text -->
+      <text x="346" y="728" font-size="14" font-weight="400" fill="#242424">将全局「任务执行」角色切到 Qwen3.5-235B，先预览数据出域和版本影响（不改写运行中的任务 T42）。</text>
+
+      <!-- Row 3: Bottom Toolbar (Pure ⊕ Add Button + Concise Strategy + Send) -->
+      <g transform="translate(346, 744)" role="button" aria-label="添加材料">
+        <rect x="0" y="0" width="32" height="32" rx="16" fill="#F5F5F5"/>
+        <circle cx="16" cy="16" r="9" fill="none" stroke="#424242" stroke-width="1.5"/>
+        <path d="M16 12v8M12 16h8" fill="none" stroke="#424242" stroke-width="1.5" stroke-linecap="round"/>
+      </g>
+
+      <rect x="996" y="744" width="130" height="32" rx="4" fill="#FFFFFF" stroke="#D1D1D1" stroke-width="1"/>
+      <g transform="translate(1008, 754)" fill="none" stroke="#424242" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="3" cy="2.5" r="1.5"/>
+        <circle cx="3" cy="9.5" r="1.5"/>
+        <circle cx="9.5" cy="6" r="1.5"/>
+        <path d="M3 4v4M4.5 2.5h2a1.5 1.5 0 0 1 1.5 1.5"/>
+      </g>
+      <text x="1026" y="764" font-size="12" font-weight="600" fill="#424242">按角色路由</text>
+      <path d="M1106 758l3.2 3.2 3.2-3.2" fill="none" stroke="#424242" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <rect x="1138" y="744" width="32" height="32" rx="4" fill="#5B5FC7"/>
+      <path d="M1154 766v-11M1149.5 759.5l4.5-4.5 4.5 4.5" fill="none" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

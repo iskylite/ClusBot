@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 56" width="220" height="56" role="img" aria-labelledby="logo-name-title">
+  <title id="logo-name-title">Clusclaw</title>
+  <defs>
+    <linearGradient id="grad-bevel" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#242424"/>
+      <stop offset="48%" stop-color="#3D3E8F"/>
+      <stop offset="100%" stop-color="#5B5FC7"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(8, 8)">
+    <rect width="40" height="40" rx="10" fill="#ECEEF9"/>
+    <g transform="translate(4, 4) scale(0.5)">
+      <path d="M8 45l24-11 24 11-24 11z" fill="#C5C8F2"/>
+      <path d="M8 33l24-11 24 11-24 11z" fill="#7F85F5"/>
+      <path d="M12 14c0-4.4 3.6-8 8-8h24c4.4 0 8 3.6 8 8v9c0 4.4-3.6 8-8 8H20c-4.4 0-8-3.6-8-8v-9z" fill="#3D3E8F"/>
+      <path d="M9 12c-2.2 2-3.2 4.5-3.2 7.5 0 2.8 1 5.2 3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.2" stroke-linecap="round"/>
+      <path d="M55 12c2.2 2 3.2 4.5 3.2 7.5 0 2.8-1 5.2-3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.2" stroke-linecap="round"/>
+      <circle cx="25.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+      <circle cx="38.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+    </g>
+    <g transform="translate(52, 5) scale(0.84)">
+      <g fill="url(#grad-bevel)">
+        <path d="M6 4 H22 L24 9 H9 V23 H24 L22 28 H6 L2 24 V8 Z"/>
+        <path d="M31 3 H36 V28 H31 Z"/>
+        <path d="M43 11 H48 V23 H55 V11 H60 V28 H47 L43 24 Z"/>
+        <path d="M70 11 H83 L81 15 H72 V18 H80 L84 21 V25 L80 28 H67 L69 24 H79 V21 H71 L67 18 V14 Z"/>
+        <path d="M94 11 H107 L105 15 H96 V24 H105 L107 28 H94 L91 25 V14 Z"/>
+        <path d="M114 3 H119 V28 H114 Z"/>
+        <path d="M127 11 H140 L143 14 V28 H129 L126 25 V20 L129 18 H138 V15 H129 Z M131 21 V24 H138 V21 Z"/>
+        <path d="M150 11 H155 L158 22 L162 13 H166 L170 22 L173 11 H178 L173 28 H168 L164 19 L160 28 H155 Z"/>
+      </g>
+      <path d="M92 33 H178 L174 36 H92 Z" fill="#5B5FC7"/>
+    </g>
+  </g>
+</svg>

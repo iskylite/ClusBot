@@ -38,4 +38,7 @@
 /docs/模型能力对齐-现状与方案.md
 /docs/ui/personal-assistant/*
 !/docs/ui/personal-assistant/前端设计.md
+!/docs/ui/personal-assistant/Clusclaw-Logo.svg
+!/docs/ui/personal-assistant/Clusclaw-Logo-with-Name.svg
+!/docs/ui/personal-assistant/fluent2-home-prototype-v3.svg
 /docs/**/*.png

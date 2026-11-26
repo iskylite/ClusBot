@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="96" height="96" role="img" aria-labelledby="logo-title logo-desc">
+  <title id="logo-title">Clusclaw</title>
+  <desc id="logo-desc">Clusclaw 方案 A 标志：Loop Indigo 双层等距集群底座与带双钳护弧的双眼智能体。</desc>
+  <g transform="translate(12 12) scale(1.125)">
+    <rect width="64" height="64" rx="16" fill="#ECEEF9"/>
+    <path d="M8 45l24-11 24 11-24 11z" fill="#C5C8F2"/>
+    <path d="M8 33l24-11 24 11-24 11z" fill="#7F85F5"/>
+    <path d="M12 14c0-4.4 3.6-8 8-8h24c4.4 0 8 3.6 8 8v9c0 4.4-3.6 8-8 8H20c-4.4 0-8-3.6-8-8v-9z" fill="#3D3E8F"/>
+    <path d="M9 12c-2.2 2-3.2 4.5-3.2 7.5 0 2.8 1 5.2 3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M55 12c2.2 2 3.2 4.5 3.2 7.5 0 2.8-1 5.2-3.2 7" fill="none" stroke="#5B5FC7" stroke-width="3.2" stroke-linecap="round"/>
+    <circle cx="25.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+    <circle cx="38.5" cy="18.5" r="3.6" fill="#FFFFFF"/>
+  </g>
+</svg>
